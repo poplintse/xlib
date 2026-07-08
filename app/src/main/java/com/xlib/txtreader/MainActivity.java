@@ -11,6 +11,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
+import android.text.Layout;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -65,8 +66,15 @@ public class MainActivity extends Activity {
     private boolean managingBooks;
     private boolean loadingChunk;
     private boolean pendingWindowLoad;
+    private boolean pageAnimating;
+    private boolean edgeBackCandidate;
+    private boolean edgeBackTriggered;
+    private boolean touchMoved;
+    private float touchStartX;
+    private float touchStartY;
     private long currentChunkOffset;
     private int currentChunkBytes;
+    private LinearLayout readerRoot;
     private ScrollView readerScroll;
     private TextView readerText;
     private TextView readerTitle;
@@ -337,9 +345,9 @@ public class MainActivity extends Activity {
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(bg);
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(bg);
+        readerRoot = new LinearLayout(this);
+        readerRoot.setOrientation(LinearLayout.VERTICAL);
+        readerRoot.setBackgroundColor(bg);
 
         readerTopBar = new LinearLayout(this);
         readerTopBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -393,24 +401,77 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(64), dp(42));
         modeLp.leftMargin = dp(6);
         readerTopBar.addView(mode, modeLp);
-        root.addView(readerTopBar);
 
         readerScroll = new ScrollView(this);
         readerScroll.setFillViewport(true);
-        readerScroll.setPadding(0, 0, 0, 0);
+        readerScroll.setClipToPadding(true);
+        applyReaderSafePadding(book.fontSize);
 
         readerText = new TextView(this);
         readerText.setTextColor(fg);
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, book.fontSize);
-        readerText.setLineSpacing(dp(6), 1.0f);
-        readerText.setPadding(dp(22), dp(16), dp(22), dp(24));
+        readerText.setIncludeFontPadding(true);
+        readerText.setPadding(dp(22), dp(24), dp(22), dp(32));
+        applyReaderLineSpacing(book.fontSize);
         readerScroll.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN && areReaderMenusVisible()) {
-                hideReaderMenus();
-                return true;
+            int action = event.getActionMasked();
+            if (pageAnimating) return true;
+            if (action == MotionEvent.ACTION_DOWN) {
+                touchStartX = event.getX();
+                touchStartY = event.getY();
+                edgeBackCandidate = touchStartX <= dp(16);
+                edgeBackTriggered = false;
+                touchMoved = false;
+                if (!edgeBackCandidate && areReaderMenusVisible()) {
+                    hideReaderMenus();
+                    return true;
+                }
+                if (edgeBackCandidate) {
+                    return true;
+                }
+            } else if (action == MotionEvent.ACTION_MOVE) {
+                float dx = event.getX() - touchStartX;
+                float dy = Math.abs(event.getY() - touchStartY);
+                if (Math.abs(dx) > dp(16) || dy > dp(16)) {
+                    touchMoved = true;
+                }
+                if (edgeBackCandidate && !edgeBackTriggered && dx >= dp(72) && dy <= dp(96)) {
+                    edgeBackTriggered = true;
+                    saveCurrentProgress();
+                    onBackPressed();
+                    return true;
+                }
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (edgeBackCandidate) {
+                    float dx = event.getX() - touchStartX;
+                    float dy = Math.abs(event.getY() - touchStartY);
+                    boolean isTap = action == MotionEvent.ACTION_UP
+                            && Math.abs(dx) <= dp(16)
+                            && dy <= dp(16);
+                    edgeBackCandidate = false;
+                    if (isTap && currentBook != null && currentBook.pageMode) {
+                        if (event.getX() < readerScroll.getWidth() * 0.4f) {
+                            pageBackward();
+                        } else {
+                            pageForward();
+                        }
+                    } else if (action == MotionEvent.ACTION_UP && currentBook != null && currentBook.pageMode) {
+                        handlePageSwipe(dx, dy);
+                    }
+                    return true;
+                }
             }
             if (currentBook == null || !currentBook.pageMode) return false;
-            if (event.getAction() == MotionEvent.ACTION_UP) {
+            if (action == MotionEvent.ACTION_UP) {
+                float dx = event.getX() - touchStartX;
+                float dy = Math.abs(event.getY() - touchStartY);
+                if (handlePageSwipe(dx, dy)) {
+                    return true;
+                }
+                boolean isTap = !touchMoved
+                        && Math.abs(event.getX() - touchStartX) <= dp(16)
+                        && Math.abs(event.getY() - touchStartY) <= dp(16);
+                if (!isTap) return true;
                 if (event.getX() < readerScroll.getWidth() * 0.4f) {
                     pageBackward();
                 } else {
@@ -426,10 +487,17 @@ public class MainActivity extends Activity {
             updateProgressText();
             maybeLoadAdjacentWindow();
         });
-        root.addView(readerScroll, new LinearLayout.LayoutParams(
+        readerRoot.addView(readerScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        frame.addView(root);
+        frame.addView(readerRoot, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP);
+        frame.addView(readerTopBar, topLp);
 
         readerBottomBar = new LinearLayout(this);
         readerBottomBar.setOrientation(LinearLayout.VERTICAL);
@@ -506,14 +574,26 @@ public class MainActivity extends Activity {
         ImageButton settings = makeIconButton();
         settings.setImageResource(R.drawable.ic_settings);
         settings.setContentDescription("阅读设置");
+        settings.setPadding(dp(2), dp(2), dp(2), dp(2));
         settings.setOnClickListener(v -> toggleReaderMenus());
         FrameLayout.LayoutParams settingsLp = new FrameLayout.LayoutParams(dp(52), dp(52),
                 Gravity.BOTTOM | Gravity.RIGHT);
-        settingsLp.setMargins(0, 0, dp(14), dp(14));
+        settingsLp.setMargins(0, 0, dp(8), dp(8));
         frame.addView(settings, settingsLp);
 
         setContentView(frame);
         loadChunkAtOffset(book.offset);
+    }
+
+    private boolean handlePageSwipe(float dx, float dy) {
+        boolean isHorizontalSwipe = Math.abs(dx) >= dp(72) && Math.abs(dx) > dy * 1.2f;
+        if (!isHorizontalSwipe) return false;
+        if (dx > 0) {
+            pageBackward();
+        } else {
+            pageForward();
+        }
+        return true;
     }
 
     private void loadChunkAtProgress(float progress) {
@@ -538,6 +618,7 @@ public class MainActivity extends Activity {
             currentBook.progress = currentBook.fileSize <= 0 ? 0f : clampedTarget / (float) currentBook.fileSize;
             currentBook.updatedAt = System.currentTimeMillis();
             readerText.setText(chunk.text);
+            refreshReaderSpacing();
             readerScroll.post(() -> scrollToOffsetWithinWindow(clampedTarget));
             saveBooks();
             updateProgressText();
@@ -551,7 +632,7 @@ public class MainActivity extends Activity {
 
     private void maybeLoadAdjacentWindow() {
         if (loadingChunk || pendingWindowLoad || currentBook == null || readerScroll == null || readerText == null) return;
-        int maxScroll = Math.max(0, readerText.getHeight() - readerScroll.getHeight());
+        int maxScroll = maxReaderScroll();
         if (maxScroll <= 0) return;
         int y = readerScroll.getScrollY();
         if (y <= dp(24) && currentChunkOffset > 0) {
@@ -571,12 +652,21 @@ public class MainActivity extends Activity {
     }
 
     private void pageBackward() {
+        if (pageAnimating) return;
+        animatePageTurn(-1, this::performPageBackward);
+    }
+
+    private void pageForward() {
+        if (pageAnimating) return;
+        animatePageTurn(1, this::performPageForward);
+    }
+
+    private void performPageBackward() {
         if (currentBook == null || readerScroll == null || readerText == null) return;
         saveCurrentProgress();
-        int page = Math.max(dp(120), readerScroll.getHeight() - dp(24));
         int y = readerScroll.getScrollY();
         if (y > 0) {
-            readerScroll.scrollTo(0, Math.max(0, y - page));
+            readerScroll.scrollTo(0, pageBackTargetY(y));
             saveCurrentProgress();
             updateProgressText();
             return;
@@ -586,14 +676,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void pageForward() {
+    private void performPageForward() {
         if (currentBook == null || readerScroll == null || readerText == null) return;
         saveCurrentProgress();
-        int page = Math.max(dp(120), readerScroll.getHeight() - dp(24));
-        int maxScroll = Math.max(0, readerText.getHeight() - readerScroll.getHeight());
+        int maxScroll = maxReaderScroll();
         int y = readerScroll.getScrollY();
         if (y < maxScroll) {
-            readerScroll.scrollTo(0, Math.min(maxScroll, y + page));
+            readerScroll.scrollTo(0, pageForwardTargetY(y, maxScroll));
             saveCurrentProgress();
             updateProgressText();
             return;
@@ -603,16 +692,46 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void animatePageTurn(int direction, Runnable turnAction) {
+        if (readerText == null || readerScroll == null) {
+            turnAction.run();
+            return;
+        }
+        pageAnimating = true;
+        float distance = Math.max(readerScroll.getWidth(), dp(240));
+        float exitX = direction > 0 ? -distance : distance;
+        readerText.animate().cancel();
+        readerText.animate()
+                .translationX(exitX)
+                .alpha(0.25f)
+                .setDuration(260)
+                .withEndAction(() -> {
+                    turnAction.run();
+                    readerText.setTranslationX(0f);
+                    readerText.setAlpha(0f);
+                    readerText.animate()
+                            .alpha(1f)
+                            .setDuration(90)
+                            .withEndAction(() -> pageAnimating = false)
+                            .start();
+                })
+                .start();
+    }
+
     private void scrollToOffsetWithinWindow(long targetOffset) {
         if (readerScroll == null || readerText == null) return;
-        int maxScroll = Math.max(0, readerText.getHeight() - readerScroll.getHeight());
+        if (readerText.getLayout() == null) {
+            readerText.post(() -> scrollToOffsetWithinWindow(targetOffset));
+            return;
+        }
+        int maxScroll = maxReaderScroll();
         if (maxScroll == 0 || currentChunkBytes <= 0) {
             readerScroll.scrollTo(0, 0);
             return;
         }
         float within = (targetOffset - currentChunkOffset) / (float) currentChunkBytes;
         within = Math.max(0f, Math.min(1f, within));
-        readerScroll.scrollTo(0, Math.round(maxScroll * within));
+        readerScroll.scrollTo(0, snapToLineTop(Math.round(maxScroll * within)));
     }
 
     private Chunk readChunk(File file, long offset, int maxBytes, String encoding) throws Exception {
@@ -661,12 +780,14 @@ public class MainActivity extends Activity {
     }
 
     private void showReaderMenus() {
+        saveCurrentProgress();
         if (readerTopBar != null) readerTopBar.setVisibility(View.VISIBLE);
         if (readerBottomBar != null) readerBottomBar.setVisibility(View.VISIBLE);
         if (seekPanel != null) seekPanel.setVisibility(View.VISIBLE);
     }
 
     private void hideReaderMenus() {
+        saveCurrentProgress();
         if (readerTopBar != null) readerTopBar.setVisibility(View.GONE);
         if (readerBottomBar != null) readerBottomBar.setVisibility(View.GONE);
         if (seekPanel != null) seekPanel.setVisibility(View.GONE);
@@ -690,12 +811,86 @@ public class MainActivity extends Activity {
         currentBook.fontSize = Math.max(14f, Math.min(34f, currentBook.fontSize + delta));
         currentBook.updatedAt = System.currentTimeMillis();
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentBook.fontSize);
+        refreshReaderSpacing();
         saveBooks();
+        readerScroll.post(() -> {
+            int y = Math.min(maxReaderScroll(), snapToLineTop(readerScroll.getScrollY()));
+            readerScroll.scrollTo(0, y);
+            saveCurrentProgress();
+            updateProgressText();
+        });
+    }
+
+    private void refreshReaderSpacingAndPosition() {
+        refreshReaderSpacing();
+        if (readerScroll == null || currentBook == null) return;
+        readerScroll.post(() -> {
+            refreshReaderSpacing();
+            scrollToOffsetWithinWindow(currentBook.offset);
+            updateProgressText();
+        });
+    }
+
+    private void refreshReaderSpacing() {
+        if (currentBook == null) return;
+        applyReaderSafePadding(currentBook.fontSize);
+        applyReaderLineSpacing(currentBook.fontSize);
+    }
+
+    private void applyReaderLineSpacing(float fontSize) {
+        if (readerText == null) return;
+        int defaultExtra = (int) TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_SP,
+                Math.max(2f, fontSize * 0.18f),
+                getResources().getDisplayMetrics());
+        int extra = defaultExtra;
+        int fontHeight = readerText.getPaint().getFontMetricsInt(null);
+        int textArea = readerVisibleHeight() - readerText.getPaddingTop() - readerText.getPaddingBottom() - dp(8);
+        int defaultLineHeight = Math.max(1, fontHeight + defaultExtra);
+        if (textArea > defaultLineHeight * 2) {
+            int fullLines = Math.max(1, textArea / defaultLineHeight);
+            int fittedLineHeight = Math.max(defaultLineHeight, textArea / fullLines);
+            extra = Math.max(0, fittedLineHeight - fontHeight);
+        }
+        readerText.setLineSpacing(extra, 1.0f);
+    }
+
+    private void applyReaderSafePadding(float fontSize) {
+        if (readerScroll == null) return;
+        int oneLine = (int) TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_SP,
+                fontSize + 6f,
+                getResources().getDisplayMetrics());
+        int topInset = statusBarHeight() + dp(14);
+        int bottomInset = navigationBarHeight() + oneLine + dp(18);
+        readerScroll.setPadding(0, topInset, 0, bottomInset);
+    }
+
+    private int statusBarHeight() {
+        return systemDimension("status_bar_height");
+    }
+
+    private int navigationBarHeight() {
+        return systemDimension("navigation_bar_height");
+    }
+
+    private int systemDimension(String name) {
+        int resourceId = getResources().getIdentifier(name, "dimen", "android");
+        if (resourceId <= 0) return 0;
+        return getResources().getDimensionPixelSize(resourceId);
+    }
+
+    private int readerBottomOverlayHeight() {
+        if (readerBottomBar == null || readerBottomBar.getVisibility() != View.VISIBLE) return 0;
+        int height = readerBottomBar.getHeight();
+        if (height > 0) return height;
+        int seekHeight = seekPanel != null && seekPanel.getVisibility() == View.VISIBLE ? dp(44) : 0;
+        return seekHeight + dp(46) + dp(20);
     }
 
     private void saveCurrentProgress() {
         if (currentBook == null || readerScroll == null || readerText == null) return;
-        int maxScroll = Math.max(0, readerText.getHeight() - readerScroll.getHeight());
+        int maxScroll = maxReaderScroll();
         float chunkScroll = maxScroll == 0 ? 0f : Math.max(0f, Math.min(1f, readerScroll.getScrollY() / (float) maxScroll));
         long visibleOffset = currentChunkOffset + Math.round(currentChunkBytes * chunkScroll);
         currentBook.offset = Math.min(Math.max(0L, visibleOffset), Math.max(0L, currentBook.fileSize));
@@ -703,6 +898,64 @@ public class MainActivity extends Activity {
         currentBook.updatedAt = System.currentTimeMillis();
         saveBooks();
         if (seekBar != null) seekBar.setProgress((int) (currentBook.progress * 1000f));
+    }
+
+    private int readerVisibleHeight() {
+        if (readerScroll == null) return 0;
+        return Math.max(0, readerScroll.getHeight() - readerScroll.getPaddingTop() - readerScroll.getPaddingBottom());
+    }
+
+    private int maxReaderScroll() {
+        if (readerScroll == null || readerText == null) return 0;
+        return Math.max(0, readerText.getHeight() - readerVisibleHeight());
+    }
+
+    private int pageForwardTargetY(int currentY, int maxScroll) {
+        Layout layout = readerText == null ? null : readerText.getLayout();
+        int visible = readerVisibleHeight();
+        if (layout == null || visible <= 0) {
+            return Math.min(maxScroll, currentY + Math.max(dp(120), visible));
+        }
+        int target = currentY + visible;
+        int line = Math.min(layout.getLineCount() - 1, layout.getLineForVertical(target));
+        if (layout.getLineTop(line) < target && line + 1 < layout.getLineCount()) {
+            line++;
+        }
+        int lineTop = layout.getLineTop(line);
+        if (lineTop <= currentY && line + 1 < layout.getLineCount()) {
+            lineTop = layout.getLineTop(line + 1);
+        }
+        if (lineTop <= currentY) {
+            lineTop = currentY + Math.max(1, averageLineHeight(layout));
+        }
+        return Math.max(0, Math.min(maxScroll, lineTop));
+    }
+
+    private int pageBackTargetY(int currentY) {
+        Layout layout = readerText == null ? null : readerText.getLayout();
+        int visible = readerVisibleHeight();
+        if (layout == null || visible <= 0) {
+            return Math.max(0, currentY - Math.max(dp(120), visible));
+        }
+        int target = Math.max(0, currentY - visible);
+        int line = Math.max(0, layout.getLineForVertical(target));
+        int lineTop = layout.getLineTop(line);
+        if (lineTop >= currentY) {
+            lineTop = currentY - Math.max(1, averageLineHeight(layout));
+        }
+        return Math.max(0, lineTop);
+    }
+
+    private int snapToLineTop(int targetY) {
+        Layout layout = readerText == null ? null : readerText.getLayout();
+        if (layout == null) return targetY;
+        int line = Math.max(0, Math.min(layout.getLineCount() - 1, layout.getLineForVertical(targetY)));
+        return Math.max(0, layout.getLineTop(line));
+    }
+
+    private int averageLineHeight(Layout layout) {
+        if (layout == null || layout.getLineCount() <= 0) return dp(24);
+        return Math.max(1, layout.getHeight() / layout.getLineCount());
     }
 
     private void updateProgressText() {
@@ -849,7 +1102,7 @@ public class MainActivity extends Activity {
                 book.progress = (float) item.optDouble("progress", 0d);
                 book.fontSize = (float) item.optDouble("fontSize", 20d);
                 book.theme = item.optInt("theme", THEME_SYSTEM);
-                book.pageMode = item.optBoolean("pageMode", false);
+                book.pageMode = item.optBoolean("pageMode", true);
                 book.updatedAt = item.optLong("updatedAt", System.currentTimeMillis());
                 File file = new File(book.path);
                 if (!TextUtils.isEmpty(book.path) && file.exists()) {

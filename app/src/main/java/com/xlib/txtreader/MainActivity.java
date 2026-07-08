@@ -1,0 +1,754 @@
+package com.xlib.txtreader;
+
+import android.app.Activity;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.content.res.Configuration;
+import android.database.Cursor;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.provider.OpenableColumns;
+import android.text.TextUtils;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.FrameLayout;
+import android.widget.ImageButton;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.text.DateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+
+public class MainActivity extends Activity {
+    private static final int PICK_TXT_REQUEST = 1001;
+    private static final String PREFS = "xlib_reader";
+    private static final String KEY_BOOKS = "books";
+    private static final int THEME_SYSTEM = 0;
+    private static final int THEME_LIGHT = 1;
+    private static final int THEME_DARK = 2;
+    private static final int CHUNK_BYTES = 128 * 1024;
+
+    private final List<Book> books = new ArrayList<>();
+    private final Set<Long> selectedBookIds = new HashSet<>();
+    private SharedPreferences prefs;
+    private Book currentBook;
+    private boolean managingBooks;
+    private boolean loadingChunk;
+    private long currentChunkOffset;
+    private int currentChunkBytes;
+    private ScrollView readerScroll;
+    private TextView readerText;
+    private TextView readerTitle;
+    private Button progressButton;
+    private LinearLayout seekPanel;
+    private SeekBar seekBar;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        loadBooks();
+        showLibrary();
+    }
+
+    @Override
+    protected void onPause() {
+        saveCurrentProgress();
+        super.onPause();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (currentBook != null) {
+            saveCurrentProgress();
+            currentBook = null;
+            showLibrary();
+            return;
+        }
+        if (managingBooks) {
+            managingBooks = false;
+            selectedBookIds.clear();
+            showLibrary();
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    private void showLibrary() {
+        applyWindowColors(THEME_SYSTEM);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(colorForSystem("#F7F4EF", "#111416"));
+        root.setPadding(dp(18), dp(42), dp(18), dp(12));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = new TextView(this);
+        title.setText("我的书架");
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
+        title.setTextColor(colorForSystem("#202124", "#F2F0EA"));
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(title, new LinearLayout.LayoutParams(0, dp(58), 1));
+
+        ImageButton add = makeIconButton();
+        add.setImageResource(R.drawable.ic_add_book);
+        add.setContentDescription("添加 TXT");
+        add.setOnClickListener(v -> pickTxtFile());
+        header.addView(add, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        ImageButton manage = makeIconButton();
+        manage.setImageResource(managingBooks ? R.drawable.ic_done : R.drawable.ic_manage_books);
+        manage.setContentDescription(managingBooks ? "完成管理" : "管理书籍");
+        manage.setOnClickListener(v -> {
+            managingBooks = !managingBooks;
+            selectedBookIds.clear();
+            showLibrary();
+        });
+        LinearLayout.LayoutParams manageLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        manageLp.leftMargin = dp(8);
+        header.addView(manage, manageLp);
+        root.addView(header);
+
+        if (books.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("还没有书。点击右上角添加一个 txt 文件。");
+            empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+            empty.setTextColor(colorForSystem("#6B6F73", "#B4B8BA"));
+            empty.setGravity(Gravity.CENTER);
+            root.addView(empty, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        } else {
+            LinearLayout list = new LinearLayout(this);
+            list.setOrientation(LinearLayout.VERTICAL);
+            list.setPadding(0, dp(12), 0, 0);
+            for (Book book : books) {
+                list.addView(makeBookRow(book));
+            }
+            ScrollView scroll = new ScrollView(this);
+            scroll.addView(list);
+            root.addView(scroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        }
+
+        if (managingBooks) {
+            Button deleteSelected = makeButton("删除所选 " + selectedBookIds.size());
+            deleteSelected.setEnabled(!selectedBookIds.isEmpty());
+            deleteSelected.setOnClickListener(v -> deleteSelectedBooks());
+            root.addView(deleteSelected, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        }
+
+        TextView version = new TextView(this);
+        version.setText(getVersionText());
+        version.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        version.setTextColor(colorForSystem("#7C8185", "#8D9396"));
+        version.setGravity(Gravity.LEFT);
+        version.setPadding(0, dp(8), 0, 0);
+        root.addView(version, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+
+        setContentView(root);
+    }
+
+    private View makeBookRow(Book book) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(12), dp(14), dp(12));
+        row.setBackgroundColor(colorForSystem("#FFFFFF", "#1A1E20"));
+
+        if (managingBooks) {
+            CheckBox checkBox = new CheckBox(this);
+            checkBox.setChecked(selectedBookIds.contains(book.id));
+            checkBox.setOnClickListener(v -> toggleBookSelection(book));
+            row.addView(checkBox, new LinearLayout.LayoutParams(dp(44), dp(52)));
+        }
+
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+
+        TextView title = new TextView(this);
+        title.setText(book.title);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        title.setTextColor(colorForSystem("#202124", "#F2F0EA"));
+        texts.addView(title);
+
+        TextView meta = new TextView(this);
+        meta.setText(String.format(Locale.getDefault(), "%.0f%% · %s",
+                book.progress * 100f,
+                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                        .format(new Date(book.updatedAt))));
+        meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        meta.setTextColor(colorForSystem("#6B6F73", "#A9ADB0"));
+        meta.setPadding(0, dp(5), 0, 0);
+        texts.addView(meta);
+
+        row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(10);
+        row.setLayoutParams(lp);
+        row.setOnClickListener(v -> {
+            if (managingBooks) {
+                toggleBookSelection(book);
+            } else {
+                openBook(book);
+            }
+        });
+        return row;
+    }
+
+    private void toggleBookSelection(Book book) {
+        if (selectedBookIds.contains(book.id)) {
+            selectedBookIds.remove(book.id);
+        } else {
+            selectedBookIds.add(book.id);
+        }
+        showLibrary();
+    }
+
+    private void deleteSelectedBooks() {
+        List<Book> remaining = new ArrayList<>();
+        for (Book book : books) {
+            if (selectedBookIds.contains(book.id)) {
+                File file = new File(book.path);
+                if (file.exists()) {
+                    boolean ignored = file.delete();
+                }
+            } else {
+                remaining.add(book);
+            }
+        }
+        books.clear();
+        books.addAll(remaining);
+        selectedBookIds.clear();
+        managingBooks = false;
+        saveBooks();
+        showLibrary();
+    }
+
+    private void pickTxtFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/*");
+        startActivityForResult(intent, PICK_TXT_REQUEST);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PICK_TXT_REQUEST && resultCode == RESULT_OK && data != null) {
+            addBookFromUri(data.getData());
+        }
+    }
+
+    private void addBookFromUri(Uri uri) {
+        if (uri == null) return;
+        try {
+            String title = queryDisplayName(uri);
+            if (title == null || title.trim().isEmpty()) {
+                title = "book-" + System.currentTimeMillis() + ".txt";
+            }
+            File dir = new File(getFilesDir(), "books");
+            if (!dir.exists() && !dir.mkdirs()) {
+                throw new IllegalStateException("Cannot create book directory");
+            }
+            String fileName = System.currentTimeMillis() + "-" + title.replaceAll("[^A-Za-z0-9._-]", "_");
+            File target = new File(dir, fileName);
+            try (InputStream input = getContentResolver().openInputStream(uri);
+                 FileOutputStream output = new FileOutputStream(target)) {
+                if (input == null) throw new IllegalStateException("Cannot open selected file");
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, read);
+                }
+            }
+
+            Book book = new Book();
+            book.id = System.currentTimeMillis();
+            book.title = title;
+            book.path = target.getAbsolutePath();
+            book.fileSize = target.length();
+            book.encoding = detectEncoding(target);
+            book.offset = 0L;
+            book.progress = 0f;
+            book.fontSize = 20f;
+            book.theme = THEME_SYSTEM;
+            book.updatedAt = System.currentTimeMillis();
+            books.add(0, book);
+            saveBooks();
+            showLibrary();
+            Toast.makeText(this, "已添加：" + title, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "添加失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void openBook(Book book) {
+        currentBook = book;
+        showReader(book);
+    }
+
+    private void showReader(Book book) {
+        applyWindowColors(book.theme);
+        int bg = backgroundColor(book.theme);
+        int fg = textColor(book.theme);
+        int muted = mutedTextColor(book.theme);
+
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(bg);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(bg);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(12), dp(34), dp(12), dp(4));
+
+        Button back = makeButton("返回");
+        back.setOnClickListener(v -> onBackPressed());
+        top.addView(back, new LinearLayout.LayoutParams(dp(72), dp(42)));
+
+        readerTitle = new TextView(this);
+        readerTitle.setText(book.title);
+        readerTitle.setSingleLine(true);
+        readerTitle.setEllipsize(TextUtils.TruncateAt.END);
+        readerTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        readerTitle.setTextColor(fg);
+        readerTitle.setPadding(dp(10), 0, dp(10), 0);
+        top.addView(readerTitle, new LinearLayout.LayoutParams(0, dp(42), 1));
+
+        Button smaller = makeButton("A-");
+        smaller.setOnClickListener(v -> updateFontSize(-2f));
+        top.addView(smaller, new LinearLayout.LayoutParams(dp(54), dp(42)));
+
+        Button larger = makeButton("A+");
+        larger.setOnClickListener(v -> updateFontSize(2f));
+        LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(54), dp(42));
+        largerLp.leftMargin = dp(6);
+        top.addView(larger, largerLp);
+
+        Button theme = makeButton(themeLabel(book.theme));
+        theme.setOnClickListener(v -> {
+            saveCurrentProgress();
+            book.theme = (book.theme + 1) % 3;
+            book.updatedAt = System.currentTimeMillis();
+            saveBooks();
+            showReader(book);
+        });
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(70), dp(42));
+        themeLp.leftMargin = dp(6);
+        top.addView(theme, themeLp);
+        root.addView(top);
+
+        readerScroll = new ScrollView(this);
+        readerScroll.setFillViewport(true);
+        readerScroll.setPadding(0, 0, 0, dp(86));
+
+        readerText = new TextView(this);
+        readerText.setTextColor(fg);
+        readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, book.fontSize);
+        readerText.setLineSpacing(dp(6), 1.0f);
+        readerText.setPadding(dp(22), dp(16), dp(22), dp(24));
+        readerText.setOnClickListener(v -> toggleSeekPanel());
+        readerScroll.addView(readerText, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        readerScroll.getViewTreeObserver().addOnScrollChangedListener(() -> {
+            saveCurrentProgress();
+            updateProgressButton();
+            maybeLoadNextChunkAtBottom();
+        });
+        root.addView(readerScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        frame.addView(root);
+
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setOrientation(LinearLayout.VERTICAL);
+        bottom.setPadding(dp(14), dp(8), dp(14), dp(12));
+        bottom.setBackgroundColor(bg);
+
+        seekPanel = new LinearLayout(this);
+        seekPanel.setGravity(Gravity.CENTER_VERTICAL);
+        seekPanel.setVisibility(View.GONE);
+        TextView start = new TextView(this);
+        start.setText("0%");
+        start.setTextColor(muted);
+        seekPanel.addView(start, new LinearLayout.LayoutParams(dp(42), dp(44)));
+        seekBar = new SeekBar(this);
+        seekBar.setMax(1000);
+        seekBar.setProgress((int) (book.progress * 1000f));
+        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) loadChunkAtProgress(progress / 1000f);
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                loadChunkAtProgress(seekBar.getProgress() / 1000f);
+                saveCurrentProgress();
+            }
+        });
+        seekPanel.addView(seekBar, new LinearLayout.LayoutParams(0, dp(44), 1));
+        TextView end = new TextView(this);
+        end.setText("100%");
+        end.setTextColor(muted);
+        end.setGravity(Gravity.RIGHT);
+        seekPanel.addView(end, new LinearLayout.LayoutParams(dp(52), dp(44)));
+        bottom.addView(seekPanel);
+
+        LinearLayout nav = new LinearLayout(this);
+        nav.setGravity(Gravity.CENTER_VERTICAL);
+        Button prev = makeButton("上一段");
+        prev.setOnClickListener(v -> loadChunkAtOffset(Math.max(0, currentChunkOffset - CHUNK_BYTES)));
+        nav.addView(prev, new LinearLayout.LayoutParams(dp(82), dp(46)));
+
+        progressButton = makeButton("");
+        progressButton.setOnClickListener(v -> toggleSeekPanel());
+        LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(0, dp(46), 1);
+        progressLp.leftMargin = dp(8);
+        progressLp.rightMargin = dp(8);
+        nav.addView(progressButton, progressLp);
+
+        Button next = makeButton("下一段");
+        next.setOnClickListener(v -> loadChunkAtOffset(currentChunkOffset + Math.max(currentChunkBytes, CHUNK_BYTES)));
+        nav.addView(next, new LinearLayout.LayoutParams(dp(82), dp(46)));
+        bottom.addView(nav);
+
+        FrameLayout.LayoutParams bottomLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM);
+        frame.addView(bottom, bottomLp);
+
+        setContentView(frame);
+        loadChunkAtOffset(book.offset);
+    }
+
+    private void loadChunkAtProgress(float progress) {
+        if (currentBook == null) return;
+        long size = Math.max(1L, currentBook.fileSize);
+        loadChunkAtOffset((long) (Math.max(0f, Math.min(1f, progress)) * size));
+    }
+
+    private void loadChunkAtOffset(long targetOffset) {
+        if (currentBook == null || loadingChunk) return;
+        loadingChunk = true;
+        try {
+            File file = new File(currentBook.path);
+            currentBook.fileSize = file.length();
+            currentChunkOffset = findReadableOffset(file, targetOffset);
+            Chunk chunk = readChunk(file, currentChunkOffset, currentBook.encoding);
+            currentChunkBytes = chunk.bytesRead;
+            currentBook.offset = currentChunkOffset;
+            currentBook.progress = currentBook.fileSize <= 0 ? 0f : currentChunkOffset / (float) currentBook.fileSize;
+            currentBook.updatedAt = System.currentTimeMillis();
+            readerText.setText(chunk.text);
+            readerScroll.post(() -> readerScroll.scrollTo(0, 0));
+            saveBooks();
+            updateProgressButton();
+            if (seekBar != null) seekBar.setProgress((int) (currentBook.progress * 1000f));
+        } catch (Exception e) {
+            Toast.makeText(this, "打开失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        } finally {
+            loadingChunk = false;
+        }
+    }
+
+    private void maybeLoadNextChunkAtBottom() {
+        if (loadingChunk || currentBook == null || readerScroll == null || readerText == null) return;
+        int maxScroll = Math.max(0, readerText.getHeight() - readerScroll.getHeight());
+        if (maxScroll > 0 && readerScroll.getScrollY() >= maxScroll - dp(24)) {
+            long next = currentChunkOffset + Math.max(currentChunkBytes, CHUNK_BYTES);
+            if (next < currentBook.fileSize) {
+                readerScroll.postDelayed(() -> loadChunkAtOffset(next), 120);
+            }
+        }
+    }
+
+    private Chunk readChunk(File file, long offset, String encoding) throws Exception {
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+            raf.seek(Math.max(0L, Math.min(offset, file.length())));
+            int length = (int) Math.min(CHUNK_BYTES, Math.max(0L, file.length() - raf.getFilePointer()));
+            byte[] bytes = new byte[length];
+            int read = raf.read(bytes);
+            if (read <= 0) return new Chunk("", 0);
+            String text = new String(bytes, 0, read, Charset.forName(encoding == null ? "UTF-8" : encoding));
+            return new Chunk(text, read);
+        }
+    }
+
+    private long findReadableOffset(File file, long targetOffset) throws Exception {
+        long size = file.length();
+        if (targetOffset <= 0 || size <= 0) return 0L;
+        long offset = Math.min(targetOffset, Math.max(0L, size - 1));
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+            long start = Math.max(0L, offset - 4096L);
+            raf.seek(offset);
+            while (raf.getFilePointer() > start) {
+                raf.seek(raf.getFilePointer() - 1);
+                int b = raf.read();
+                if (b == '\n') {
+                    return Math.min(size, raf.getFilePointer());
+                }
+                raf.seek(raf.getFilePointer() - 1);
+            }
+        }
+        return offset;
+    }
+
+    private void toggleSeekPanel() {
+        if (seekPanel != null) {
+            seekPanel.setVisibility(seekPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    private void updateFontSize(float delta) {
+        if (currentBook == null || readerText == null) return;
+        saveCurrentProgress();
+        currentBook.fontSize = Math.max(14f, Math.min(34f, currentBook.fontSize + delta));
+        currentBook.updatedAt = System.currentTimeMillis();
+        readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentBook.fontSize);
+        saveBooks();
+    }
+
+    private void saveCurrentProgress() {
+        if (currentBook == null || readerScroll == null || readerText == null) return;
+        int maxScroll = Math.max(0, readerText.getHeight() - readerScroll.getHeight());
+        float chunkScroll = maxScroll == 0 ? 0f : Math.max(0f, Math.min(1f, readerScroll.getScrollY() / (float) maxScroll));
+        long visibleOffset = currentChunkOffset + Math.round(currentChunkBytes * chunkScroll);
+        currentBook.offset = Math.min(Math.max(0L, visibleOffset), Math.max(0L, currentBook.fileSize));
+        currentBook.progress = currentBook.fileSize <= 0 ? 0f : currentBook.offset / (float) currentBook.fileSize;
+        currentBook.updatedAt = System.currentTimeMillis();
+        saveBooks();
+        if (seekBar != null) seekBar.setProgress((int) (currentBook.progress * 1000f));
+    }
+
+    private void updateProgressButton() {
+        if (progressButton != null && currentBook != null) {
+            progressButton.setText(String.format(Locale.getDefault(), "进度 %.1f%%", currentBook.progress * 100f));
+        }
+    }
+
+    private Button makeButton(String text) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        return button;
+    }
+
+    private ImageButton makeIconButton() {
+        ImageButton button = new ImageButton(this);
+        button.setBackgroundColor(Color.TRANSPARENT);
+        button.setPadding(dp(10), dp(10), dp(10), dp(10));
+        button.setColorFilter(colorForSystem("#202124", "#F2F0EA"));
+        return button;
+    }
+
+    private String themeLabel(int theme) {
+        if (theme == THEME_LIGHT) return "浅色";
+        if (theme == THEME_DARK) return "深色";
+        return "跟随";
+    }
+
+    private int backgroundColor(int theme) {
+        if (theme == THEME_LIGHT) return Color.rgb(247, 244, 239);
+        if (theme == THEME_DARK) return Color.rgb(17, 20, 22);
+        return colorForSystem("#F7F4EF", "#111416");
+    }
+
+    private int textColor(int theme) {
+        if (theme == THEME_LIGHT) return Color.rgb(32, 33, 36);
+        if (theme == THEME_DARK) return Color.rgb(242, 240, 234);
+        return colorForSystem("#202124", "#F2F0EA");
+    }
+
+    private int mutedTextColor(int theme) {
+        if (theme == THEME_LIGHT) return Color.rgb(107, 111, 115);
+        if (theme == THEME_DARK) return Color.rgb(180, 184, 186);
+        return colorForSystem("#6B6F73", "#B4B8BA");
+    }
+
+    private int colorForSystem(String light, String dark) {
+        boolean night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
+        return Color.parseColor(night ? dark : light);
+    }
+
+    private void applyWindowColors(int theme) {
+        getWindow().setStatusBarColor(backgroundColor(theme));
+        getWindow().setNavigationBarColor(backgroundColor(theme));
+        int flags = getWindow().getDecorView().getSystemUiVisibility();
+        if (theme == THEME_DARK || (theme == THEME_SYSTEM && isSystemNight())) {
+            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        } else {
+            flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        }
+        getWindow().getDecorView().setSystemUiVisibility(flags);
+    }
+
+    private boolean isSystemNight() {
+        return (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    private int dp(int value) {
+        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics());
+    }
+
+    private String queryDisplayName(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) return cursor.getString(index);
+            }
+        }
+        String fallback = uri.getLastPathSegment();
+        return fallback == null ? null : new File(fallback).getName();
+    }
+
+    private String detectEncoding(File file) {
+        byte[] bytes = new byte[4096];
+        try (FileInputStream input = new FileInputStream(file)) {
+            int read = input.read(bytes);
+            if (read >= 3 && (bytes[0] & 0xFF) == 0xEF && (bytes[1] & 0xFF) == 0xBB && (bytes[2] & 0xFF) == 0xBF) {
+                return "UTF-8";
+            }
+            if (read >= 2 && (bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xFE) {
+                return "UTF-16LE";
+            }
+            if (read >= 2 && (bytes[0] & 0xFF) == 0xFE && (bytes[1] & 0xFF) == 0xFF) {
+                return "UTF-16BE";
+            }
+            try {
+                StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(CodingErrorAction.REPORT)
+                        .decode(ByteBuffer.wrap(bytes, 0, Math.max(0, read)));
+                return "UTF-8";
+            } catch (CharacterCodingException ignored) {
+                return "GB18030";
+            }
+        } catch (Exception ignored) {
+            return "GB18030";
+        }
+    }
+
+    private String getVersionText() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            long build = Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
+            return "v" + info.versionName + " build " + build;
+        } catch (Exception ignored) {
+            return "v0.1.0 build 1";
+        }
+    }
+
+    private void loadBooks() {
+        books.clear();
+        String raw = prefs.getString(KEY_BOOKS, "[]");
+        try {
+            JSONArray array = new JSONArray(raw);
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.getJSONObject(i);
+                Book book = new Book();
+                book.id = item.optLong("id");
+                book.title = item.optString("title");
+                book.path = item.optString("path");
+                book.fileSize = item.optLong("fileSize", 0L);
+                book.encoding = item.optString("encoding", "UTF-8");
+                book.offset = item.optLong("offset", 0L);
+                book.progress = (float) item.optDouble("progress", 0d);
+                book.fontSize = (float) item.optDouble("fontSize", 20d);
+                book.theme = item.optInt("theme", THEME_SYSTEM);
+                book.updatedAt = item.optLong("updatedAt", System.currentTimeMillis());
+                File file = new File(book.path);
+                if (!TextUtils.isEmpty(book.path) && file.exists()) {
+                    book.fileSize = file.length();
+                    if (TextUtils.isEmpty(book.encoding)) book.encoding = detectEncoding(file);
+                    if (book.offset <= 0 && book.progress > 0) book.offset = (long) (book.fileSize * book.progress);
+                    books.add(book);
+                }
+            }
+        } catch (Exception ignored) {
+            books.clear();
+        }
+    }
+
+    private void saveBooks() {
+        try {
+            JSONArray array = new JSONArray();
+            for (Book book : books) {
+                JSONObject item = new JSONObject();
+                item.put("id", book.id);
+                item.put("title", book.title);
+                item.put("path", book.path);
+                item.put("fileSize", book.fileSize);
+                item.put("encoding", book.encoding);
+                item.put("offset", book.offset);
+                item.put("progress", book.progress);
+                item.put("fontSize", book.fontSize);
+                item.put("theme", book.theme);
+                item.put("updatedAt", book.updatedAt);
+                array.put(item);
+            }
+            prefs.edit().putString(KEY_BOOKS, array.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static class Book {
+        long id;
+        String title;
+        String path;
+        long fileSize;
+        String encoding;
+        long offset;
+        float progress;
+        float fontSize;
+        int theme;
+        long updatedAt;
+    }
+
+    private static class Chunk {
+        final String text;
+        final int bytesRead;
+
+        Chunk(String text, int bytesRead) {
+            this.text = text;
+            this.bytesRead = bytesRead;
+        }
+    }
+}

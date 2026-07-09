@@ -40,6 +40,8 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
@@ -73,12 +75,16 @@ public class MainActivity extends Activity {
     private static final int WINDOW_BYTES = CHUNK_BYTES * 3;
     private static final int INDEX_STEP_BYTES = 64 * 1024;
     private static final int CHUNK_CACHE_LIMIT = 6;
+    private static final int READER_CACHE_MAGIC = 0x584C4942;
+    private static final int MAX_READER_CACHE_TEXT_BYTES = WINDOW_BYTES * 6;
+    private static final long READER_CACHE_WRITE_DELAY_MS = 800L;
     private static final long SEEK_PREVIEW_DELAY_MS = 220L;
 
     private final List<Book> books = new ArrayList<>();
     private final Set<Long> selectedBookIds = new HashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService readerCacheExecutor = Executors.newSingleThreadExecutor();
     private final Map<String, Chunk> chunkCache = new LinkedHashMap<String, Chunk>(8, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Chunk> eldest) {
@@ -98,6 +104,7 @@ public class MainActivity extends Activity {
     private boolean menuDismissTouch;
     private boolean readerMenusOpen;
     private boolean seekTracking;
+    private ReaderCacheWrite pendingReaderCache;
     private float touchStartX;
     private float touchStartY;
     private float pendingSeekProgress;
@@ -132,6 +139,11 @@ public class MainActivity extends Activity {
             loadChunkAtProgress(pendingSeekProgress);
         }
     };
+    private final Runnable readerCacheWriteRunnable = () -> {
+        ReaderCacheWrite cache = pendingReaderCache;
+        pendingReaderCache = null;
+        if (cache != null) writeReaderCache(cache);
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -144,6 +156,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         saveCurrentProgress();
+        flushReaderCacheWrite();
         super.onPause();
     }
 
@@ -151,6 +164,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
         ioExecutor.shutdownNow();
+        readerCacheExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -276,15 +290,33 @@ public class MainActivity extends Activity {
         title.setTextColor(colorForSystem("#202124", "#F2F0EA"));
         texts.addView(title);
 
+        LinearLayout metaRow = new LinearLayout(this);
+        metaRow.setGravity(Gravity.CENTER_VERTICAL);
+        metaRow.setPadding(0, dp(5), 0, 0);
+
         TextView meta = new TextView(this);
-        meta.setText(String.format(Locale.getDefault(), "%.0f%% · %s",
+        meta.setText(String.format(Locale.getDefault(), "%.2f%% · %s",
                 book.progress * 100f,
                 DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
                         .format(new Date(book.updatedAt))));
+        meta.setSingleLine(true);
+        meta.setEllipsize(TextUtils.TruncateAt.END);
         meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         meta.setTextColor(colorForSystem("#6B6F73", "#A9ADB0"));
-        meta.setPadding(0, dp(5), 0, 0);
-        texts.addView(meta);
+        metaRow.addView(meta, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        TextView size = new TextView(this);
+        size.setText(formatFileSize(book.fileSize));
+        size.setSingleLine(true);
+        size.setGravity(Gravity.RIGHT);
+        size.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        size.setTextColor(colorForSystem("#6B6F73", "#A9ADB0"));
+        LinearLayout.LayoutParams sizeLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sizeLp.leftMargin = dp(12);
+        metaRow.addView(size, sizeLp);
+        texts.addView(metaRow);
 
         row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
@@ -315,6 +347,8 @@ public class MainActivity extends Activity {
         List<Book> remaining = new ArrayList<>();
         for (Book book : books) {
             if (selectedBookIds.contains(book.id)) {
+                cancelReaderCacheWrite(book);
+                deleteReaderCache(book);
                 File file = new File(book.path);
                 if (file.exists()) {
                     boolean ignored = file.delete();
@@ -671,7 +705,7 @@ public class MainActivity extends Activity {
 
         Button smallMinus = makeProgressStepButton("-", 14);
         smallMinus.setTextColor(menuFg);
-        smallMinus.setOnClickListener(v -> adjustProgressByPercent(-0.1f));
+        smallMinus.setOnClickListener(v -> adjustProgressByPercent(-0.01f));
         LinearLayout.LayoutParams smallMinusLp = new LinearLayout.LayoutParams(dp(38), dp(46));
         smallMinusLp.leftMargin = dp(6);
         nav.addView(smallMinus, smallMinusLp);
@@ -687,7 +721,7 @@ public class MainActivity extends Activity {
 
         Button smallPlus = makeProgressStepButton("+", 14);
         smallPlus.setTextColor(menuFg);
-        smallPlus.setOnClickListener(v -> adjustProgressByPercent(0.1f));
+        smallPlus.setOnClickListener(v -> adjustProgressByPercent(0.01f));
         nav.addView(smallPlus, new LinearLayout.LayoutParams(dp(38), dp(46)));
 
         Button bigPlus = makeProgressStepButton("+", 20);
@@ -705,6 +739,7 @@ public class MainActivity extends Activity {
         frame.addView(readerBottomBar, bottomLp);
 
         setContentView(frame);
+        restoreReaderCache(book);
         frame.post(this::alignMenusToReaderViewport);
         loadChunkAtOffset(book.offset);
         if (readerMenusOpen) {
@@ -821,9 +856,117 @@ public class MainActivity extends Activity {
             readerScroll.post(this::cacheCurrentPageSnapshot);
         });
         saveBooks();
+        saveReaderCache(book, load);
         updateProgressText();
         if (seekBar != null && !seekTracking) {
             seekBar.setProgress((int) (book.progress * 1000f));
+        }
+    }
+
+    private void restoreReaderCache(Book book) {
+        ReaderCache cache = readReaderCache(book);
+        if (cache == null || readerText == null || readerScroll == null) return;
+        currentChunkOffset = cache.windowStart;
+        currentChunkBytes = cache.bytesRead;
+        book.fileSize = cache.fileSize;
+        book.offset = Math.max(0L, Math.min(book.offset, cache.fileSize));
+        book.progress = cache.fileSize <= 0 ? 0f : book.offset / (float) cache.fileSize;
+        long displayOffset = Math.max(cache.windowStart,
+                Math.min(book.offset, cache.windowStart + Math.max(0, cache.bytesRead)));
+        pageStateGeneration++;
+        readerText.setText(cache.text);
+        refreshReaderSpacing(false);
+        readerScroll.post(() -> {
+            scrollToOffsetWithinWindow(displayOffset);
+            readerScroll.post(this::cacheCurrentPageSnapshot);
+        });
+        updateProgressText();
+        if (seekBar != null) seekBar.setProgress((int) (book.progress * 1000f));
+    }
+
+    private ReaderCache readReaderCache(Book book) {
+        File source = new File(book.path);
+        File cacheFile = readerCacheFile(book);
+        if (!source.exists() || !cacheFile.exists()) return null;
+        try (DataInputStream input = new DataInputStream(new FileInputStream(cacheFile))) {
+            if (input.readInt() != READER_CACHE_MAGIC) return null;
+            long fileSize = input.readLong();
+            long modifiedAt = input.readLong();
+            long windowStart = input.readLong();
+            int bytesRead = input.readInt();
+            int textLength = input.readInt();
+            if (fileSize != source.length() || modifiedAt != source.lastModified()
+                    || windowStart < 0 || bytesRead < 0
+                    || textLength < 0 || textLength > MAX_READER_CACHE_TEXT_BYTES) {
+                return null;
+            }
+            byte[] textBytes = new byte[textLength];
+            input.readFully(textBytes);
+            return new ReaderCache(fileSize, windowStart, bytesRead,
+                    new String(textBytes, StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void saveReaderCache(Book book, ChunkLoad load) {
+        if (book == null || load == null || load.chunk == null) return;
+        final File source = new File(book.path);
+        pendingReaderCache = new ReaderCacheWrite(book, load.fileSize, source.lastModified(),
+                load.windowStart, load.chunk.bytesRead, load.chunk.text);
+        mainHandler.removeCallbacks(readerCacheWriteRunnable);
+        mainHandler.postDelayed(readerCacheWriteRunnable, READER_CACHE_WRITE_DELAY_MS);
+    }
+
+    private void flushReaderCacheWrite() {
+        mainHandler.removeCallbacks(readerCacheWriteRunnable);
+        ReaderCacheWrite cache = pendingReaderCache;
+        pendingReaderCache = null;
+        if (cache != null) writeReaderCache(cache);
+    }
+
+    private void cancelReaderCacheWrite(Book book) {
+        if (pendingReaderCache != null && pendingReaderCache.book == book) {
+            pendingReaderCache = null;
+            mainHandler.removeCallbacks(readerCacheWriteRunnable);
+        }
+    }
+
+    private void writeReaderCache(ReaderCacheWrite cache) {
+        readerCacheExecutor.execute(() -> {
+            byte[] textBytes = cache.text.getBytes(StandardCharsets.UTF_8);
+            if (textBytes.length > MAX_READER_CACHE_TEXT_BYTES) return;
+            File directory = new File(getFilesDir(), "reader-cache");
+            if (!directory.exists() && !directory.mkdirs()) return;
+            File target = readerCacheFile(cache.book);
+            File temporary = new File(directory, target.getName() + ".tmp");
+            try (DataOutputStream output = new DataOutputStream(new FileOutputStream(temporary))) {
+                output.writeInt(READER_CACHE_MAGIC);
+                output.writeLong(cache.fileSize);
+                output.writeLong(cache.modifiedAt);
+                output.writeLong(cache.windowStart);
+                output.writeInt(cache.bytesRead);
+                output.writeInt(textBytes.length);
+                output.write(textBytes);
+                output.flush();
+                if (target.exists() && !target.delete()) return;
+                if (!temporary.renameTo(target)) {
+                    boolean ignored = temporary.delete();
+                }
+            } catch (Exception ignored) {
+                boolean deleted = temporary.delete();
+            }
+        });
+    }
+
+    private File readerCacheFile(Book book) {
+        return new File(new File(getFilesDir(), "reader-cache"), book.id + ".window");
+    }
+
+    private void deleteReaderCache(Book book) {
+        File cacheFile = readerCacheFile(book);
+        if (cacheFile.exists()) {
+            boolean ignored = cacheFile.delete();
         }
     }
 
@@ -1517,14 +1660,14 @@ public class MainActivity extends Activity {
 
     private void updateProgressText() {
         if (progressButton != null && currentBook != null) {
-            progressButton.setText(String.format(Locale.getDefault(), "%.1f%%", currentBook.progress * 100f));
+            progressButton.setText(String.format(Locale.getDefault(), "%.2f%%", currentBook.progress * 100f));
         }
     }
 
     private void updateProgressText(float progress) {
         if (progressButton != null) {
             float value = Math.max(0f, Math.min(1f, progress));
-            progressButton.setText(String.format(Locale.getDefault(), "%.1f%%", value * 100f));
+            progressButton.setText(String.format(Locale.getDefault(), "%.2f%%", value * 100f));
         }
     }
 
@@ -1668,6 +1811,16 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String formatFileSize(long bytes) {
+        long value = Math.max(0L, bytes);
+        if (value < 1024L) return value + " Byte";
+        if (value < 1024L * 1024L) return String.format(Locale.getDefault(), "%.1f KB", value / 1024f);
+        if (value < 1024L * 1024L * 1024L) {
+            return String.format(Locale.getDefault(), "%.1f MB", value / (1024f * 1024f));
+        }
+        return String.format(Locale.getDefault(), "%.1f GB", value / (1024f * 1024f * 1024f));
+    }
+
     private void loadBooks() {
         books.clear();
         String raw = prefs.getString(KEY_BOOKS, "[]");
@@ -1753,6 +1906,39 @@ public class MainActivity extends Activity {
         Chunk(String text, int bytesRead) {
             this.text = text;
             this.bytesRead = bytesRead;
+        }
+    }
+
+    private static class ReaderCache {
+        final long fileSize;
+        final long windowStart;
+        final int bytesRead;
+        final String text;
+
+        ReaderCache(long fileSize, long windowStart, int bytesRead, String text) {
+            this.fileSize = fileSize;
+            this.windowStart = windowStart;
+            this.bytesRead = bytesRead;
+            this.text = text;
+        }
+    }
+
+    private static class ReaderCacheWrite {
+        final Book book;
+        final long fileSize;
+        final long modifiedAt;
+        final long windowStart;
+        final int bytesRead;
+        final String text;
+
+        ReaderCacheWrite(Book book, long fileSize, long modifiedAt, long windowStart,
+                         int bytesRead, String text) {
+            this.book = book;
+            this.fileSize = fileSize;
+            this.modifiedAt = modifiedAt;
+            this.windowStart = windowStart;
+            this.bytesRead = bytesRead;
+            this.text = text;
         }
     }
 

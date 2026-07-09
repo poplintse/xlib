@@ -1,6 +1,5 @@
 package com.xlib.txtreader;
 
-import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -10,11 +9,6 @@ import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.LinearGradient;
-import android.graphics.Matrix;
-import android.graphics.Paint;
-import android.graphics.Path;
-import android.graphics.Shader;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -26,11 +20,12 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.DecelerateInterpolator;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -466,12 +461,8 @@ public class MainActivity extends Activity {
                         hideReaderMenus();
                         return true;
                     }
-                    if (isTap && currentBook != null && currentBook.pageMode) {
-                        if (event.getX() < readerScroll.getWidth() * 0.4f) {
-                            pageBackward();
-                        } else {
-                            pageForward();
-                        }
+                    if (isTap) {
+                        handleReaderTap(event.getX());
                     } else if (action == MotionEvent.ACTION_UP && currentBook != null && currentBook.pageMode) {
                         handlePageSwipe(dx, dy);
                     }
@@ -490,24 +481,20 @@ public class MainActivity extends Activity {
             } else if (action == MotionEvent.ACTION_CANCEL) {
                 touchStartedWithMenusOpen = false;
             }
-            if (currentBook == null || !currentBook.pageMode) return false;
             if (action == MotionEvent.ACTION_UP) {
                 float dx = event.getX() - touchStartX;
                 float dy = Math.abs(event.getY() - touchStartY);
-                if (handlePageSwipe(dx, dy)) {
+                if (currentBook != null && currentBook.pageMode && handlePageSwipe(dx, dy)) {
                     return true;
                 }
                 boolean isTap = !touchMoved
                         && Math.abs(event.getX() - touchStartX) <= dp(16)
                         && Math.abs(event.getY() - touchStartY) <= dp(16);
-                if (!isTap) return true;
-                if (event.getX() < readerScroll.getWidth() * 0.4f) {
-                    pageBackward();
-                } else {
-                    pageForward();
+                if (isTap && handleReaderTap(event.getX())) {
+                    return true;
                 }
             }
-            return true;
+            return currentBook != null && currentBook.pageMode;
         });
         readerScroll.addView(readerText, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -603,16 +590,6 @@ public class MainActivity extends Activity {
         bottomLp.bottomMargin = readerBottomInset(book.fontSize);
         frame.addView(readerBottomBar, bottomLp);
 
-        ImageButton settings = makeIconButton();
-        settings.setImageResource(R.drawable.ic_settings);
-        settings.setContentDescription("阅读设置");
-        settings.setPadding(dp(2), dp(2), dp(2), dp(2));
-        settings.setOnClickListener(v -> toggleReaderMenus());
-        FrameLayout.LayoutParams settingsLp = new FrameLayout.LayoutParams(dp(52), dp(52),
-                Gravity.BOTTOM | Gravity.RIGHT);
-        settingsLp.setMargins(0, 0, dp(8), dp(8));
-        frame.addView(settings, settingsLp);
-
         setContentView(frame);
         loadChunkAtOffset(book.offset);
         if (readerMenusOpen) {
@@ -624,6 +601,22 @@ public class MainActivity extends Activity {
         boolean isHorizontalSwipe = Math.abs(dx) >= dp(72) && Math.abs(dx) > dy * 1.2f;
         if (!isHorizontalSwipe) return false;
         if (dx > 0) {
+            pageBackward();
+        } else {
+            pageForward();
+        }
+        return true;
+    }
+
+    private boolean handleReaderTap(float x) {
+        if (readerScroll == null || readerScroll.getWidth() <= 0) return false;
+        float ratio = x / readerScroll.getWidth();
+        if (ratio >= 0.30f && ratio < 0.60f) {
+            showReaderMenus();
+            return true;
+        }
+        if (currentBook == null || !currentBook.pageMode) return false;
+        if (ratio < 0.30f) {
             pageBackward();
         } else {
             pageForward();
@@ -747,13 +740,13 @@ public class MainActivity extends Activity {
             return;
         }
 
-        PageCurlView turningPage = new PageCurlView(
-                pageBitmap,
-                direction,
-                () -> {
-                    pageBitmap.recycle();
-                    pageAnimating = false;
-                });
+        ImageView turningPage = new ImageView(this);
+        turningPage.setImageBitmap(pageBitmap);
+        turningPage.setScaleType(ImageView.ScaleType.FIT_XY);
+        turningPage.setCameraDistance(getResources().getDisplayMetrics().density * 12000f);
+        turningPage.setPivotX(direction > 0 ? 0f : readerScroll.getWidth());
+        turningPage.setPivotY(readerScroll.getHeight() / 2f);
+        turningPage.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
         FrameLayout.LayoutParams pageLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -764,7 +757,17 @@ public class MainActivity extends Activity {
 
         // The destination page is rendered underneath while the captured page turns away.
         turnAction.run();
-        turningPage.start();
+        turningPage.animate()
+                .rotationY(direction > 0 ? -180f : 180f)
+                .setInterpolator(new AccelerateDecelerateInterpolator())
+                .setDuration(520)
+                .withEndAction(() -> {
+                    readerFrame.removeView(turningPage);
+                    turningPage.setImageDrawable(null);
+                    pageBitmap.recycle();
+                    pageAnimating = false;
+                })
+                .start();
     }
 
     private void scrollToOffsetWithinWindow(long targetOffset) {
@@ -817,14 +820,6 @@ public class MainActivity extends Activity {
     private void toggleSeekPanel() {
         if (seekPanel != null) {
             seekPanel.setVisibility(seekPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
-        }
-    }
-
-    private void toggleReaderMenus() {
-        if (readerMenusOpen) {
-            hideReaderMenus();
-        } else {
-            showReaderMenus();
         }
     }
 
@@ -1265,103 +1260,4 @@ public class MainActivity extends Activity {
         }
     }
 
-    private class PageCurlView extends View {
-        private final Bitmap page;
-        private final int direction;
-        private final Runnable onFinished;
-        private final Path pagePath = new Path();
-        private final Path foldPath = new Path();
-        private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        private final Paint shadePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Matrix mirrorMatrix = new Matrix();
-        private float progress;
-
-        PageCurlView(Bitmap page, int direction, Runnable onFinished) {
-            super(MainActivity.this);
-            this.page = page;
-            this.direction = direction;
-            this.onFinished = onFinished;
-            setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-        }
-
-        void start() {
-            ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
-            animator.setDuration(620);
-            animator.setInterpolator(new DecelerateInterpolator(1.15f));
-            animator.addUpdateListener(value -> {
-                progress = (float) value.getAnimatedValue();
-                invalidate();
-            });
-            animator.addListener(new android.animation.AnimatorListenerAdapter() {
-                @Override
-                public void onAnimationEnd(android.animation.Animator animation) {
-                    if (getParent() instanceof ViewGroup) {
-                        ((ViewGroup) getParent()).removeView(PageCurlView.this);
-                    }
-                    onFinished.run();
-                }
-            });
-            animator.start();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            float width = getWidth();
-            float height = getHeight();
-            if (width <= 0 || height <= 0 || page.isRecycled()) return;
-
-            float easedCorner = Math.min(1f, progress * 1.18f);
-            float topX = direction > 0 ? width * (1f - progress) : width * progress;
-            float bottomX = direction > 0 ? width * (1f - easedCorner) : width * easedCorner;
-            float foldWidth = width * 0.20f * (float) Math.sin(Math.PI * progress);
-            float outerTop = direction > 0
-                    ? Math.min(width, topX + foldWidth)
-                    : Math.max(0f, topX - foldWidth);
-            float outerBottom = direction > 0
-                    ? Math.min(width, bottomX + foldWidth)
-                    : Math.max(0f, bottomX - foldWidth);
-
-            pagePath.reset();
-            if (direction > 0) {
-                pagePath.moveTo(0f, 0f);
-                pagePath.lineTo(topX, 0f);
-                pagePath.lineTo(bottomX, height);
-                pagePath.lineTo(0f, height);
-            } else {
-                pagePath.moveTo(topX, 0f);
-                pagePath.lineTo(width, 0f);
-                pagePath.lineTo(width, height);
-                pagePath.lineTo(bottomX, height);
-            }
-            pagePath.close();
-
-            canvas.save();
-            canvas.clipPath(pagePath);
-            canvas.drawBitmap(page, 0f, 0f, bitmapPaint);
-            canvas.restore();
-
-            foldPath.reset();
-            foldPath.moveTo(topX, 0f);
-            foldPath.lineTo(outerTop, 0f);
-            foldPath.lineTo(outerBottom, height);
-            foldPath.lineTo(bottomX, height);
-            foldPath.close();
-
-            canvas.save();
-            canvas.clipPath(foldPath);
-            mirrorMatrix.reset();
-            mirrorMatrix.setScale(-1f, 1f, width / 2f, height / 2f);
-            canvas.drawBitmap(page, mirrorMatrix, bitmapPaint);
-            int shadowStart = direction > 0 ? 0x66000000 : 0x08000000;
-            int shadowEnd = direction > 0 ? 0x08000000 : 0x66000000;
-            shadePaint.setShader(new LinearGradient(
-                    Math.min(topX, outerTop), 0f,
-                    Math.max(topX, outerTop), 0f,
-                    shadowStart, shadowEnd, Shader.TileMode.CLAMP));
-            canvas.drawRect(0f, 0f, width, height, shadePaint);
-            shadePaint.setShader(null);
-            canvas.restore();
-        }
-    }
 }

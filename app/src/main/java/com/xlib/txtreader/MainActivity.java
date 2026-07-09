@@ -23,12 +23,15 @@ import android.view.ViewGroup;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.ArrayAdapter;
+import android.widget.AdapterView;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -366,10 +369,6 @@ public class MainActivity extends Activity {
         readerTopBar.setClickable(true);
         readerTopBar.setVisibility(View.GONE);
 
-        Button back = makeButton("返回");
-        back.setOnClickListener(v -> onBackPressed());
-        readerTopBar.addView(back, new LinearLayout.LayoutParams(dp(72), dp(42)));
-
         readerTitle = new TextView(this);
         readerTitle.setText(book.title);
         readerTitle.setSingleLine(true);
@@ -389,29 +388,32 @@ public class MainActivity extends Activity {
         largerLp.leftMargin = dp(6);
         readerTopBar.addView(larger, largerLp);
 
-        Button theme = makeButton(themeLabel(book.theme));
-        theme.setOnClickListener(v -> {
-            saveCurrentProgress();
-            book.theme = (book.theme + 1) % 3;
-            book.updatedAt = System.currentTimeMillis();
-            saveBooks();
-            showReader(book);
+        Spinner theme = new Spinner(this);
+        ArrayAdapter<String> themeAdapter = new ArrayAdapter<>(
+                this,
+                android.R.layout.simple_spinner_item,
+                new String[]{"跟随系统", "浅色", "深色"});
+        themeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        theme.setAdapter(themeAdapter);
+        theme.setSelection(book.theme, false);
+        theme.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (position == book.theme) return;
+                saveCurrentProgress();
+                book.theme = position;
+                book.updatedAt = System.currentTimeMillis();
+                saveBooks();
+                showReader(book);
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
         });
-        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(70), dp(42));
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(108), dp(42));
         themeLp.leftMargin = dp(6);
         readerTopBar.addView(theme, themeLp);
-
-        Button mode = makeButton(book.pageMode ? "翻页" : "滑动");
-        mode.setOnClickListener(v -> {
-            saveCurrentProgress();
-            book.pageMode = !book.pageMode;
-            book.updatedAt = System.currentTimeMillis();
-            saveBooks();
-            showReader(book);
-        });
-        LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(64), dp(42));
-        modeLp.leftMargin = dp(6);
-        readerTopBar.addView(mode, modeLp);
 
         readerScroll = new ScrollView(this);
         readerScroll.setFillViewport(true);
@@ -591,6 +593,7 @@ public class MainActivity extends Activity {
         frame.addView(readerBottomBar, bottomLp);
 
         setContentView(frame);
+        frame.post(this::alignMenusToReaderViewport);
         loadChunkAtOffset(book.offset);
         if (readerMenusOpen) {
             frame.post(this::showReaderMenus);
@@ -831,6 +834,7 @@ public class MainActivity extends Activity {
     private void showReaderMenus() {
         saveCurrentProgress();
         readerMenusOpen = true;
+        alignMenusToReaderViewport();
         if (seekPanel != null) seekPanel.setVisibility(View.VISIBLE);
         animateMenuIn(readerTopBar, -dp(72));
         animateMenuIn(readerBottomBar, dp(120));
@@ -915,8 +919,12 @@ public class MainActivity extends Activity {
 
     private void refreshReaderSpacing() {
         if (currentBook == null) return;
-        applyReaderSafePadding(currentBook.fontSize);
-        applyReaderLineSpacing(currentBook.fontSize);
+        float fontSize = currentBook.fontSize;
+        applyReaderSafePadding(fontSize);
+        applyReaderLineSpacing(fontSize);
+        if (readerText != null) {
+            readerText.post(() -> fitReaderViewportToWholeLines(fontSize));
+        }
     }
 
     private void applyReaderLineSpacing(float fontSize) {
@@ -956,7 +964,7 @@ public class MainActivity extends Activity {
     }
 
     private int readerTopInset() {
-        return statusBarHeight() + dp(14);
+        return statusBarHeight() + dp(7);
     }
 
     private int readerBottomInset(float fontSize) {
@@ -964,7 +972,48 @@ public class MainActivity extends Activity {
                 TypedValue.COMPLEX_UNIT_SP,
                 fontSize + 6f,
                 getResources().getDisplayMetrics());
-        return navigationBarHeight() + oneLine + dp(10);
+        return navigationBarHeight() + oneLine / 2 + dp(5);
+    }
+
+    private void fitReaderViewportToWholeLines(float fontSize) {
+        if (readerRoot == null || readerScroll == null || readerText == null
+                || readerText.getLayout() == null || readerRoot.getHeight() <= 0) {
+            return;
+        }
+        Layout layout = readerText.getLayout();
+        if (layout.getLineCount() <= 0) return;
+        int lineHeight = Math.max(1, layout.getLineBottom(0) - layout.getLineTop(0));
+        int baseBottom = readerBottomInset(fontSize);
+        int available = readerRoot.getHeight() - readerTopInset() - baseBottom;
+        int clippedRemainder = Math.max(0, available % lineHeight);
+        int fittedBottom = baseBottom + clippedRemainder;
+        if (readerRoot.getPaddingBottom() != fittedBottom) {
+            readerRoot.setPadding(0, readerTopInset(), 0, fittedBottom);
+            readerRoot.post(this::alignMenusToReaderViewport);
+        }
+    }
+
+    private void alignMenusToReaderViewport() {
+        if (readerFrame == null || readerRoot == null || readerScroll == null
+                || readerFrame.getHeight() <= 0) {
+            return;
+        }
+        int viewportTop = readerRoot.getTop() + readerScroll.getTop();
+        int viewportBottom = readerRoot.getTop() + readerScroll.getBottom();
+        if (readerTopBar != null
+                && readerTopBar.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams lp =
+                    (FrameLayout.LayoutParams) readerTopBar.getLayoutParams();
+            lp.topMargin = viewportTop;
+            readerTopBar.setLayoutParams(lp);
+        }
+        if (readerBottomBar != null
+                && readerBottomBar.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams lp =
+                    (FrameLayout.LayoutParams) readerBottomBar.getLayoutParams();
+            lp.bottomMargin = Math.max(0, readerFrame.getHeight() - viewportBottom);
+            readerBottomBar.setLayoutParams(lp);
+        }
     }
 
     private int statusBarHeight() {
@@ -1086,12 +1135,6 @@ public class MainActivity extends Activity {
         button.setPadding(dp(10), dp(10), dp(10), dp(10));
         button.setColorFilter(colorForSystem("#202124", "#F2F0EA"));
         return button;
-    }
-
-    private String themeLabel(int theme) {
-        if (theme == THEME_LIGHT) return "浅色";
-        if (theme == THEME_DARK) return "深色";
-        return "跟随";
     }
 
     private int backgroundColor(int theme) {

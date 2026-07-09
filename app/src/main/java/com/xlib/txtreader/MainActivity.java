@@ -399,18 +399,20 @@ public class MainActivity extends Activity {
         fontControls.addView(larger, largerLp);
         readerTopBar.addView(fontControls, new LinearLayout.LayoutParams(0, dp(42), 1));
 
-        boolean darkTheme = book.theme == THEME_DARK
-                || (book.theme == THEME_SYSTEM && isSystemNight());
+        boolean darkTheme = isDarkReaderTheme(book.theme);
         ImageButton theme = makeIconButton();
         theme.setImageResource(darkTheme ? R.drawable.ic_moon : R.drawable.ic_sun);
         theme.setColorFilter(menuFg);
         theme.setContentDescription(darkTheme ? "深色主题" : "浅色主题");
         theme.setOnClickListener(v -> {
             saveCurrentProgress();
-            book.theme = darkTheme ? THEME_LIGHT : THEME_DARK;
+            book.theme = isDarkReaderTheme(book.theme) ? THEME_LIGHT : THEME_DARK;
             book.updatedAt = System.currentTimeMillis();
             saveBooks();
-            showReader(book);
+            applyReaderThemeInPlace(book);
+            boolean nowDark = isDarkReaderTheme(book.theme);
+            theme.setImageResource(nowDark ? R.drawable.ic_moon : R.drawable.ic_sun);
+            theme.setContentDescription(nowDark ? "深色主题" : "浅色主题");
         });
         LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(48), dp(42));
         themeLp.leftMargin = dp(6);
@@ -1290,6 +1292,25 @@ public class MainActivity extends Activity {
         if (theme == THEME_LIGHT) return Color.rgb(247, 244, 239);
         if (theme == THEME_DARK) return Color.rgb(17, 20, 22);
         return colorForSystem("#F7F4EF", "#111416");
+    }
+
+    private boolean isDarkReaderTheme(int theme) {
+        return theme == THEME_DARK || (theme == THEME_SYSTEM && isSystemNight());
+    }
+
+    private void applyReaderThemeInPlace(Book book) {
+        int bg = backgroundColor(book.theme);
+        int fg = textColor(book.theme);
+        applyWindowColors(book.theme);
+        if (readerFrame != null) readerFrame.setBackgroundColor(bg);
+        if (readerRoot != null) readerRoot.setBackgroundColor(bg);
+        if (readerScroll != null) readerScroll.setBackgroundColor(bg);
+        if (readerText != null) readerText.setTextColor(fg);
+        pageStateGeneration++;
+        releasePageSnapshot();
+        if (readerScroll != null) {
+            readerScroll.post(this::cacheCurrentPageSnapshot);
+        }
     }
 
     private int textColor(int theme) {

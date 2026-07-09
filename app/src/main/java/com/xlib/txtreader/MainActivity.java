@@ -83,6 +83,7 @@ public class MainActivity extends Activity {
     private float touchStartY;
     private long currentChunkOffset;
     private int currentChunkBytes;
+    private Bitmap currentPageSnapshot;
     private FrameLayout readerFrame;
     private LinearLayout readerRoot;
     private ScrollView readerScroll;
@@ -112,6 +113,7 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         if (currentBook != null) {
             saveCurrentProgress();
+            releasePageSnapshot();
             currentBook = null;
             readerMenusOpen = false;
             showLibrary();
@@ -349,6 +351,7 @@ public class MainActivity extends Activity {
     }
 
     private void showReader(Book book) {
+        releasePageSnapshot();
         applyWindowColors(book.theme);
         int bg = backgroundColor(book.theme);
         int fg = textColor(book.theme);
@@ -650,7 +653,10 @@ public class MainActivity extends Activity {
             currentBook.updatedAt = System.currentTimeMillis();
             readerText.setText(chunk.text);
             refreshReaderSpacing();
-            readerScroll.post(() -> scrollToOffsetWithinWindow(clampedTarget));
+            readerScroll.post(() -> {
+                scrollToOffsetWithinWindow(clampedTarget);
+                readerScroll.post(this::cacheCurrentPageSnapshot);
+            });
             saveBooks();
             updateProgressText();
             if (seekBar != null) seekBar.setProgress((int) (currentBook.progress * 1000f));
@@ -730,26 +736,20 @@ public class MainActivity extends Activity {
             return;
         }
         pageAnimating = true;
-        Bitmap pageBitmap;
-        try {
-            pageBitmap = Bitmap.createBitmap(
-                    readerScroll.getWidth(),
-                    readerScroll.getHeight(),
-                    Bitmap.Config.ARGB_8888);
-            Canvas pageCanvas = new Canvas(pageBitmap);
-            int pageColor = currentBook == null
-                    ? Color.WHITE
-                    : backgroundColor(currentBook.theme);
-            pageCanvas.drawColor(pageColor);
-            readerScroll.draw(pageCanvas);
-        } catch (RuntimeException e) {
+        Bitmap pageBitmap = currentPageSnapshot;
+        currentPageSnapshot = null;
+        if (pageBitmap == null || pageBitmap.isRecycled()) {
+            pageBitmap = captureCurrentPage();
+        }
+        if (pageBitmap == null) {
             pageAnimating = false;
             turnAction.run();
             return;
         }
+        final Bitmap animationBitmap = pageBitmap;
 
         ImageView turningPage = new ImageView(this);
-        turningPage.setImageBitmap(pageBitmap);
+        turningPage.setImageBitmap(animationBitmap);
         turningPage.setScaleType(ImageView.ScaleType.FIT_XY);
         turningPage.setCameraDistance(getResources().getDisplayMetrics().density * 12000f);
         turningPage.setPivotX(direction > 0 ? 0f : readerScroll.getWidth());
@@ -760,7 +760,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 readerScroll.getHeight(),
                 Gravity.TOP);
-        pageLp.topMargin = readerTopInset();
+        pageLp.topMargin = readerRoot.getTop() + readerScroll.getTop();
         readerFrame.addView(turningPage, pageLp);
 
         // The destination page is rendered underneath while the captured page turns away.
@@ -772,10 +772,48 @@ public class MainActivity extends Activity {
                 .withEndAction(() -> {
                     readerFrame.removeView(turningPage);
                     turningPage.setImageDrawable(null);
-                    pageBitmap.recycle();
+                    animationBitmap.recycle();
                     pageAnimating = false;
+                    readerScroll.post(this::cacheCurrentPageSnapshot);
                 })
                 .start();
+    }
+
+    private Bitmap captureCurrentPage() {
+        if (readerScroll == null || readerScroll.getWidth() <= 0
+                || readerScroll.getHeight() <= 0) {
+            return null;
+        }
+        try {
+            Bitmap bitmap = Bitmap.createBitmap(
+                    readerScroll.getWidth(),
+                    readerScroll.getHeight(),
+                    Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            int pageColor = currentBook == null
+                    ? Color.WHITE
+                    : backgroundColor(currentBook.theme);
+            canvas.drawColor(pageColor);
+            readerScroll.draw(canvas);
+            return bitmap;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private void cacheCurrentPageSnapshot() {
+        if (pageAnimating || currentBook == null || !currentBook.pageMode) return;
+        Bitmap snapshot = captureCurrentPage();
+        if (snapshot == null) return;
+        releasePageSnapshot();
+        currentPageSnapshot = snapshot;
+    }
+
+    private void releasePageSnapshot() {
+        if (currentPageSnapshot != null && !currentPageSnapshot.isRecycled()) {
+            currentPageSnapshot.recycle();
+        }
+        currentPageSnapshot = null;
     }
 
     private void scrollToOffsetWithinWindow(long targetOffset) {
@@ -904,6 +942,7 @@ public class MainActivity extends Activity {
             readerScroll.scrollTo(0, y);
             saveCurrentProgress();
             updateProgressText();
+            readerScroll.post(this::cacheCurrentPageSnapshot);
         });
     }
 
@@ -914,6 +953,7 @@ public class MainActivity extends Activity {
             refreshReaderSpacing();
             scrollToOffsetWithinWindow(currentBook.offset);
             updateProgressText();
+            readerScroll.post(this::cacheCurrentPageSnapshot);
         });
     }
 

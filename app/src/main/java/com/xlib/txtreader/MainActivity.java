@@ -93,6 +93,8 @@ public class MainActivity extends Activity {
     private int snapshotHeight = -1;
     private float snapshotFontSize = -1f;
     private int snapshotTheme = -1;
+    private long pageStateGeneration;
+    private long snapshotGeneration = -1L;
     private FrameLayout readerFrame;
     private LinearLayout readerRoot;
     private ScrollView readerScroll;
@@ -390,19 +392,19 @@ public class MainActivity extends Activity {
         Button smaller = makeButton("A-");
         smaller.setTextColor(menuFg);
         smaller.setOnClickListener(v -> updateFontSize(-2f));
-        fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(54), dp(42)));
+        fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(46), dp(42)));
 
         readerFontSize = new TextView(this);
         readerFontSize.setText(formatFontSize(book.fontSize));
         readerFontSize.setTextColor(menuFg);
         readerFontSize.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         readerFontSize.setGravity(Gravity.CENTER);
-        fontControls.addView(readerFontSize, new LinearLayout.LayoutParams(dp(48), dp(42)));
+        fontControls.addView(readerFontSize, new LinearLayout.LayoutParams(dp(40), dp(42)));
 
         Button larger = makeButton("A+");
         larger.setTextColor(menuFg);
         larger.setOnClickListener(v -> updateFontSize(2f));
-        LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(54), dp(42));
+        LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(46), dp(42));
         fontControls.addView(larger, largerLp);
         readerTopBar.addView(fontControls, new LinearLayout.LayoutParams(0, dp(42), 1));
 
@@ -416,6 +418,7 @@ public class MainActivity extends Activity {
                 TextView view = (TextView) super.getView(position, convertView, parent);
                 view.setTextColor(menuFg);
                 view.setBackgroundColor(menuBg);
+                styleSelectedSpinnerText(view);
                 return view;
             }
 
@@ -429,6 +432,7 @@ public class MainActivity extends Activity {
         };
         themeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         theme.setAdapter(themeAdapter);
+        theme.setBackgroundColor(menuBg);
         theme.setSelection(book.theme, false);
         theme.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
@@ -445,7 +449,7 @@ public class MainActivity extends Activity {
             public void onNothingSelected(AdapterView<?> parent) {
             }
         });
-        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(70), dp(42));
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(78), dp(42));
         themeLp.leftMargin = dp(6);
         readerTopBar.addView(theme, themeLp);
 
@@ -459,6 +463,7 @@ public class MainActivity extends Activity {
                 TextView view = (TextView) super.getView(position, convertView, parent);
                 view.setTextColor(menuFg);
                 view.setBackgroundColor(menuBg);
+                styleSelectedSpinnerText(view);
                 return view;
             }
 
@@ -472,6 +477,7 @@ public class MainActivity extends Activity {
         };
         sensitivityAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         sensitivity.setAdapter(sensitivityAdapter);
+        sensitivity.setBackgroundColor(menuBg);
         sensitivity.setSelection(book.sensitivity, false);
         sensitivity.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
@@ -487,7 +493,7 @@ public class MainActivity extends Activity {
             }
         });
         LinearLayout.LayoutParams sensitivityLp =
-                new LinearLayout.LayoutParams(dp(90), dp(42));
+                new LinearLayout.LayoutParams(dp(92), dp(42));
         sensitivityLp.leftMargin = dp(6);
         readerTopBar.addView(sensitivity, sensitivityLp);
 
@@ -578,6 +584,7 @@ public class MainActivity extends Activity {
         readerScroll.addView(readerText, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         readerScroll.getViewTreeObserver().addOnScrollChangedListener(() -> {
+            pageStateGeneration++;
             saveCurrentProgress();
             updateProgressText();
             maybeLoadAdjacentWindow();
@@ -744,6 +751,7 @@ public class MainActivity extends Activity {
             currentBook.offset = clampedTarget;
             currentBook.progress = currentBook.fileSize <= 0 ? 0f : clampedTarget / (float) currentBook.fileSize;
             currentBook.updatedAt = System.currentTimeMillis();
+            pageStateGeneration++;
             readerText.setText(chunk.text);
             refreshReaderSpacing();
             readerScroll.post(() -> {
@@ -796,6 +804,7 @@ public class MainActivity extends Activity {
         saveCurrentProgress();
         int y = readerScroll.getScrollY();
         if (y > 0) {
+            pageStateGeneration++;
             readerScroll.scrollTo(0, pageBackTargetY(y));
             saveCurrentProgress();
             updateProgressText();
@@ -812,6 +821,7 @@ public class MainActivity extends Activity {
         int maxScroll = maxReaderScroll();
         int y = readerScroll.getScrollY();
         if (y < maxScroll) {
+            pageStateGeneration++;
             readerScroll.scrollTo(0, pageForwardTargetY(y, maxScroll));
             saveCurrentProgress();
             updateProgressText();
@@ -863,9 +873,9 @@ public class MainActivity extends Activity {
         // The validated page 0 stays on top; the destination (+1/-1) is placed underneath.
         turnAction.run();
         turningPage.animate()
-                .rotationY(direction > 0 ? -180f : 180f)
+                .rotationY(direction > 0 ? -90f : 90f)
                 .setInterpolator(new AccelerateDecelerateInterpolator())
-                .setDuration(520)
+                .setDuration(460)
                 .withEndAction(() -> {
                     readerFrame.removeView(turningPage);
                     turningPage.setImageDrawable(null);
@@ -891,7 +901,11 @@ public class MainActivity extends Activity {
                     ? Color.WHITE
                     : backgroundColor(currentBook.theme);
             canvas.drawColor(pageColor);
-            readerScroll.draw(canvas);
+            canvas.save();
+            canvas.clipRect(0, 0, readerScroll.getWidth(), readerScroll.getHeight());
+            canvas.translate(0f, -readerScroll.getScrollY());
+            readerText.draw(canvas);
+            canvas.restore();
             return bitmap;
         } catch (RuntimeException ignored) {
             return null;
@@ -910,6 +924,7 @@ public class MainActivity extends Activity {
         snapshotHeight = readerScroll.getHeight();
         snapshotFontSize = currentBook.fontSize;
         snapshotTheme = currentBook.theme;
+        snapshotGeneration = pageStateGeneration;
     }
 
     private boolean isCurrentPageSnapshotValid() {
@@ -922,7 +937,8 @@ public class MainActivity extends Activity {
                 && snapshotWidth == readerScroll.getWidth()
                 && snapshotHeight == readerScroll.getHeight()
                 && Float.compare(snapshotFontSize, currentBook.fontSize) == 0
-                && snapshotTheme == currentBook.theme;
+                && snapshotTheme == currentBook.theme
+                && snapshotGeneration == pageStateGeneration;
     }
 
     private void releasePageSnapshot() {
@@ -940,6 +956,7 @@ public class MainActivity extends Activity {
         snapshotHeight = -1;
         snapshotFontSize = -1f;
         snapshotTheme = -1;
+        snapshotGeneration = -1L;
     }
 
     private void scrollToOffsetWithinWindow(long targetOffset) {
@@ -950,11 +967,13 @@ public class MainActivity extends Activity {
         }
         int maxScroll = maxReaderScroll();
         if (maxScroll == 0 || currentChunkBytes <= 0) {
+            pageStateGeneration++;
             readerScroll.scrollTo(0, 0);
             return;
         }
         float within = (targetOffset - currentChunkOffset) / (float) currentChunkBytes;
         within = Math.max(0f, Math.min(1f, within));
+        pageStateGeneration++;
         readerScroll.scrollTo(0, snapToLineTop(Math.round(maxScroll * within)));
     }
 
@@ -1060,6 +1079,7 @@ public class MainActivity extends Activity {
         saveCurrentProgress();
         currentBook.fontSize = Math.max(14f, Math.min(34f, currentBook.fontSize + delta));
         currentBook.updatedAt = System.currentTimeMillis();
+        pageStateGeneration++;
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentBook.fontSize);
         if (readerFontSize != null) {
             readerFontSize.setText(formatFontSize(currentBook.fontSize));
@@ -1163,6 +1183,7 @@ public class MainActivity extends Activity {
         int clippedRemainder = Math.max(0, available % lineHeight);
         int fittedBottom = baseBottom + clippedRemainder;
         if (readerRoot.getPaddingBottom() != fittedBottom) {
+            pageStateGeneration++;
             readerRoot.setPadding(0, readerTopInset(), 0, fittedBottom);
             readerRoot.post(() -> {
                 alignMenusToReaderViewport();
@@ -1311,6 +1332,13 @@ public class MainActivity extends Activity {
 
     private String formatFontSize(float fontSize) {
         return String.format(Locale.getDefault(), "%.0f", fontSize);
+    }
+
+    private void styleSelectedSpinnerText(TextView view) {
+        view.setSingleLine(true);
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        view.setGravity(Gravity.CENTER);
+        view.setPadding(dp(4), 0, dp(4), 0);
     }
 
     private Button makeProgressStepButton(String text, int sp) {

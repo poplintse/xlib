@@ -23,15 +23,12 @@ import android.view.ViewGroup;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Button;
 import android.widget.CheckBox;
-import android.widget.ArrayAdapter;
-import android.widget.AdapterView;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -99,7 +96,6 @@ public class MainActivity extends Activity {
     private LinearLayout readerRoot;
     private ScrollView readerScroll;
     private TextView readerText;
-    private TextView readerFontSize;
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
     private Button progressButton;
@@ -391,109 +387,51 @@ public class MainActivity extends Activity {
 
         Button smaller = makeButton("A-");
         smaller.setTextColor(menuFg);
+        smaller.setPadding(0, 0, 0, 0);
         smaller.setOnClickListener(v -> updateFontSize(-2f));
-        fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(46), dp(42)));
-
-        readerFontSize = new TextView(this);
-        readerFontSize.setText(formatFontSize(book.fontSize));
-        readerFontSize.setTextColor(menuFg);
-        readerFontSize.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        readerFontSize.setGravity(Gravity.CENTER);
-        fontControls.addView(readerFontSize, new LinearLayout.LayoutParams(dp(40), dp(42)));
+        fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(56), dp(42)));
 
         Button larger = makeButton("A+");
         larger.setTextColor(menuFg);
+        larger.setPadding(0, 0, 0, 0);
         larger.setOnClickListener(v -> updateFontSize(2f));
-        LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(46), dp(42));
+        LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(56), dp(42));
         fontControls.addView(larger, largerLp);
         readerTopBar.addView(fontControls, new LinearLayout.LayoutParams(0, dp(42), 1));
 
-        Spinner theme = new Spinner(this);
-        ArrayAdapter<String> themeAdapter = new ArrayAdapter<>(
-                this,
-                android.R.layout.simple_spinner_item,
-                new String[]{"系统", "浅色", "深色"}) {
-            @Override
-            public View getView(int position, View convertView, ViewGroup parent) {
-                TextView view = (TextView) super.getView(position, convertView, parent);
-                view.setTextColor(menuFg);
-                view.setBackgroundColor(menuBg);
-                styleSelectedSpinnerText(view);
-                return view;
-            }
-
-            @Override
-            public View getDropDownView(int position, View convertView, ViewGroup parent) {
-                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
-                view.setTextColor(menuFg);
-                view.setBackgroundColor(menuBg);
-                return view;
-            }
-        };
-        themeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        theme.setAdapter(themeAdapter);
-        theme.setBackgroundColor(menuBg);
-        theme.setSelection(book.theme, false);
-        theme.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position == book.theme) return;
-                saveCurrentProgress();
-                book.theme = position;
-                book.updatedAt = System.currentTimeMillis();
-                saveBooks();
-                showReader(book);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
+        boolean darkTheme = book.theme == THEME_DARK
+                || (book.theme == THEME_SYSTEM && isSystemNight());
+        ImageButton theme = makeIconButton();
+        theme.setImageResource(darkTheme ? R.drawable.ic_moon : R.drawable.ic_sun);
+        theme.setColorFilter(menuFg);
+        theme.setContentDescription(darkTheme ? "深色主题" : "浅色主题");
+        theme.setOnClickListener(v -> {
+            saveCurrentProgress();
+            book.theme = darkTheme ? THEME_LIGHT : THEME_DARK;
+            book.updatedAt = System.currentTimeMillis();
+            saveBooks();
+            showReader(book);
         });
-        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(78), dp(42));
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(48), dp(42));
         themeLp.leftMargin = dp(6);
         readerTopBar.addView(theme, themeLp);
 
-        Spinner sensitivity = new Spinner(this);
-        ArrayAdapter<String> sensitivityAdapter = new ArrayAdapter<>(
-                this,
-                android.R.layout.simple_spinner_item,
-                new String[]{"高灵敏", "标准", "低灵敏"}) {
-            @Override
-            public View getView(int position, View convertView, ViewGroup parent) {
-                TextView view = (TextView) super.getView(position, convertView, parent);
-                view.setTextColor(menuFg);
-                view.setBackgroundColor(menuBg);
-                styleSelectedSpinnerText(view);
-                return view;
-            }
-
-            @Override
-            public View getDropDownView(int position, View convertView, ViewGroup parent) {
-                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
-                view.setTextColor(menuFg);
-                view.setBackgroundColor(menuBg);
-                return view;
-            }
-        };
-        sensitivityAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        sensitivity.setAdapter(sensitivityAdapter);
-        sensitivity.setBackgroundColor(menuBg);
-        sensitivity.setSelection(book.sensitivity, false);
-        sensitivity.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position == book.sensitivity) return;
-                book.sensitivity = position;
-                book.updatedAt = System.currentTimeMillis();
-                saveBooks();
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
+        Button sensitivity = makeButton(sensitivityShortLabel(book.sensitivity));
+        sensitivity.setTextColor(menuFg);
+        sensitivity.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        sensitivity.setPadding(dp(4), 0, dp(4), 0);
+        sensitivity.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_touch, 0, 0, 0);
+        sensitivity.setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(menuFg));
+        sensitivity.setCompoundDrawablePadding(dp(2));
+        sensitivity.setContentDescription("触控灵敏度");
+        sensitivity.setOnClickListener(v -> {
+            book.sensitivity = (book.sensitivity + 1) % 3;
+            book.updatedAt = System.currentTimeMillis();
+            sensitivity.setText(sensitivityShortLabel(book.sensitivity));
+            saveBooks();
         });
         LinearLayout.LayoutParams sensitivityLp =
-                new LinearLayout.LayoutParams(dp(92), dp(42));
+                new LinearLayout.LayoutParams(dp(76), dp(42));
         sensitivityLp.leftMargin = dp(6);
         readerTopBar.addView(sensitivity, sensitivityLp);
 
@@ -1081,9 +1019,6 @@ public class MainActivity extends Activity {
         currentBook.updatedAt = System.currentTimeMillis();
         pageStateGeneration++;
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentBook.fontSize);
-        if (readerFontSize != null) {
-            readerFontSize.setText(formatFontSize(currentBook.fontSize));
-        }
         refreshReaderSpacing();
         saveBooks();
         readerScroll.post(() -> {
@@ -1330,15 +1265,10 @@ public class MainActivity extends Activity {
         return button;
     }
 
-    private String formatFontSize(float fontSize) {
-        return String.format(Locale.getDefault(), "%.0f", fontSize);
-    }
-
-    private void styleSelectedSpinnerText(TextView view) {
-        view.setSingleLine(true);
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        view.setGravity(Gravity.CENTER);
-        view.setPadding(dp(4), 0, dp(4), 0);
+    private String sensitivityShortLabel(int sensitivity) {
+        if (sensitivity == SENSITIVITY_HIGH) return "高";
+        if (sensitivity == SENSITIVITY_LOW) return "低";
+        return "中";
     }
 
     private Button makeProgressStepButton(String text, int sp) {

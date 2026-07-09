@@ -63,6 +63,9 @@ public class MainActivity extends Activity {
     private static final int THEME_SYSTEM = 0;
     private static final int THEME_LIGHT = 1;
     private static final int THEME_DARK = 2;
+    private static final int SENSITIVITY_HIGH = 0;
+    private static final int SENSITIVITY_STANDARD = 1;
+    private static final int SENSITIVITY_LOW = 2;
     private static final int CHUNK_BYTES = 128 * 1024;
     private static final int WINDOW_BYTES = CHUNK_BYTES * 3;
 
@@ -84,11 +87,17 @@ public class MainActivity extends Activity {
     private long currentChunkOffset;
     private int currentChunkBytes;
     private Bitmap currentPageSnapshot;
+    private long snapshotChunkOffset = -1L;
+    private int snapshotScrollY = -1;
+    private int snapshotWidth = -1;
+    private int snapshotHeight = -1;
+    private float snapshotFontSize = -1f;
+    private int snapshotTheme = -1;
     private FrameLayout readerFrame;
     private LinearLayout readerRoot;
     private ScrollView readerScroll;
     private TextView readerText;
-    private TextView readerTitle;
+    private TextView readerFontSize;
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
     private Button progressButton;
@@ -334,6 +343,7 @@ public class MainActivity extends Activity {
             book.fontSize = 20f;
             book.theme = THEME_SYSTEM;
             book.pageMode = true;
+            book.sensitivity = SENSITIVITY_STANDARD;
             book.updatedAt = System.currentTimeMillis();
             books.add(0, book);
             saveBooks();
@@ -355,7 +365,9 @@ public class MainActivity extends Activity {
         applyWindowColors(book.theme);
         int bg = backgroundColor(book.theme);
         int fg = textColor(book.theme);
-        int muted = mutedTextColor(book.theme);
+        int menuBg = Color.rgb(247, 244, 239);
+        int menuFg = Color.rgb(32, 33, 36);
+        int menuMuted = Color.rgb(107, 111, 115);
 
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(bg);
@@ -368,34 +380,53 @@ public class MainActivity extends Activity {
         readerTopBar = new LinearLayout(this);
         readerTopBar.setGravity(Gravity.CENTER_VERTICAL);
         readerTopBar.setPadding(dp(12), 0, dp(12), dp(4));
-        readerTopBar.setBackgroundColor(bg);
+        readerTopBar.setBackgroundColor(menuBg);
         readerTopBar.setClickable(true);
         readerTopBar.setVisibility(View.GONE);
 
-        readerTitle = new TextView(this);
-        readerTitle.setText(book.title);
-        readerTitle.setSingleLine(true);
-        readerTitle.setEllipsize(TextUtils.TruncateAt.END);
-        readerTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        readerTitle.setTextColor(fg);
-        readerTitle.setPadding(dp(10), 0, dp(10), 0);
-        readerTopBar.addView(readerTitle, new LinearLayout.LayoutParams(0, dp(42), 1));
+        LinearLayout fontControls = new LinearLayout(this);
+        fontControls.setGravity(Gravity.CENTER);
 
         Button smaller = makeButton("A-");
+        smaller.setTextColor(menuFg);
         smaller.setOnClickListener(v -> updateFontSize(-2f));
-        readerTopBar.addView(smaller, new LinearLayout.LayoutParams(dp(54), dp(42)));
+        fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(54), dp(42)));
+
+        readerFontSize = new TextView(this);
+        readerFontSize.setText(formatFontSize(book.fontSize));
+        readerFontSize.setTextColor(menuFg);
+        readerFontSize.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        readerFontSize.setGravity(Gravity.CENTER);
+        fontControls.addView(readerFontSize, new LinearLayout.LayoutParams(dp(48), dp(42)));
 
         Button larger = makeButton("A+");
+        larger.setTextColor(menuFg);
         larger.setOnClickListener(v -> updateFontSize(2f));
         LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(54), dp(42));
-        largerLp.leftMargin = dp(6);
-        readerTopBar.addView(larger, largerLp);
+        fontControls.addView(larger, largerLp);
+        readerTopBar.addView(fontControls, new LinearLayout.LayoutParams(0, dp(42), 1));
 
         Spinner theme = new Spinner(this);
         ArrayAdapter<String> themeAdapter = new ArrayAdapter<>(
                 this,
                 android.R.layout.simple_spinner_item,
-                new String[]{"跟随系统", "浅色", "深色"});
+                new String[]{"系统", "浅色", "深色"}) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                TextView view = (TextView) super.getView(position, convertView, parent);
+                view.setTextColor(menuFg);
+                view.setBackgroundColor(menuBg);
+                return view;
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
+                view.setTextColor(menuFg);
+                view.setBackgroundColor(menuBg);
+                return view;
+            }
+        };
         themeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         theme.setAdapter(themeAdapter);
         theme.setSelection(book.theme, false);
@@ -414,9 +445,51 @@ public class MainActivity extends Activity {
             public void onNothingSelected(AdapterView<?> parent) {
             }
         });
-        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(108), dp(42));
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(70), dp(42));
         themeLp.leftMargin = dp(6);
         readerTopBar.addView(theme, themeLp);
+
+        Spinner sensitivity = new Spinner(this);
+        ArrayAdapter<String> sensitivityAdapter = new ArrayAdapter<>(
+                this,
+                android.R.layout.simple_spinner_item,
+                new String[]{"高灵敏", "标准", "低灵敏"}) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                TextView view = (TextView) super.getView(position, convertView, parent);
+                view.setTextColor(menuFg);
+                view.setBackgroundColor(menuBg);
+                return view;
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
+                view.setTextColor(menuFg);
+                view.setBackgroundColor(menuBg);
+                return view;
+            }
+        };
+        sensitivityAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        sensitivity.setAdapter(sensitivityAdapter);
+        sensitivity.setSelection(book.sensitivity, false);
+        sensitivity.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (position == book.sensitivity) return;
+                book.sensitivity = position;
+                book.updatedAt = System.currentTimeMillis();
+                saveBooks();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+        LinearLayout.LayoutParams sensitivityLp =
+                new LinearLayout.LayoutParams(dp(90), dp(42));
+        sensitivityLp.leftMargin = dp(6);
+        readerTopBar.addView(sensitivity, sensitivityLp);
 
         readerScroll = new ScrollView(this);
         readerScroll.setFillViewport(true);
@@ -435,7 +508,7 @@ public class MainActivity extends Activity {
             if (action == MotionEvent.ACTION_DOWN) {
                 touchStartX = event.getX();
                 touchStartY = event.getY();
-                edgeBackCandidate = touchStartX <= dp(16);
+                edgeBackCandidate = touchStartX <= dp(tapToleranceDp());
                 edgeBackTriggered = false;
                 touchMoved = false;
                 touchStartedWithMenusOpen = areReaderMenusVisible();
@@ -445,10 +518,11 @@ public class MainActivity extends Activity {
             } else if (action == MotionEvent.ACTION_MOVE) {
                 float dx = event.getX() - touchStartX;
                 float dy = Math.abs(event.getY() - touchStartY);
-                if (Math.abs(dx) > dp(16) || dy > dp(16)) {
+                if (Math.abs(dx) > dp(tapToleranceDp()) || dy > dp(tapToleranceDp())) {
                     touchMoved = true;
                 }
-                if (edgeBackCandidate && !edgeBackTriggered && dx >= dp(72) && dy <= dp(96)) {
+                if (edgeBackCandidate && !edgeBackTriggered
+                        && dx >= dp(swipeThresholdDp()) && dy <= dp(96)) {
                     edgeBackTriggered = true;
                     saveCurrentProgress();
                     onBackPressed();
@@ -459,8 +533,8 @@ public class MainActivity extends Activity {
                     float dx = event.getX() - touchStartX;
                     float dy = Math.abs(event.getY() - touchStartY);
                     boolean isTap = action == MotionEvent.ACTION_UP
-                            && Math.abs(dx) <= dp(16)
-                            && dy <= dp(16);
+                            && Math.abs(dx) <= dp(tapToleranceDp())
+                            && dy <= dp(tapToleranceDp());
                     edgeBackCandidate = false;
                     if (isTap && touchStartedWithMenusOpen) {
                         hideReaderMenus();
@@ -476,8 +550,8 @@ public class MainActivity extends Activity {
             }
             if (action == MotionEvent.ACTION_UP && touchStartedWithMenusOpen) {
                 boolean isTap = !touchMoved
-                        && Math.abs(event.getX() - touchStartX) <= dp(16)
-                        && Math.abs(event.getY() - touchStartY) <= dp(16);
+                        && Math.abs(event.getX() - touchStartX) <= dp(tapToleranceDp())
+                        && Math.abs(event.getY() - touchStartY) <= dp(tapToleranceDp());
                 touchStartedWithMenusOpen = false;
                 if (isTap) {
                     hideReaderMenus();
@@ -493,8 +567,8 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 boolean isTap = !touchMoved
-                        && Math.abs(event.getX() - touchStartX) <= dp(16)
-                        && Math.abs(event.getY() - touchStartY) <= dp(16);
+                        && Math.abs(event.getX() - touchStartX) <= dp(tapToleranceDp())
+                        && Math.abs(event.getY() - touchStartY) <= dp(tapToleranceDp());
                 if (isTap && handleReaderTap(event.getX())) {
                     return true;
                 }
@@ -524,7 +598,7 @@ public class MainActivity extends Activity {
         readerBottomBar = new LinearLayout(this);
         readerBottomBar.setOrientation(LinearLayout.VERTICAL);
         readerBottomBar.setPadding(dp(14), dp(8), dp(14), dp(12));
-        readerBottomBar.setBackgroundColor(bg);
+        readerBottomBar.setBackgroundColor(menuBg);
         readerBottomBar.setClickable(true);
         readerBottomBar.setVisibility(View.GONE);
 
@@ -533,7 +607,7 @@ public class MainActivity extends Activity {
         seekPanel.setVisibility(View.GONE);
         TextView start = new TextView(this);
         start.setText("0%");
-        start.setTextColor(muted);
+        start.setTextColor(menuMuted);
         seekPanel.addView(start, new LinearLayout.LayoutParams(dp(42), dp(44)));
         seekBar = new SeekBar(this);
         seekBar.setMax(1000);
@@ -551,7 +625,7 @@ public class MainActivity extends Activity {
         seekPanel.addView(seekBar, new LinearLayout.LayoutParams(0, dp(44), 1));
         TextView end = new TextView(this);
         end.setText("100%");
-        end.setTextColor(muted);
+        end.setTextColor(menuMuted);
         end.setGravity(Gravity.RIGHT);
         seekPanel.addView(end, new LinearLayout.LayoutParams(dp(52), dp(44)));
         readerBottomBar.addView(seekPanel);
@@ -560,10 +634,12 @@ public class MainActivity extends Activity {
         nav.setGravity(Gravity.CENTER_VERTICAL);
 
         Button bigMinus = makeProgressStepButton("-", 20);
+        bigMinus.setTextColor(menuFg);
         bigMinus.setOnClickListener(v -> adjustProgressByPercent(-1f));
         nav.addView(bigMinus, new LinearLayout.LayoutParams(dp(44), dp(46)));
 
         Button smallMinus = makeProgressStepButton("-", 14);
+        smallMinus.setTextColor(menuFg);
         smallMinus.setOnClickListener(v -> adjustProgressByPercent(-0.1f));
         LinearLayout.LayoutParams smallMinusLp = new LinearLayout.LayoutParams(dp(38), dp(46));
         smallMinusLp.leftMargin = dp(6);
@@ -571,7 +647,7 @@ public class MainActivity extends Activity {
 
         progressButton = makeButton("");
         progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        progressButton.setTextColor(fg);
+        progressButton.setTextColor(menuFg);
         progressButton.setOnClickListener(v -> toggleSeekPanel());
         LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(0, dp(46), 1);
         progressLp.leftMargin = dp(6);
@@ -579,10 +655,12 @@ public class MainActivity extends Activity {
         nav.addView(progressButton, progressLp);
 
         Button smallPlus = makeProgressStepButton("+", 14);
+        smallPlus.setTextColor(menuFg);
         smallPlus.setOnClickListener(v -> adjustProgressByPercent(0.1f));
         nav.addView(smallPlus, new LinearLayout.LayoutParams(dp(38), dp(46)));
 
         Button bigPlus = makeProgressStepButton("+", 20);
+        bigPlus.setTextColor(menuFg);
         bigPlus.setOnClickListener(v -> adjustProgressByPercent(1f));
         LinearLayout.LayoutParams bigPlusLp = new LinearLayout.LayoutParams(dp(44), dp(46));
         bigPlusLp.leftMargin = dp(6);
@@ -604,7 +682,8 @@ public class MainActivity extends Activity {
     }
 
     private boolean handlePageSwipe(float dx, float dy) {
-        boolean isHorizontalSwipe = Math.abs(dx) >= dp(72) && Math.abs(dx) > dy * 1.2f;
+        boolean isHorizontalSwipe = Math.abs(dx) >= dp(swipeThresholdDp())
+                && Math.abs(dx) > dy * 1.2f;
         if (!isHorizontalSwipe) return false;
         if (dx > 0) {
             pageBackward();
@@ -612,6 +691,20 @@ public class MainActivity extends Activity {
             pageForward();
         }
         return true;
+    }
+
+    private int tapToleranceDp() {
+        if (currentBook == null) return 16;
+        if (currentBook.sensitivity == SENSITIVITY_HIGH) return 20;
+        if (currentBook.sensitivity == SENSITIVITY_LOW) return 12;
+        return 16;
+    }
+
+    private int swipeThresholdDp() {
+        if (currentBook == null) return 72;
+        if (currentBook.sensitivity == SENSITIVITY_HIGH) return 48;
+        if (currentBook.sensitivity == SENSITIVITY_LOW) return 96;
+        return 72;
     }
 
     private boolean handleReaderTap(float x) {
@@ -736,9 +829,13 @@ public class MainActivity extends Activity {
             return;
         }
         pageAnimating = true;
-        Bitmap pageBitmap = currentPageSnapshot;
-        currentPageSnapshot = null;
-        if (pageBitmap == null || pageBitmap.isRecycled()) {
+        Bitmap pageBitmap;
+        if (isCurrentPageSnapshotValid()) {
+            pageBitmap = currentPageSnapshot;
+            currentPageSnapshot = null;
+            clearSnapshotMetadata();
+        } else {
+            releasePageSnapshot();
             pageBitmap = captureCurrentPage();
         }
         if (pageBitmap == null) {
@@ -763,7 +860,7 @@ public class MainActivity extends Activity {
         pageLp.topMargin = readerRoot.getTop() + readerScroll.getTop();
         readerFrame.addView(turningPage, pageLp);
 
-        // The destination page is rendered underneath while the captured page turns away.
+        // The validated page 0 stays on top; the destination (+1/-1) is placed underneath.
         turnAction.run();
         turningPage.animate()
                 .rotationY(direction > 0 ? -180f : 180f)
@@ -807,6 +904,25 @@ public class MainActivity extends Activity {
         if (snapshot == null) return;
         releasePageSnapshot();
         currentPageSnapshot = snapshot;
+        snapshotChunkOffset = currentChunkOffset;
+        snapshotScrollY = readerScroll.getScrollY();
+        snapshotWidth = readerScroll.getWidth();
+        snapshotHeight = readerScroll.getHeight();
+        snapshotFontSize = currentBook.fontSize;
+        snapshotTheme = currentBook.theme;
+    }
+
+    private boolean isCurrentPageSnapshotValid() {
+        return currentPageSnapshot != null
+                && !currentPageSnapshot.isRecycled()
+                && currentBook != null
+                && readerScroll != null
+                && snapshotChunkOffset == currentChunkOffset
+                && snapshotScrollY == readerScroll.getScrollY()
+                && snapshotWidth == readerScroll.getWidth()
+                && snapshotHeight == readerScroll.getHeight()
+                && Float.compare(snapshotFontSize, currentBook.fontSize) == 0
+                && snapshotTheme == currentBook.theme;
     }
 
     private void releasePageSnapshot() {
@@ -814,6 +930,16 @@ public class MainActivity extends Activity {
             currentPageSnapshot.recycle();
         }
         currentPageSnapshot = null;
+        clearSnapshotMetadata();
+    }
+
+    private void clearSnapshotMetadata() {
+        snapshotChunkOffset = -1L;
+        snapshotScrollY = -1;
+        snapshotWidth = -1;
+        snapshotHeight = -1;
+        snapshotFontSize = -1f;
+        snapshotTheme = -1;
     }
 
     private void scrollToOffsetWithinWindow(long targetOffset) {
@@ -935,6 +1061,9 @@ public class MainActivity extends Activity {
         currentBook.fontSize = Math.max(14f, Math.min(34f, currentBook.fontSize + delta));
         currentBook.updatedAt = System.currentTimeMillis();
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentBook.fontSize);
+        if (readerFontSize != null) {
+            readerFontSize.setText(formatFontSize(currentBook.fontSize));
+        }
         refreshReaderSpacing();
         saveBooks();
         readerScroll.post(() -> {
@@ -1022,14 +1151,25 @@ public class MainActivity extends Activity {
         }
         Layout layout = readerText.getLayout();
         if (layout.getLineCount() <= 0) return;
-        int lineHeight = Math.max(1, layout.getLineBottom(0) - layout.getLineTop(0));
+        int lineHeight;
+        if (layout.getLineCount() > 2) {
+            lineHeight = layout.getLineTop(2) - layout.getLineTop(1);
+        } else {
+            lineHeight = layout.getLineBottom(0) - layout.getLineTop(0);
+        }
+        lineHeight = Math.max(1, lineHeight);
         int baseBottom = readerBottomInset(fontSize);
         int available = readerRoot.getHeight() - readerTopInset() - baseBottom;
         int clippedRemainder = Math.max(0, available % lineHeight);
         int fittedBottom = baseBottom + clippedRemainder;
         if (readerRoot.getPaddingBottom() != fittedBottom) {
             readerRoot.setPadding(0, readerTopInset(), 0, fittedBottom);
-            readerRoot.post(this::alignMenusToReaderViewport);
+            readerRoot.post(() -> {
+                alignMenusToReaderViewport();
+                readerScroll.post(this::cacheCurrentPageSnapshot);
+            });
+        } else {
+            readerScroll.post(this::cacheCurrentPageSnapshot);
         }
     }
 
@@ -1106,10 +1246,14 @@ public class MainActivity extends Activity {
         if (layout == null || visible <= 0) {
             return Math.min(maxScroll, currentY + Math.max(dp(120), visible));
         }
-        int target = currentY + visible;
-        int line = Math.min(layout.getLineCount() - 1, layout.getLineForVertical(target));
-        if (layout.getLineTop(line) < target && line + 1 < layout.getLineCount()) {
-            line++;
+        int boundary = currentY + visible;
+        int boundaryLine = Math.min(
+                layout.getLineCount() - 1,
+                layout.getLineForVertical(Math.max(currentY, boundary - 1)));
+        int line = boundaryLine;
+        if (layout.getLineBottom(boundaryLine) <= boundary
+                && boundaryLine + 1 < layout.getLineCount()) {
+            line = boundaryLine + 1;
         }
         int lineTop = layout.getLineTop(line);
         if (lineTop <= currentY && line + 1 < layout.getLineCount()) {
@@ -1129,6 +1273,9 @@ public class MainActivity extends Activity {
         }
         int target = Math.max(0, currentY - visible);
         int line = Math.max(0, layout.getLineForVertical(target));
+        if (layout.getLineTop(line) < target && line + 1 < layout.getLineCount()) {
+            line++;
+        }
         int lineTop = layout.getLineTop(line);
         if (lineTop >= currentY) {
             lineTop = currentY - Math.max(1, averageLineHeight(layout));
@@ -1160,6 +1307,10 @@ public class MainActivity extends Activity {
         button.setAllCaps(false);
         button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         return button;
+    }
+
+    private String formatFontSize(float fontSize) {
+        return String.format(Locale.getDefault(), "%.0f", fontSize);
     }
 
     private Button makeProgressStepButton(String text, int sp) {
@@ -1287,6 +1438,10 @@ public class MainActivity extends Activity {
                 book.fontSize = (float) item.optDouble("fontSize", 20d);
                 book.theme = item.optInt("theme", THEME_SYSTEM);
                 book.pageMode = item.optBoolean("pageMode", true);
+                book.sensitivity = Math.max(
+                        SENSITIVITY_HIGH,
+                        Math.min(SENSITIVITY_LOW,
+                                item.optInt("sensitivity", SENSITIVITY_STANDARD)));
                 book.updatedAt = item.optLong("updatedAt", System.currentTimeMillis());
                 File file = new File(book.path);
                 if (!TextUtils.isEmpty(book.path) && file.exists()) {
@@ -1316,6 +1471,7 @@ public class MainActivity extends Activity {
                 item.put("fontSize", book.fontSize);
                 item.put("theme", book.theme);
                 item.put("pageMode", book.pageMode);
+                item.put("sensitivity", book.sensitivity);
                 item.put("updatedAt", book.updatedAt);
                 array.put(item);
             }
@@ -1335,6 +1491,7 @@ public class MainActivity extends Activity {
         float fontSize;
         int theme;
         boolean pageMode;
+        int sensitivity;
         long updatedAt;
     }
 

@@ -1336,24 +1336,19 @@ public class MainActivity extends Activity {
 
     private void fitReaderViewportToWholeLines(float fontSize) {
         if (readerRoot == null || readerScroll == null || readerText == null
-                || readerText.getLayout() == null || readerScroll.getHeight() <= 0) {
+                || readerScroll.getHeight() <= 0) {
             return;
         }
-        Layout layout = readerText.getLayout();
-        if (layout.getLineCount() <= 0) return;
-        int lineHeight;
-        if (layout.getLineCount() > 2) {
-            lineHeight = layout.getLineTop(2) - layout.getLineTop(1);
-        } else {
-            lineHeight = layout.getLineBottom(0) - layout.getLineTop(0);
-        }
-        lineHeight = Math.max(1, lineHeight);
         int available = Math.max(0, readerRoot.getHeight());
         if (available <= 0) {
             available = readerScroll.getHeight();
         }
+        android.graphics.Paint.FontMetricsInt metrics = readerText.getPaint().getFontMetricsInt();
+        int fontHeight = Math.max(1, metrics.bottom - metrics.top);
+        int lineExtra = Math.max(0, Math.round(readerText.getLineSpacingExtra()));
+        int lineHeight = Math.max(1, fontHeight + lineExtra);
         int fullLines = Math.max(1, available / lineHeight);
-        int fittedVisible = Math.max(lineHeight, fullLines * lineHeight);
+        int fittedVisible = Math.max(1, Math.min(available, fullLines * lineHeight));
         boolean heightChanged = applyReaderContentFrameHeight(fittedVisible);
         if (fittedReaderVisibleHeight != fittedVisible || heightChanged) {
             pageStateGeneration++;

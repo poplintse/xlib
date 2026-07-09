@@ -12,6 +12,8 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.text.Layout;
 import android.text.TextUtils;
@@ -49,9 +51,13 @@ import java.text.DateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private static final int PICK_TXT_REQUEST = 1001;
@@ -65,9 +71,20 @@ public class MainActivity extends Activity {
     private static final int SENSITIVITY_LOW = 2;
     private static final int CHUNK_BYTES = 128 * 1024;
     private static final int WINDOW_BYTES = CHUNK_BYTES * 3;
+    private static final int INDEX_STEP_BYTES = 64 * 1024;
+    private static final int CHUNK_CACHE_LIMIT = 6;
+    private static final long SEEK_PREVIEW_DELAY_MS = 220L;
 
     private final List<Book> books = new ArrayList<>();
     private final Set<Long> selectedBookIds = new HashSet<>();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final Map<String, Chunk> chunkCache = new LinkedHashMap<String, Chunk>(8, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Chunk> eldest) {
+            return size() > CHUNK_CACHE_LIMIT;
+        }
+    };
     private SharedPreferences prefs;
     private Book currentBook;
     private boolean managingBooks;
@@ -78,9 +95,13 @@ public class MainActivity extends Activity {
     private boolean edgeBackTriggered;
     private boolean touchMoved;
     private boolean touchStartedWithMenusOpen;
+    private boolean menuDismissTouch;
     private boolean readerMenusOpen;
+    private boolean seekTracking;
     private float touchStartX;
     private float touchStartY;
+    private float pendingSeekProgress;
+    private volatile long loadRequestId;
     private long currentChunkOffset;
     private int currentChunkBytes;
     private Bitmap currentPageSnapshot;
@@ -105,6 +126,12 @@ public class MainActivity extends Activity {
     private LinearLayout seekPanel;
     private SeekBar seekBar;
 
+    private final Runnable seekPreviewRunnable = () -> {
+        if (seekTracking) {
+            loadChunkAtProgress(pendingSeekProgress);
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -120,8 +147,16 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null);
+        ioExecutor.shutdownNow();
+        super.onDestroy();
+    }
+
+    @Override
     public void onBackPressed() {
         if (currentBook != null) {
+            loadRequestId++;
             saveCurrentProgress();
             releasePageSnapshot();
             currentBook = null;
@@ -457,6 +492,23 @@ public class MainActivity extends Activity {
         readerScroll.setOnTouchListener((v, event) -> {
             int action = event.getActionMasked();
             if (pageAnimating) return true;
+            if (action == MotionEvent.ACTION_DOWN && areReaderMenusVisible()) {
+                touchStartX = event.getX();
+                touchStartY = event.getY();
+                touchMoved = false;
+                edgeBackCandidate = false;
+                edgeBackTriggered = false;
+                touchStartedWithMenusOpen = false;
+                menuDismissTouch = true;
+                hideReaderMenus();
+                return true;
+            }
+            if (menuDismissTouch) {
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    menuDismissTouch = false;
+                }
+                return true;
+            }
             if (action == MotionEvent.ACTION_DOWN) {
                 touchStartX = event.getX();
                 touchStartY = event.getY();
@@ -570,12 +622,19 @@ public class MainActivity extends Activity {
         seekBar.setProgress((int) (book.progress * 1000f));
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (fromUser) loadChunkAtProgress(progress / 1000f);
+                if (!fromUser) return;
+                pendingSeekProgress = progress / 1000f;
+                updateProgressText(pendingSeekProgress);
+                mainHandler.removeCallbacks(seekPreviewRunnable);
+                mainHandler.postDelayed(seekPreviewRunnable, SEEK_PREVIEW_DELAY_MS);
             }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {
+                seekTracking = true;
+            }
             @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                seekTracking = false;
+                mainHandler.removeCallbacks(seekPreviewRunnable);
                 loadChunkAtProgress(seekBar.getProgress() / 1000f);
-                saveCurrentProgress();
             }
         });
         seekPanel.addView(seekBar, new LinearLayout.LayoutParams(0, dp(44), 1));
@@ -686,35 +745,117 @@ public class MainActivity extends Activity {
     }
 
     private void loadChunkAtOffset(long targetOffset) {
-        if (currentBook == null || loadingChunk) return;
+        if (currentBook == null) return;
         pendingWindowLoad = false;
+        Book book = currentBook;
+        long requestId = ++loadRequestId;
         loadingChunk = true;
-        try {
-            File file = new File(currentBook.path);
-            currentBook.fileSize = file.length();
-            long clampedTarget = Math.max(0L, Math.min(targetOffset, Math.max(0L, currentBook.fileSize - 1L)));
-            long windowStart = findReadableOffset(file, Math.max(0L, clampedTarget - CHUNK_BYTES));
-            currentChunkOffset = windowStart;
-            Chunk chunk = readChunk(file, currentChunkOffset, WINDOW_BYTES, currentBook.encoding);
-            currentChunkBytes = chunk.bytesRead;
-            currentBook.offset = clampedTarget;
-            currentBook.progress = currentBook.fileSize <= 0 ? 0f : clampedTarget / (float) currentBook.fileSize;
-            currentBook.updatedAt = System.currentTimeMillis();
-            pageStateGeneration++;
-            readerText.setText(chunk.text);
-            refreshReaderSpacing(false);
-            readerScroll.post(() -> {
-                scrollToOffsetWithinWindow(clampedTarget);
-                readerScroll.post(this::cacheCurrentPageSnapshot);
+        ioExecutor.execute(() -> {
+            if (requestId != loadRequestId) return;
+            ChunkLoad load = null;
+            Exception error = null;
+            try {
+                load = prepareChunkLoad(book, targetOffset);
+            } catch (Exception e) {
+                error = e;
+            }
+            if (requestId != loadRequestId) return;
+            ChunkLoad finalLoad = load;
+            Exception finalError = error;
+            mainHandler.post(() -> {
+                if (requestId != loadRequestId || currentBook != book) return;
+                loadingChunk = false;
+                if (finalError != null) {
+                    Toast.makeText(this, "打开失败：" + finalError.getMessage(), Toast.LENGTH_LONG).show();
+                    return;
+                }
+                applyChunkLoad(book, finalLoad);
+                preloadAdjacentWindows(book, finalLoad);
             });
-            saveBooks();
-            updateProgressText();
-            if (seekBar != null) seekBar.setProgress((int) (currentBook.progress * 1000f));
-        } catch (Exception e) {
-            Toast.makeText(this, "打开失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
-        } finally {
-            loadingChunk = false;
+        });
+    }
+
+    private ChunkLoad prepareChunkLoad(Book book, long targetOffset) throws Exception {
+        File file = new File(book.path);
+        long fileSize = file.length();
+        long clampedTarget = fileSize <= 0
+                ? 0L
+                : Math.max(0L, Math.min(targetOffset, fileSize - 1L));
+        requestBookIndex(book);
+        long windowStart = hasBookIndex(book, fileSize)
+                ? indexedReadableOffset(book, file, Math.max(0L, clampedTarget - CHUNK_BYTES))
+                : findReadableOffset(file, Math.max(0L, clampedTarget - CHUNK_BYTES));
+        Chunk chunk = readCachedChunk(file, windowStart, WINDOW_BYTES, book.encoding);
+        return new ChunkLoad(fileSize, clampedTarget, windowStart, chunk);
+    }
+
+    private void applyChunkLoad(Book book, ChunkLoad load) {
+        if (load == null || readerText == null || readerScroll == null) return;
+        book.fileSize = load.fileSize;
+        currentChunkOffset = load.windowStart;
+        currentChunkBytes = load.chunk.bytesRead;
+        book.offset = load.targetOffset;
+        book.progress = load.fileSize <= 0 ? 0f : load.targetOffset / (float) load.fileSize;
+        book.updatedAt = System.currentTimeMillis();
+        pageStateGeneration++;
+        readerText.setText(load.chunk.text);
+        refreshReaderSpacing(false);
+        readerScroll.post(() -> {
+            scrollToOffsetWithinWindow(load.targetOffset);
+            readerScroll.post(this::cacheCurrentPageSnapshot);
+        });
+        saveBooks();
+        updateProgressText();
+        if (seekBar != null && !seekTracking) {
+            seekBar.setProgress((int) (book.progress * 1000f));
         }
+    }
+
+    private void preloadAdjacentWindows(Book book, ChunkLoad loaded) {
+        if (book == null || loaded == null || loaded.fileSize <= 0) return;
+        ioExecutor.execute(() -> {
+            try {
+                File file = new File(book.path);
+                ensureBookIndex(book, file);
+                long prevTarget = Math.max(0L, loaded.windowStart - CHUNK_BYTES);
+                long nextTarget = Math.min(Math.max(0L, loaded.fileSize - 1L),
+                        loaded.windowStart + CHUNK_BYTES);
+                if (loaded.windowStart > 0) {
+                    long prevStart = indexedReadableOffset(book, file, prevTarget);
+                    readCachedChunk(file, prevStart, WINDOW_BYTES, book.encoding);
+                }
+                if (nextTarget < loaded.fileSize - 1L) {
+                    long nextStart = indexedReadableOffset(book, file, nextTarget);
+                    readCachedChunk(file, nextStart, WINDOW_BYTES, book.encoding);
+                }
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    private boolean hasBookIndex(Book book, long fileSize) {
+        synchronized (book) {
+            return book.indexOffsets != null && book.indexFileSize == fileSize;
+        }
+    }
+
+    private void requestBookIndex(Book book) {
+        synchronized (book) {
+            if (book.indexBuilding || (book.indexOffsets != null && book.indexFileSize == book.fileSize)) {
+                return;
+            }
+            book.indexBuilding = true;
+        }
+        ioExecutor.execute(() -> {
+            try {
+                ensureBookIndex(book, new File(book.path));
+            } catch (Exception ignored) {
+            } finally {
+                synchronized (book) {
+                    book.indexBuilding = false;
+                }
+            }
+        });
     }
 
     private void maybeLoadAdjacentWindow() {
@@ -938,21 +1079,88 @@ public class MainActivity extends Activity {
         }
     }
 
+    private Chunk readCachedChunk(File file, long offset, int maxBytes, String encoding) throws Exception {
+        long safeOffset = Math.max(0L, Math.min(offset, Math.max(0L, file.length() - 1L)));
+        String key = file.getAbsolutePath() + ":" + file.length() + ":" + encoding + ":" + safeOffset;
+        synchronized (chunkCache) {
+            Chunk cached = chunkCache.get(key);
+            if (cached != null) return cached;
+        }
+        Chunk chunk = readChunk(file, safeOffset, maxBytes, encoding);
+        synchronized (chunkCache) {
+            chunkCache.put(key, chunk);
+        }
+        return chunk;
+    }
+
+    private void ensureBookIndex(Book book, File file) throws Exception {
+        long size = file.length();
+        synchronized (book) {
+            if (book.indexOffsets != null && book.indexFileSize == size) return;
+        }
+        ArrayList<Long> offsets = new ArrayList<>();
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+            offsets.add(0L);
+            for (long target = INDEX_STEP_BYTES; target < size; target += INDEX_STEP_BYTES) {
+                long offset = findReadableOffset(raf, size, target);
+                if (offsets.isEmpty() || offsets.get(offsets.size() - 1) < offset) {
+                    offsets.add(offset);
+                }
+            }
+        }
+        synchronized (book) {
+            book.indexOffsets = offsets;
+            book.indexFileSize = size;
+        }
+    }
+
+    private long indexedReadableOffset(Book book, File file, long targetOffset) throws Exception {
+        List<Long> offsets;
+        long size = file.length();
+        synchronized (book) {
+            offsets = book.indexOffsets;
+        }
+        if (offsets != null && !offsets.isEmpty()) {
+            long target = Math.max(0L, Math.min(targetOffset, Math.max(0L, size - 1L)));
+            int low = 0;
+            int high = offsets.size() - 1;
+            while (low <= high) {
+                int mid = (low + high) >>> 1;
+                long value = offsets.get(mid);
+                if (value <= target) {
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            long indexed = offsets.get(Math.max(0, high));
+            if (target - indexed <= INDEX_STEP_BYTES + 4096L) {
+                return indexed;
+            }
+        }
+        return findReadableOffset(file, targetOffset);
+    }
+
     private long findReadableOffset(File file, long targetOffset) throws Exception {
         long size = file.length();
         if (targetOffset <= 0 || size <= 0) return 0L;
-        long offset = Math.min(targetOffset, Math.max(0L, size - 1));
         try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            long start = Math.max(0L, offset - 4096L);
-            raf.seek(offset);
-            while (raf.getFilePointer() > start) {
-                raf.seek(raf.getFilePointer() - 1);
-                int b = raf.read();
-                if (b == '\n') {
-                    return Math.min(size, raf.getFilePointer());
-                }
-                raf.seek(raf.getFilePointer() - 1);
+            return findReadableOffset(raf, size, targetOffset);
+        }
+    }
+
+    private long findReadableOffset(RandomAccessFile raf, long size, long targetOffset) throws Exception {
+        if (targetOffset <= 0 || size <= 0) return 0L;
+        long offset = Math.min(targetOffset, Math.max(0L, size - 1));
+        long start = Math.max(0L, offset - 4096L);
+        raf.seek(offset);
+        while (raf.getFilePointer() > start) {
+            raf.seek(raf.getFilePointer() - 1);
+            int b = raf.read();
+            if (b == '\n') {
+                return Math.min(size, raf.getFilePointer());
             }
+            raf.seek(raf.getFilePointer() - 1);
         }
         return offset;
     }
@@ -1103,7 +1311,19 @@ public class MainActivity extends Activity {
         }
         readerRoot.setPadding(0, 0, 0, 0);
         readerScroll.setPadding(0, 0, 0, 0);
+        resetReaderContentFrameHeight();
         alignMenusToReaderViewport();
+    }
+
+    private void resetReaderContentFrameHeight() {
+        if (readerScroll == null || !(readerScroll.getLayoutParams() instanceof LinearLayout.LayoutParams)) {
+            return;
+        }
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) readerScroll.getLayoutParams();
+        lp.height = 0;
+        lp.weight = 1f;
+        readerScroll.setLayoutParams(lp);
+        fittedReaderVisibleHeight = -1;
     }
 
     private int readerTopInset() {
@@ -1128,10 +1348,14 @@ public class MainActivity extends Activity {
             lineHeight = layout.getLineBottom(0) - layout.getLineTop(0);
         }
         lineHeight = Math.max(1, lineHeight);
-        int available = readerScroll.getHeight();
+        int available = Math.max(0, readerRoot.getHeight());
+        if (available <= 0) {
+            available = readerScroll.getHeight();
+        }
         int fullLines = Math.max(1, available / lineHeight);
         int fittedVisible = Math.max(lineHeight, fullLines * lineHeight);
-        if (fittedReaderVisibleHeight != fittedVisible) {
+        boolean heightChanged = applyReaderContentFrameHeight(fittedVisible);
+        if (fittedReaderVisibleHeight != fittedVisible || heightChanged) {
             pageStateGeneration++;
             fittedReaderBottomInset = readerBottomInset(fontSize);
             fittedReaderFontSize = fontSize;
@@ -1146,6 +1370,18 @@ public class MainActivity extends Activity {
             fittedReaderVisibleHeight = fittedVisible;
             readerScroll.post(this::cacheCurrentPageSnapshot);
         }
+    }
+
+    private boolean applyReaderContentFrameHeight(int height) {
+        if (readerScroll == null || !(readerScroll.getLayoutParams() instanceof LinearLayout.LayoutParams)) {
+            return false;
+        }
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) readerScroll.getLayoutParams();
+        if (lp.height == height && lp.weight == 0f) return false;
+        lp.height = height;
+        lp.weight = 0f;
+        readerScroll.setLayoutParams(lp);
+        return true;
     }
 
     private void alignMenusToReaderViewport() {
@@ -1277,6 +1513,13 @@ public class MainActivity extends Activity {
     private void updateProgressText() {
         if (progressButton != null && currentBook != null) {
             progressButton.setText(String.format(Locale.getDefault(), "%.1f%%", currentBook.progress * 100f));
+        }
+    }
+
+    private void updateProgressText(float progress) {
+        if (progressButton != null) {
+            float value = Math.max(0f, Math.min(1f, progress));
+            progressButton.setText(String.format(Locale.getDefault(), "%.1f%%", value * 100f));
         }
     }
 
@@ -1493,6 +1736,9 @@ public class MainActivity extends Activity {
         boolean pageMode;
         int sensitivity;
         long updatedAt;
+        transient long indexFileSize;
+        transient ArrayList<Long> indexOffsets;
+        transient boolean indexBuilding;
     }
 
     private static class Chunk {
@@ -1502,6 +1748,20 @@ public class MainActivity extends Activity {
         Chunk(String text, int bytesRead) {
             this.text = text;
             this.bytesRead = bytesRead;
+        }
+    }
+
+    private static class ChunkLoad {
+        final long fileSize;
+        final long targetOffset;
+        final long windowStart;
+        final Chunk chunk;
+
+        ChunkLoad(long fileSize, long targetOffset, long windowStart, Chunk chunk) {
+            this.fileSize = fileSize;
+            this.targetOffset = targetOffset;
+            this.windowStart = windowStart;
+            this.chunk = chunk;
         }
     }
 

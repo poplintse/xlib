@@ -116,6 +116,7 @@ public class MainActivity extends Activity {
     private int fittedReaderBottomInset = -1;
     private float fittedReaderFontSize = -1f;
     private int fittedReaderVisibleHeight = -1;
+    private int readerContainerHeight = -1;
     private FrameLayout readerFrame;
     private LinearLayout readerRoot;
     private ScrollView readerScroll;
@@ -415,6 +416,8 @@ public class MainActivity extends Activity {
         readerRoot = new LinearLayout(this);
         readerRoot.setOrientation(LinearLayout.VERTICAL);
         readerRoot.setBackgroundColor(bg);
+        readerRoot.setClipChildren(true);
+        readerRoot.setClipToPadding(true);
 
         readerTopBar = new LinearLayout(this);
         readerTopBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -481,12 +484,15 @@ public class MainActivity extends Activity {
         readerScroll = new ScrollView(this);
         readerScroll.setFillViewport(true);
         readerScroll.setClipToPadding(true);
+        readerScroll.setClipChildren(true);
         applyReaderSafePadding(book.fontSize);
 
         readerText = new TextView(this);
         readerText.setTextColor(fg);
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, book.fontSize);
-        readerText.setIncludeFontPadding(true);
+        // The viewport is fitted to whole rendered rows, so font padding must not add
+        // an extra partial row above or below the text layout.
+        readerText.setIncludeFontPadding(false);
         readerText.setPadding(dp(22), 0, dp(22), 0);
         applyReaderLineSpacing(book.fontSize);
         readerScroll.setOnTouchListener((v, event) -> {
@@ -596,6 +602,16 @@ public class MainActivity extends Activity {
         readerLp.topMargin = readerTopInset();
         readerLp.bottomMargin = readerBottomInset(book.fontSize);
         frame.addView(readerRoot, readerLp);
+        readerRoot.addOnLayoutChangeListener((v, left, top, right, bottom,
+                                              oldLeft, oldTop, oldRight, oldBottom) -> {
+            int height = bottom - top;
+            if (height > 0 && height != readerContainerHeight) {
+                readerContainerHeight = height;
+                if (readerText != null && currentBook != null) {
+                    readerText.post(() -> fitReaderViewportToWholeLines(currentBook.fontSize));
+                }
+            }
+        });
 
         FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -1274,7 +1290,7 @@ public class MainActivity extends Activity {
             applyReaderSafePadding(fontSize);
         }
         applyReaderLineSpacing(fontSize);
-        if (readerText != null && needsViewportFit) {
+        if (readerText != null) {
             readerText.post(() -> fitReaderViewportToWholeLines(fontSize));
         } else if (readerScroll != null) {
             readerScroll.post(this::cacheCurrentPageSnapshot);
@@ -1283,19 +1299,10 @@ public class MainActivity extends Activity {
 
     private void applyReaderLineSpacing(float fontSize) {
         if (readerText == null) return;
-        int defaultExtra = (int) TypedValue.applyDimension(
+        int extra = (int) TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_SP,
                 Math.max(2f, fontSize * 0.18f),
                 getResources().getDisplayMetrics());
-        int extra = defaultExtra;
-        int fontHeight = readerText.getPaint().getFontMetricsInt(null);
-        int textArea = readerVisibleHeight() - dp(8);
-        int defaultLineHeight = Math.max(1, fontHeight + defaultExtra);
-        if (textArea > defaultLineHeight * 2) {
-            int fullLines = Math.max(1, textArea / defaultLineHeight);
-            int fittedLineHeight = Math.max(defaultLineHeight, textArea / fullLines);
-            extra = Math.max(0, fittedLineHeight - fontHeight);
-        }
         readerText.setLineSpacing(extra, 1.0f);
     }
 
@@ -1324,6 +1331,7 @@ public class MainActivity extends Activity {
         lp.weight = 1f;
         readerScroll.setLayoutParams(lp);
         fittedReaderVisibleHeight = -1;
+        readerContainerHeight = -1;
     }
 
     private int readerTopInset() {
@@ -1335,18 +1343,24 @@ public class MainActivity extends Activity {
     }
 
     private void fitReaderViewportToWholeLines(float fontSize) {
-        if (readerRoot == null || readerScroll == null || readerText == null
-                || readerScroll.getHeight() <= 0) {
+        if (readerRoot == null || readerScroll == null || readerText == null) {
             return;
         }
+        // readerRoot is the fixed reader container. Its measured height already
+        // excludes the status and navigation areas on the current device.
         int available = Math.max(0, readerRoot.getHeight());
-        if (available <= 0) {
-            available = readerScroll.getHeight();
+        if (available <= 0) return;
+
+        Layout layout = readerText.getLayout();
+        int lineHeight;
+        if (layout != null && layout.getLineCount() > 0) {
+            lineHeight = layout.getLineBottom(0) - layout.getLineTop(0);
+        } else {
+            android.graphics.Paint.FontMetricsInt metrics = readerText.getPaint().getFontMetricsInt();
+            lineHeight = metrics.descent - metrics.ascent
+                    + Math.max(0, Math.round(readerText.getLineSpacingExtra()));
         }
-        android.graphics.Paint.FontMetricsInt metrics = readerText.getPaint().getFontMetricsInt();
-        int fontHeight = Math.max(1, metrics.bottom - metrics.top);
-        int lineExtra = Math.max(0, Math.round(readerText.getLineSpacingExtra()));
-        int lineHeight = Math.max(1, fontHeight + lineExtra);
+        lineHeight = Math.max(1, lineHeight);
         int fullLines = Math.max(1, available / lineHeight);
         int fittedVisible = Math.max(1, Math.min(available, fullLines * lineHeight));
         boolean heightChanged = applyReaderContentFrameHeight(fittedVisible);
@@ -1438,11 +1452,7 @@ public class MainActivity extends Activity {
 
     private int readerVisibleHeight() {
         if (readerScroll == null) return 0;
-        int actualHeight = Math.max(0, readerScroll.getHeight());
-        if (fittedReaderVisibleHeight > 0 && fittedReaderVisibleHeight <= actualHeight) {
-            return fittedReaderVisibleHeight;
-        }
-        return actualHeight;
+        return Math.max(0, readerScroll.getHeight());
     }
 
     private int maxReaderScroll() {

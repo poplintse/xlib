@@ -6,6 +6,8 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -18,10 +20,12 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -70,10 +74,13 @@ public class MainActivity extends Activity {
     private boolean edgeBackCandidate;
     private boolean edgeBackTriggered;
     private boolean touchMoved;
+    private boolean touchStartedWithMenusOpen;
+    private boolean readerMenusOpen;
     private float touchStartX;
     private float touchStartY;
     private long currentChunkOffset;
     private int currentChunkBytes;
+    private FrameLayout readerFrame;
     private LinearLayout readerRoot;
     private ScrollView readerScroll;
     private TextView readerText;
@@ -103,6 +110,7 @@ public class MainActivity extends Activity {
         if (currentBook != null) {
             saveCurrentProgress();
             currentBook = null;
+            readerMenusOpen = false;
             showLibrary();
             return;
         }
@@ -332,6 +340,7 @@ public class MainActivity extends Activity {
     }
 
     private void openBook(Book book) {
+        readerMenusOpen = false;
         currentBook = book;
         showReader(book);
     }
@@ -344,6 +353,7 @@ public class MainActivity extends Activity {
 
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(bg);
+        readerFrame = frame;
 
         readerRoot = new LinearLayout(this);
         readerRoot.setOrientation(LinearLayout.VERTICAL);
@@ -351,8 +361,9 @@ public class MainActivity extends Activity {
 
         readerTopBar = new LinearLayout(this);
         readerTopBar.setGravity(Gravity.CENTER_VERTICAL);
-        readerTopBar.setPadding(dp(12), dp(42), dp(12), dp(4));
+        readerTopBar.setPadding(dp(12), 0, dp(12), dp(4));
         readerTopBar.setBackgroundColor(bg);
+        readerTopBar.setClickable(true);
         readerTopBar.setVisibility(View.GONE);
 
         Button back = makeButton("返回");
@@ -411,7 +422,7 @@ public class MainActivity extends Activity {
         readerText.setTextColor(fg);
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, book.fontSize);
         readerText.setIncludeFontPadding(true);
-        readerText.setPadding(dp(22), dp(24), dp(22), dp(32));
+        readerText.setPadding(dp(22), 0, dp(22), 0);
         applyReaderLineSpacing(book.fontSize);
         readerScroll.setOnTouchListener((v, event) -> {
             int action = event.getActionMasked();
@@ -422,10 +433,7 @@ public class MainActivity extends Activity {
                 edgeBackCandidate = touchStartX <= dp(16);
                 edgeBackTriggered = false;
                 touchMoved = false;
-                if (!edgeBackCandidate && areReaderMenusVisible()) {
-                    hideReaderMenus();
-                    return true;
-                }
+                touchStartedWithMenusOpen = areReaderMenusVisible();
                 if (edgeBackCandidate) {
                     return true;
                 }
@@ -449,6 +457,10 @@ public class MainActivity extends Activity {
                             && Math.abs(dx) <= dp(16)
                             && dy <= dp(16);
                     edgeBackCandidate = false;
+                    if (isTap && touchStartedWithMenusOpen) {
+                        hideReaderMenus();
+                        return true;
+                    }
                     if (isTap && currentBook != null && currentBook.pageMode) {
                         if (event.getX() < readerScroll.getWidth() * 0.4f) {
                             pageBackward();
@@ -460,6 +472,18 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 }
+            }
+            if (action == MotionEvent.ACTION_UP && touchStartedWithMenusOpen) {
+                boolean isTap = !touchMoved
+                        && Math.abs(event.getX() - touchStartX) <= dp(16)
+                        && Math.abs(event.getY() - touchStartY) <= dp(16);
+                touchStartedWithMenusOpen = false;
+                if (isTap) {
+                    hideReaderMenus();
+                    return true;
+                }
+            } else if (action == MotionEvent.ACTION_CANCEL) {
+                touchStartedWithMenusOpen = false;
             }
             if (currentBook == null || !currentBook.pageMode) return false;
             if (action == MotionEvent.ACTION_UP) {
@@ -497,12 +521,14 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP);
+        topLp.topMargin = readerTopInset();
         frame.addView(readerTopBar, topLp);
 
         readerBottomBar = new LinearLayout(this);
         readerBottomBar.setOrientation(LinearLayout.VERTICAL);
         readerBottomBar.setPadding(dp(14), dp(8), dp(14), dp(12));
         readerBottomBar.setBackgroundColor(bg);
+        readerBottomBar.setClickable(true);
         readerBottomBar.setVisibility(View.GONE);
 
         seekPanel = new LinearLayout(this);
@@ -569,6 +595,7 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams bottomLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM);
+        bottomLp.bottomMargin = readerBottomInset(book.fontSize);
         frame.addView(readerBottomBar, bottomLp);
 
         ImageButton settings = makeIconButton();
@@ -583,6 +610,9 @@ public class MainActivity extends Activity {
 
         setContentView(frame);
         loadChunkAtOffset(book.offset);
+        if (readerMenusOpen) {
+            frame.post(this::showReaderMenus);
+        }
     }
 
     private boolean handlePageSwipe(float dx, float dy) {
@@ -693,27 +723,52 @@ public class MainActivity extends Activity {
     }
 
     private void animatePageTurn(int direction, Runnable turnAction) {
-        if (readerText == null || readerScroll == null) {
+        if (readerText == null || readerScroll == null || readerFrame == null
+                || readerScroll.getWidth() <= 0 || readerScroll.getHeight() <= 0) {
             turnAction.run();
             return;
         }
         pageAnimating = true;
-        float distance = Math.max(readerScroll.getWidth(), dp(240));
-        float exitX = direction > 0 ? -distance : distance;
-        readerText.animate().cancel();
-        readerText.animate()
-                .translationX(exitX)
-                .alpha(0.25f)
-                .setDuration(260)
+        Bitmap pageBitmap;
+        try {
+            pageBitmap = Bitmap.createBitmap(
+                    readerScroll.getWidth(),
+                    readerScroll.getHeight(),
+                    Bitmap.Config.ARGB_8888);
+            readerScroll.draw(new Canvas(pageBitmap));
+        } catch (RuntimeException e) {
+            pageAnimating = false;
+            turnAction.run();
+            return;
+        }
+
+        ImageView turningPage = new ImageView(this);
+        turningPage.setImageBitmap(pageBitmap);
+        turningPage.setScaleType(ImageView.ScaleType.FIT_XY);
+        turningPage.setCameraDistance(getResources().getDisplayMetrics().density * 12000f);
+        turningPage.setPivotX(direction > 0 ? 0f : readerScroll.getWidth());
+        turningPage.setPivotY(readerScroll.getHeight() / 2f);
+        turningPage.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+
+        FrameLayout.LayoutParams pageLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                readerScroll.getHeight(),
+                Gravity.TOP);
+        pageLp.topMargin = readerTopInset();
+        readerFrame.addView(turningPage, pageLp);
+
+        // The destination page is rendered underneath while the captured page turns away.
+        turnAction.run();
+        turningPage.animate()
+                .rotationY(direction > 0 ? -180f : 180f)
+                .alpha(0.12f)
+                .setInterpolator(new AccelerateDecelerateInterpolator())
+                .setDuration(520)
                 .withEndAction(() -> {
-                    turnAction.run();
-                    readerText.setTranslationX(0f);
-                    readerText.setAlpha(0f);
-                    readerText.animate()
-                            .alpha(1f)
-                            .setDuration(90)
-                            .withEndAction(() -> pageAnimating = false)
-                            .start();
+                    readerFrame.removeView(turningPage);
+                    turningPage.setImageDrawable(null);
+                    pageBitmap.recycle();
+                    pageAnimating = false;
                 })
                 .start();
     }
@@ -772,7 +827,7 @@ public class MainActivity extends Activity {
     }
 
     private void toggleReaderMenus() {
-        if (areReaderMenusVisible()) {
+        if (readerMenusOpen) {
             hideReaderMenus();
         } else {
             showReaderMenus();
@@ -781,21 +836,54 @@ public class MainActivity extends Activity {
 
     private void showReaderMenus() {
         saveCurrentProgress();
-        if (readerTopBar != null) readerTopBar.setVisibility(View.VISIBLE);
-        if (readerBottomBar != null) readerBottomBar.setVisibility(View.VISIBLE);
+        readerMenusOpen = true;
         if (seekPanel != null) seekPanel.setVisibility(View.VISIBLE);
+        animateMenuIn(readerTopBar, -dp(72));
+        animateMenuIn(readerBottomBar, dp(120));
     }
 
     private void hideReaderMenus() {
         saveCurrentProgress();
-        if (readerTopBar != null) readerTopBar.setVisibility(View.GONE);
-        if (readerBottomBar != null) readerBottomBar.setVisibility(View.GONE);
-        if (seekPanel != null) seekPanel.setVisibility(View.GONE);
+        readerMenusOpen = false;
+        animateMenuOut(readerTopBar, -dp(72));
+        animateMenuOut(readerBottomBar, dp(120));
+    }
+
+    private void animateMenuIn(View menu, float startTranslationY) {
+        if (menu == null) return;
+        menu.animate().cancel();
+        menu.setVisibility(View.VISIBLE);
+        menu.setAlpha(0f);
+        menu.setTranslationY(startTranslationY);
+        menu.animate()
+                .translationY(0f)
+                .alpha(1f)
+                .setDuration(240)
+                .start();
+    }
+
+    private void animateMenuOut(View menu, float endTranslationY) {
+        if (menu == null || menu.getVisibility() != View.VISIBLE) return;
+        menu.animate().cancel();
+        menu.animate()
+                .translationY(endTranslationY)
+                .alpha(0f)
+                .setDuration(220)
+                .withEndAction(() -> {
+                    if (!readerMenusOpen) {
+                        menu.setVisibility(View.GONE);
+                        menu.setTranslationY(0f);
+                        menu.setAlpha(1f);
+                        if (menu == readerBottomBar && seekPanel != null) {
+                            seekPanel.setVisibility(View.GONE);
+                        }
+                    }
+                })
+                .start();
     }
 
     private boolean areReaderMenusVisible() {
-        return (readerTopBar != null && readerTopBar.getVisibility() == View.VISIBLE)
-                || (readerBottomBar != null && readerBottomBar.getVisibility() == View.VISIBLE);
+        return readerMenusOpen;
     }
 
     private void adjustProgressByPercent(float percentDelta) {
@@ -845,7 +933,7 @@ public class MainActivity extends Activity {
                 getResources().getDisplayMetrics());
         int extra = defaultExtra;
         int fontHeight = readerText.getPaint().getFontMetricsInt(null);
-        int textArea = readerVisibleHeight() - readerText.getPaddingTop() - readerText.getPaddingBottom() - dp(8);
+        int textArea = readerVisibleHeight() - dp(8);
         int defaultLineHeight = Math.max(1, fontHeight + defaultExtra);
         if (textArea > defaultLineHeight * 2) {
             int fullLines = Math.max(1, textArea / defaultLineHeight);
@@ -856,14 +944,33 @@ public class MainActivity extends Activity {
     }
 
     private void applyReaderSafePadding(float fontSize) {
-        if (readerScroll == null) return;
+        if (readerRoot == null || readerScroll == null) return;
+        int topInset = readerTopInset();
+        int bottomInset = readerBottomInset(fontSize);
+        readerRoot.setPadding(0, topInset, 0, bottomInset);
+        readerScroll.setPadding(0, 0, 0, 0);
+        if (readerTopBar != null && readerTopBar.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) readerTopBar.getLayoutParams();
+            lp.topMargin = topInset;
+            readerTopBar.setLayoutParams(lp);
+        }
+        if (readerBottomBar != null && readerBottomBar.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) readerBottomBar.getLayoutParams();
+            lp.bottomMargin = bottomInset;
+            readerBottomBar.setLayoutParams(lp);
+        }
+    }
+
+    private int readerTopInset() {
+        return statusBarHeight() + dp(14);
+    }
+
+    private int readerBottomInset(float fontSize) {
         int oneLine = (int) TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_SP,
                 fontSize + 6f,
                 getResources().getDisplayMetrics());
-        int topInset = statusBarHeight() + dp(14);
-        int bottomInset = navigationBarHeight() + oneLine + dp(18);
-        readerScroll.setPadding(0, topInset, 0, bottomInset);
+        return navigationBarHeight() + oneLine + dp(10);
     }
 
     private int statusBarHeight() {
@@ -902,7 +1009,7 @@ public class MainActivity extends Activity {
 
     private int readerVisibleHeight() {
         if (readerScroll == null) return 0;
-        return Math.max(0, readerScroll.getHeight() - readerScroll.getPaddingTop() - readerScroll.getPaddingBottom());
+        return Math.max(0, readerScroll.getHeight());
     }
 
     private int maxReaderScroll() {

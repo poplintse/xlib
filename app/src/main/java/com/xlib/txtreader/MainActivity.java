@@ -733,7 +733,12 @@ public class MainActivity extends Activity {
                     readerScroll.getWidth(),
                     readerScroll.getHeight(),
                     Bitmap.Config.ARGB_8888);
-            readerScroll.draw(new Canvas(pageBitmap));
+            Canvas pageCanvas = new Canvas(pageBitmap);
+            int pageColor = currentBook == null
+                    ? Color.WHITE
+                    : backgroundColor(currentBook.theme);
+            pageCanvas.drawColor(pageColor);
+            readerScroll.draw(pageCanvas);
         } catch (RuntimeException e) {
             pageAnimating = false;
             turnAction.run();

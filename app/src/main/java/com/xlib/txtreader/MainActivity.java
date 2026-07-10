@@ -16,7 +16,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.text.Layout;
+import android.text.InputFilter;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.style.BackgroundColorSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -809,9 +813,18 @@ public class MainActivity extends Activity {
         flushReaderCacheWrite();
         loadRequestId++;
         releasePageSnapshot();
+        restorePrimaryReadingPosition();
         temporarySearchReading = false;
         searchOpen = true;
         showSearchPage();
+    }
+
+    private void restorePrimaryReadingPosition() {
+        if (currentBook == null || searchSession == null) return;
+        currentBook.offset = searchSession.returnOffset;
+        currentBook.progress = searchSession.returnProgress;
+        currentBook.updatedAt = searchSession.returnUpdatedAt;
+        saveBooks();
     }
 
     private void showSearchPage() {
@@ -846,6 +859,7 @@ public class MainActivity extends Activity {
         input.setHint("搜索当前书籍");
         input.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(32)});
         if (searchSession != null && searchSession.book == book) {
             input.setText(searchSession.query);
             input.setSelection(input.length());
@@ -905,7 +919,19 @@ public class MainActivity extends Activity {
                                  Button continueFromStart, Book book) {
         String keyword = query == null ? "" : query.trim();
         if (keyword.isEmpty()) {
-            status.setText("请输入要搜索的文字");
+            status.setText("请输入至少 2 个字符");
+            results.removeAllViews();
+            continueFromStart.setVisibility(View.GONE);
+            return;
+        }
+        if (keyword.length() < 2) {
+            status.setText("关键词至少需要 2 个字符");
+            results.removeAllViews();
+            continueFromStart.setVisibility(View.GONE);
+            return;
+        }
+        if (keyword.length() > 32) {
+            status.setText("关键词最多 32 个字符");
             results.removeAllViews();
             continueFromStart.setVisibility(View.GONE);
             return;
@@ -1002,7 +1028,8 @@ public class MainActivity extends Activity {
 
     private View makeSearchResultRow(SearchResult result, Book book) {
         TextView row = new TextView(this);
-        row.setText(result.snippet);
+        String query = searchSession != null && searchSession.book == book ? searchSession.query : "";
+        row.setText(highlightSearchKeyword(result.snippet, query, book.theme));
         row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
         row.setTextColor(textColor(book.theme));
         row.setLineSpacing(dp(4), 1f);
@@ -1016,6 +1043,30 @@ public class MainActivity extends Activity {
         return row;
     }
 
+    private CharSequence readerDisplayText(String text, Book book) {
+        if (temporarySearchReading && searchSession != null && searchSession.book == book) {
+            return highlightSearchKeyword(text, searchSession.query, book.theme);
+        }
+        return text;
+    }
+
+    private CharSequence highlightSearchKeyword(String text, String query, int theme) {
+        if (TextUtils.isEmpty(text) || TextUtils.isEmpty(query)) return text;
+        SpannableString highlighted = new SpannableString(text);
+        int color = isDarkReaderTheme(theme)
+                ? Color.rgb(126, 92, 0) : Color.rgb(255, 224, 130);
+        int start = 0;
+        while (start < text.length()) {
+            int index = text.indexOf(query, start);
+            if (index < 0) break;
+            int end = index + query.length();
+            highlighted.setSpan(new BackgroundColorSpan(color), index, end,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            start = end;
+        }
+        return highlighted;
+    }
+
     private void openSearchResult(Book book, long offset) {
         searchRequestId++;
         searchOpen = false;
@@ -1023,7 +1074,6 @@ public class MainActivity extends Activity {
         book.offset = Math.max(0L, Math.min(offset, Math.max(0L, book.fileSize)));
         book.progress = book.fileSize <= 0 ? 0f : book.offset / (float) book.fileSize;
         book.updatedAt = System.currentTimeMillis();
-        saveBooks();
         showReader(book);
     }
 
@@ -1212,14 +1262,16 @@ public class MainActivity extends Activity {
         book.progress = load.fileSize <= 0 ? 0f : load.targetOffset / (float) load.fileSize;
         book.updatedAt = System.currentTimeMillis();
         pageStateGeneration++;
-        readerText.setText(load.chunk.text);
+        readerText.setText(readerDisplayText(load.chunk.text, book));
         refreshReaderSpacing(false);
         readerScroll.post(() -> {
             scrollToOffsetWithinWindow(load.targetOffset);
             readerScroll.post(this::cacheCurrentPageSnapshot);
         });
         saveBooks();
-        saveReaderCache(book, load);
+        if (!temporarySearchReading) {
+            saveReaderCache(book, load);
+        }
         updateProgressText();
         if (seekBar != null && !seekTracking) {
             seekBar.setProgress((int) (book.progress * 1000f));
@@ -1237,7 +1289,7 @@ public class MainActivity extends Activity {
         long displayOffset = Math.max(cache.windowStart,
                 Math.min(book.offset, cache.windowStart + Math.max(0, cache.bytesRead)));
         pageStateGeneration++;
-        readerText.setText(cache.text);
+        readerText.setText(readerDisplayText(cache.text, book));
         refreshReaderSpacing(false);
         readerScroll.post(() -> {
             scrollToOffsetWithinWindow(displayOffset);
@@ -2080,7 +2132,12 @@ public class MainActivity extends Activity {
         if (readerFrame != null) readerFrame.setBackgroundColor(bg);
         if (readerRoot != null) readerRoot.setBackgroundColor(bg);
         if (readerScroll != null) readerScroll.setBackgroundColor(bg);
-        if (readerText != null) readerText.setTextColor(fg);
+        if (readerText != null) {
+            readerText.setTextColor(fg);
+            if (temporarySearchReading && searchSession != null && searchSession.book == book) {
+                readerText.setText(readerDisplayText(readerText.getText().toString(), book));
+            }
+        }
         pageStateGeneration++;
         releasePageSnapshot();
         if (readerScroll != null) {
@@ -2230,8 +2287,14 @@ public class MainActivity extends Activity {
                 item.put("path", book.path);
                 item.put("fileSize", book.fileSize);
                 item.put("encoding", book.encoding);
-                item.put("offset", book.offset);
-                item.put("progress", book.progress);
+                long savedOffset = book.offset;
+                float savedProgress = book.progress;
+                if (temporarySearchReading && searchSession != null && book == currentBook) {
+                    savedOffset = searchSession.returnOffset;
+                    savedProgress = searchSession.returnProgress;
+                }
+                item.put("offset", savedOffset);
+                item.put("progress", savedProgress);
                 item.put("fontSize", book.fontSize);
                 item.put("theme", book.theme);
                 item.put("pageMode", book.pageMode);
@@ -2332,6 +2395,9 @@ public class MainActivity extends Activity {
         final String query;
         final long originOffset;
         final long fileSize;
+        final long returnOffset;
+        final float returnProgress;
+        final long returnUpdatedAt;
         final List<SearchResult> results = new ArrayList<>();
         long nextOffset;
         boolean loading;
@@ -2344,6 +2410,9 @@ public class MainActivity extends Activity {
             this.query = query;
             this.originOffset = originOffset;
             this.fileSize = fileSize;
+            this.returnOffset = originOffset;
+            this.returnProgress = book.progress;
+            this.returnUpdatedAt = book.updatedAt;
             this.nextOffset = originOffset;
         }
     }

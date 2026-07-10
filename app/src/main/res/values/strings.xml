@@ -1,3 +1,11 @@
 <resources>
     <string name="app_name">Xlib Reader</string>
+    <string name="txt_badge">TXT</string>
+    <string name="empty_library_body">导入 TXT 文件，阅读进度只保存在本机</string>
+    <string name="percent_end">100%</string>
+    <string name="search_keyword_too_long">关键词最多 32 个字符</string>
+    <string name="search_failed">搜索失败：%1$s</string>
+    <string name="search_wrap_prompt">当前位置向后已找到 %1$d 条结果，是否从开头继续搜索？</string>
+    <string name="search_complete">已回到最初搜索位置，共找到 %1$d 条结果</string>
+    <string name="search_loaded">已加载 %1$d 条结果，继续下滑加载下一批</string>
 </resources>

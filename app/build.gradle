@@ -38,6 +38,10 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
     applicationVariants.configureEach { variant ->
         variant.outputs.configureEach { output ->
             if (variant.buildType.name == "debug") {
@@ -45,6 +49,10 @@ android {
             }
         }
     }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
 }
 
 // Auto-bump versionCode after each successful debug build. versionName is

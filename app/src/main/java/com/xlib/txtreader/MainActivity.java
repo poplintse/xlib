@@ -2,8 +2,8 @@ package com.xlib.txtreader;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -26,6 +26,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
@@ -35,13 +36,11 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -50,10 +49,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.util.ArrayList;
@@ -70,7 +66,6 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private static final int PICK_TXT_REQUEST = 1001;
     private static final String PREFS = "xlib_reader";
-    private static final String KEY_BOOKS = "books";
     private static final int THEME_SYSTEM = 0;
     private static final int THEME_LIGHT = 1;
     private static final int THEME_DARK = 2;
@@ -101,7 +96,7 @@ public class MainActivity extends Activity {
             return size() > CHUNK_CACHE_LIMIT;
         }
     };
-    private SharedPreferences prefs;
+    private BookStore bookStore;
     private Book currentBook;
     private boolean managingBooks;
     private boolean loadingChunk;
@@ -140,7 +135,7 @@ public class MainActivity extends Activity {
     private int readerContainerHeight = -1;
     private FrameLayout readerFrame;
     private LinearLayout readerRoot;
-    private ScrollView readerScroll;
+    private AccessibleScrollView readerScroll;
     private TextView readerText;
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
@@ -162,7 +157,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        bookStore = new BookStore(getSharedPreferences(PREFS, MODE_PRIVATE));
         loadBooks();
         showLibrary();
     }
@@ -216,30 +211,49 @@ public class MainActivity extends Activity {
     private void showLibrary() {
         applyWindowColors(THEME_SYSTEM);
 
+        boolean dark = isSystemNight();
+        int background = dark ? UiKit.DARK_BACKGROUND : UiKit.LIGHT_BACKGROUND;
+        int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int text = dark ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
+        int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+        int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+        int accentContainer = dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(colorForSystem("#F7F4EF", "#111416"));
-        root.setPadding(dp(18), dp(42), dp(18), dp(12));
+        root.setBackgroundColor(background);
+        root.setPadding(dp(20), statusBarHeight() + dp(18), dp(20), navigationBarHeight() + dp(10));
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
 
+        LinearLayout heading = new LinearLayout(this);
+        heading.setOrientation(LinearLayout.VERTICAL);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(this);
         title.setText("我的书架");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
-        title.setTextColor(colorForSystem("#202124", "#F2F0EA"));
-        title.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(title, new LinearLayout.LayoutParams(0, dp(58), 1));
+        UiKit.styleTitle(title, text, 30);
+        heading.addView(title);
+        TextView subtitle = new TextView(this);
+        subtitle.setText(books.isEmpty() ? "安静地读一本好书" : books.size() + " 本本地书籍");
+        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        subtitle.setTextColor(muted);
+        subtitle.setPadding(0, dp(5), 0, 0);
+        heading.addView(subtitle);
+        header.addView(heading, new LinearLayout.LayoutParams(0, dp(68), 1));
 
         ImageButton add = makeIconButton();
         add.setImageResource(R.drawable.ic_add_book);
         add.setContentDescription("添加 TXT");
+        UiKit.styleIconButton(this, add, dark ? UiKit.DARK_BACKGROUND : Color.WHITE,
+                accent, 16);
         add.setOnClickListener(v -> pickTxtFile());
         header.addView(add, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
         ImageButton manage = makeIconButton();
         manage.setImageResource(managingBooks ? R.drawable.ic_done : R.drawable.ic_manage_books);
         manage.setContentDescription(managingBooks ? "完成管理" : "管理书籍");
+        UiKit.styleIconButton(this, manage, accent, accentContainer, 16);
         manage.setOnClickListener(v -> {
             managingBooks = !managingBooks;
             selectedBookIds.clear();
@@ -251,17 +265,50 @@ public class MainActivity extends Activity {
         root.addView(header);
 
         if (books.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("还没有书。点击右上角添加一个 txt 文件。");
-            empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-            empty.setTextColor(colorForSystem("#6B6F73", "#B4B8BA"));
+            LinearLayout empty = new LinearLayout(this);
+            empty.setOrientation(LinearLayout.VERTICAL);
             empty.setGravity(Gravity.CENTER);
-            root.addView(empty, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+            empty.setPadding(dp(30), dp(36), dp(30), dp(36));
+            UiKit.styleCard(this, empty, surface, 28, 1);
+
+            TextView monogram = new TextView(this);
+            monogram.setText(R.string.txt_badge);
+            monogram.setGravity(Gravity.CENTER);
+            monogram.setTextColor(accent);
+            monogram.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+            monogram.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            monogram.setBackground(UiKit.rounded(this, accentContainer, 22));
+            empty.addView(monogram, new LinearLayout.LayoutParams(dp(72), dp(72)));
+
+            TextView emptyTitle = new TextView(this);
+            emptyTitle.setText("书架还是空的");
+            emptyTitle.setGravity(Gravity.CENTER);
+            emptyTitle.setPadding(0, dp(24), 0, 0);
+            UiKit.styleTitle(emptyTitle, text, 21);
+            empty.addView(emptyTitle);
+
+            TextView emptyBody = new TextView(this);
+            emptyBody.setText(R.string.empty_library_body);
+            emptyBody.setTextColor(muted);
+            emptyBody.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            emptyBody.setGravity(Gravity.CENTER);
+            emptyBody.setPadding(0, dp(10), 0, dp(24));
+            empty.addView(emptyBody);
+
+            Button importButton = makeButton("导入第一本书");
+            UiKit.styleButton(this, importButton, accent, dark ? UiKit.DARK_BACKGROUND : Color.WHITE, 18);
+            importButton.setOnClickListener(v -> pickTxtFile());
+            empty.addView(importButton, new LinearLayout.LayoutParams(dp(168), dp(52)));
+
+            LinearLayout.LayoutParams emptyLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
+            emptyLp.topMargin = dp(24);
+            emptyLp.bottomMargin = dp(16);
+            root.addView(empty, emptyLp);
         } else {
             LinearLayout list = new LinearLayout(this);
             list.setOrientation(LinearLayout.VERTICAL);
-            list.setPadding(0, dp(12), 0, 0);
+            list.setPadding(0, dp(18), 0, dp(8));
             for (Book book : books) {
                 list.addView(makeBookRow(book));
             }
@@ -273,17 +320,20 @@ public class MainActivity extends Activity {
 
         if (managingBooks) {
             Button deleteSelected = makeButton("删除所选 " + selectedBookIds.size());
+            UiKit.styleButton(this, deleteSelected,
+                    dark ? Color.rgb(86, 37, 38) : Color.rgb(255, 226, 225),
+                    dark ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27), 18);
             deleteSelected.setEnabled(!selectedBookIds.isEmpty());
             deleteSelected.setOnClickListener(v -> deleteSelectedBooks());
             root.addView(deleteSelected, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
         }
 
         TextView version = new TextView(this);
         version.setText(getVersionText());
         version.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        version.setTextColor(colorForSystem("#7C8185", "#8D9396"));
-        version.setGravity(Gravity.LEFT);
+        version.setTextColor(muted);
+        version.setGravity(Gravity.START);
         version.setPadding(0, dp(8), 0, 0);
         root.addView(version, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
@@ -292,10 +342,19 @@ public class MainActivity extends Activity {
     }
 
     private View makeBookRow(Book book) {
+        boolean dark = isSystemNight();
+        int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int textColor = dark ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
+        int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+        int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+        int accentContainer = dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
+
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(14), dp(12), dp(14), dp(12));
-        row.setBackgroundColor(colorForSystem("#FFFFFF", "#1A1E20"));
+        row.setPadding(dp(16), dp(16), dp(16), dp(16));
+        row.setBackground(UiKit.interactive(this, surface, 22, UiKit.withAlpha(accent, 28)));
+        row.setElevation(dp(1));
+        row.setClipToOutline(true);
 
         if (managingBooks) {
             CheckBox checkBox = new CheckBox(this);
@@ -304,6 +363,17 @@ public class MainActivity extends Activity {
             row.addView(checkBox, new LinearLayout.LayoutParams(dp(44), dp(52)));
         }
 
+        TextView badge = new TextView(this);
+        badge.setText(R.string.txt_badge);
+        badge.setGravity(Gravity.CENTER);
+        badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        badge.setTextColor(accent);
+        badge.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        badge.setBackground(UiKit.rounded(this, accentContainer, 16));
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dp(48), dp(58));
+        badgeLp.rightMargin = dp(14);
+        row.addView(badge, badgeLp);
+
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
 
@@ -311,8 +381,9 @@ public class MainActivity extends Activity {
         title.setText(book.title);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        title.setTextColor(colorForSystem("#202124", "#F2F0EA"));
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        title.setTextColor(textColor);
         texts.addView(title);
 
         LinearLayout metaRow = new LinearLayout(this);
@@ -327,27 +398,38 @@ public class MainActivity extends Activity {
         meta.setSingleLine(true);
         meta.setEllipsize(TextUtils.TruncateAt.END);
         meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        meta.setTextColor(colorForSystem("#6B6F73", "#A9ADB0"));
+        meta.setTextColor(muted);
         metaRow.addView(meta, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         TextView size = new TextView(this);
         size.setText(formatFileSize(book.fileSize));
         size.setSingleLine(true);
-        size.setGravity(Gravity.RIGHT);
+        size.setGravity(Gravity.END);
         size.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        size.setTextColor(colorForSystem("#6B6F73", "#A9ADB0"));
+        size.setTextColor(muted);
         LinearLayout.LayoutParams sizeLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         sizeLp.leftMargin = dp(12);
         metaRow.addView(size, sizeLp);
         texts.addView(metaRow);
 
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(1000);
+        progress.setProgress(Math.round(Math.max(0f, Math.min(1f, book.progress)) * 1000f));
+        progress.setProgressTintList(ColorStateList.valueOf(accent));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(
+                dark ? Color.rgb(58, 66, 62) : Color.rgb(222, 229, 225)));
+        LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(4));
+        progressLp.topMargin = dp(12);
+        texts.addView(progress, progressLp);
+
         row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(10);
+        lp.bottomMargin = dp(12);
         row.setLayoutParams(lp);
         row.setOnClickListener(v -> {
             if (managingBooks) {
@@ -464,9 +546,13 @@ public class MainActivity extends Activity {
         applyWindowColors(book.theme);
         int bg = backgroundColor(book.theme);
         int fg = textColor(book.theme);
-        int menuBg = Color.rgb(247, 244, 239);
-        int menuFg = Color.rgb(32, 33, 36);
-        int menuMuted = Color.rgb(107, 111, 115);
+        boolean darkTheme = isDarkReaderTheme(book.theme);
+        int menuBg = darkTheme ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int menuFg = darkTheme ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
+        int menuMuted = darkTheme ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+        int menuAccent = darkTheme ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+        int menuAccentContainer = darkTheme
+                ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
 
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(bg);
@@ -480,22 +566,22 @@ public class MainActivity extends Activity {
 
         readerTopBar = new LinearLayout(this);
         readerTopBar.setGravity(Gravity.CENTER_VERTICAL);
-        readerTopBar.setPadding(dp(12), 0, dp(12), dp(4));
-        readerTopBar.setBackgroundColor(menuBg);
+        readerTopBar.setPadding(dp(8), dp(7), dp(8), dp(7));
+        UiKit.styleCard(this, readerTopBar, menuBg, 22, 8);
         readerTopBar.setClickable(true);
         readerTopBar.setVisibility(View.GONE);
 
         LinearLayout fontControls = new LinearLayout(this);
-        fontControls.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        fontControls.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
 
         Button smaller = makeButton("A-");
-        smaller.setTextColor(menuFg);
+        UiKit.styleButton(this, smaller, menuAccentContainer, menuAccent, 14);
         smaller.setPadding(0, 0, 0, 0);
         smaller.setOnClickListener(v -> updateFontSize(-2f));
         fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(56), dp(42)));
 
         Button larger = makeButton("A+");
-        larger.setTextColor(menuFg);
+        UiKit.styleButton(this, larger, menuAccentContainer, menuAccent, 14);
         larger.setPadding(0, 0, 0, 0);
         larger.setOnClickListener(v -> updateFontSize(2f));
         LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(56), dp(42));
@@ -504,34 +590,35 @@ public class MainActivity extends Activity {
 
         ImageButton search = makeIconButton();
         search.setImageResource(R.drawable.ic_search);
-        search.setColorFilter(menuFg);
+        UiKit.styleIconButton(this, search, menuFg,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
         search.setContentDescription("搜索当前书籍");
         search.setOnClickListener(v -> openSearchPage());
         LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(dp(48), dp(42));
         searchLp.leftMargin = dp(6);
         readerTopBar.addView(search, searchLp);
 
-        boolean darkTheme = isDarkReaderTheme(book.theme);
         ImageButton theme = makeIconButton();
         theme.setImageResource(darkTheme ? R.drawable.ic_moon : R.drawable.ic_sun);
-        theme.setColorFilter(menuFg);
+        UiKit.styleIconButton(this, theme, menuFg,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
         theme.setContentDescription(darkTheme ? "深色主题" : "浅色主题");
         theme.setOnClickListener(v -> {
             saveCurrentProgress();
             book.theme = isDarkReaderTheme(book.theme) ? THEME_LIGHT : THEME_DARK;
             book.updatedAt = System.currentTimeMillis();
             saveBooks();
-            applyReaderThemeInPlace(book);
-            boolean nowDark = isDarkReaderTheme(book.theme);
-            theme.setImageResource(nowDark ? R.drawable.ic_moon : R.drawable.ic_sun);
-            theme.setContentDescription(nowDark ? "深色主题" : "浅色主题");
+            readerMenusOpen = true;
+            showReader(book);
         });
         LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(48), dp(42));
         themeLp.leftMargin = dp(6);
         readerTopBar.addView(theme, themeLp);
 
         Button sensitivity = makeButton(sensitivityShortLabel(book.sensitivity));
-        sensitivity.setTextColor(menuFg);
+        UiKit.styleButton(this, sensitivity,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
+                menuFg, 14);
         sensitivity.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         sensitivity.setPadding(dp(4), 0, dp(4), 0);
         sensitivity.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_touch, 0, 0, 0);
@@ -549,7 +636,7 @@ public class MainActivity extends Activity {
         sensitivityLp.leftMargin = dp(6);
         readerTopBar.addView(sensitivity, sensitivityLp);
 
-        readerScroll = new ScrollView(this);
+        readerScroll = new AccessibleScrollView(this);
         readerScroll.setFillViewport(true);
         readerScroll.setClipToPadding(true);
         readerScroll.setClipChildren(true);
@@ -619,6 +706,7 @@ public class MainActivity extends Activity {
                         return true;
                     }
                     if (isTap) {
+                        v.performClick();
                         handleReaderTap(event.getX());
                     } else if (action == MotionEvent.ACTION_UP && currentBook != null && currentBook.pageMode) {
                         handlePageSwipe(dx, dy);
@@ -647,8 +735,9 @@ public class MainActivity extends Activity {
                 boolean isTap = !touchMoved
                         && Math.abs(event.getX() - touchStartX) <= dp(tapToleranceDp())
                         && Math.abs(event.getY() - touchStartY) <= dp(tapToleranceDp());
-                if (isTap && handleReaderTap(event.getX())) {
-                    return true;
+                if (isTap) {
+                    v.performClick();
+                    if (handleReaderTap(event.getX())) return true;
                 }
             }
             return currentBook != null && currentBook.pageMode;
@@ -684,13 +773,15 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP);
-        topLp.topMargin = readerTopInset();
+        topLp.topMargin = readerTopInset() + dp(8);
+        topLp.leftMargin = dp(12);
+        topLp.rightMargin = dp(12);
         frame.addView(readerTopBar, topLp);
 
         readerBottomBar = new LinearLayout(this);
         readerBottomBar.setOrientation(LinearLayout.VERTICAL);
-        readerBottomBar.setPadding(dp(14), dp(8), dp(14), dp(12));
-        readerBottomBar.setBackgroundColor(menuBg);
+        readerBottomBar.setPadding(dp(10), dp(8), dp(10), dp(10));
+        UiKit.styleCard(this, readerBottomBar, menuBg, 24, 10);
         readerBottomBar.setClickable(true);
         readerBottomBar.setVisibility(View.GONE);
 
@@ -723,9 +814,9 @@ public class MainActivity extends Activity {
         });
         seekPanel.addView(seekBar, new LinearLayout.LayoutParams(0, dp(44), 1));
         TextView end = new TextView(this);
-        end.setText("100%");
+        end.setText(R.string.percent_end);
         end.setTextColor(menuMuted);
-        end.setGravity(Gravity.RIGHT);
+        end.setGravity(Gravity.END);
         seekPanel.addView(end, new LinearLayout.LayoutParams(dp(52), dp(44)));
         readerBottomBar.addView(seekPanel);
 
@@ -733,12 +824,14 @@ public class MainActivity extends Activity {
         nav.setGravity(Gravity.CENTER_VERTICAL);
 
         Button bigMinus = makeProgressStepButton("-", 20);
-        bigMinus.setTextColor(menuFg);
+        UiKit.styleButton(this, bigMinus, menuAccentContainer, menuAccent, 14);
         bigMinus.setOnClickListener(v -> adjustProgressByPercent(-1f));
         nav.addView(bigMinus, new LinearLayout.LayoutParams(dp(44), dp(46)));
 
         Button smallMinus = makeProgressStepButton("-", 14);
-        smallMinus.setTextColor(menuFg);
+        UiKit.styleButton(this, smallMinus,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
+                menuFg, 14);
         smallMinus.setOnClickListener(v -> adjustProgressByPercent(-0.01f));
         LinearLayout.LayoutParams smallMinusLp = new LinearLayout.LayoutParams(dp(38), dp(46));
         smallMinusLp.leftMargin = dp(6);
@@ -746,7 +839,9 @@ public class MainActivity extends Activity {
 
         progressButton = makeButton("");
         progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        progressButton.setTextColor(menuFg);
+        UiKit.styleButton(this, progressButton,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
+                menuFg, 15);
         progressButton.setOnClickListener(v -> toggleSeekPanel());
         LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(0, dp(46), 1);
         progressLp.leftMargin = dp(6);
@@ -754,12 +849,14 @@ public class MainActivity extends Activity {
         nav.addView(progressButton, progressLp);
 
         Button smallPlus = makeProgressStepButton("+", 14);
-        smallPlus.setTextColor(menuFg);
+        UiKit.styleButton(this, smallPlus,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
+                menuFg, 14);
         smallPlus.setOnClickListener(v -> adjustProgressByPercent(0.01f));
         nav.addView(smallPlus, new LinearLayout.LayoutParams(dp(38), dp(46)));
 
         Button bigPlus = makeProgressStepButton("+", 20);
-        bigPlus.setTextColor(menuFg);
+        UiKit.styleButton(this, bigPlus, menuAccentContainer, menuAccent, 14);
         bigPlus.setOnClickListener(v -> adjustProgressByPercent(1f));
         LinearLayout.LayoutParams bigPlusLp = new LinearLayout.LayoutParams(dp(44), dp(46));
         bigPlusLp.leftMargin = dp(6);
@@ -770,17 +867,18 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM);
         bottomLp.bottomMargin = readerBottomInset(book.fontSize);
+        bottomLp.leftMargin = dp(12);
+        bottomLp.rightMargin = dp(12);
         frame.addView(readerBottomBar, bottomLp);
 
         if (temporarySearchReading && searchSession != null) {
             ImageButton returnToSearch = makeIconButton();
             returnToSearch.setImageResource(R.drawable.ic_arrow_back);
-            returnToSearch.setColorFilter(menuFg);
-            returnToSearch.setBackgroundColor(menuBg);
+            UiKit.styleIconButton(this, returnToSearch, menuFg, menuBg, 16);
             returnToSearch.setContentDescription("返回搜索结果");
             returnToSearch.setOnClickListener(v -> returnToSearchPage());
             FrameLayout.LayoutParams returnLp = new FrameLayout.LayoutParams(
-                    dp(48), dp(48), Gravity.TOP | Gravity.LEFT);
+                    dp(48), dp(48), Gravity.TOP | Gravity.START);
             returnLp.leftMargin = dp(12);
             returnLp.topMargin = readerTopInset();
             frame.addView(returnToSearch, returnLp);
@@ -834,19 +932,37 @@ public class MainActivity extends Activity {
 
         int bg = backgroundColor(book.theme);
         int fg = textColor(book.theme);
-        int muted = isDarkReaderTheme(book.theme)
-                ? Color.rgb(176, 181, 184) : Color.rgb(96, 101, 105);
+        boolean dark = isDarkReaderTheme(book.theme);
+        int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+        int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int surfaceVariant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
+        int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+        int accentContainer = dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(bg);
-        root.setPadding(dp(18), statusBarHeight() + dp(12), dp(18), navigationBarHeight() + dp(12));
+        root.setPadding(dp(20), statusBarHeight() + dp(16), dp(20), navigationBarHeight() + dp(12));
+
+        TextView pageTitle = new TextView(this);
+        pageTitle.setText("书内搜索");
+        UiKit.styleTitle(pageTitle, fg, 28);
+        root.addView(pageTitle);
+
+        TextView pageSubtitle = new TextView(this);
+        pageSubtitle.setText(book.title);
+        pageSubtitle.setSingleLine(true);
+        pageSubtitle.setEllipsize(TextUtils.TruncateAt.END);
+        pageSubtitle.setTextColor(muted);
+        pageSubtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        pageSubtitle.setPadding(0, dp(6), 0, dp(18));
+        root.addView(pageSubtitle);
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
         ImageButton back = makeIconButton();
         back.setImageResource(R.drawable.ic_arrow_back);
-        back.setColorFilter(fg);
+        UiKit.styleIconButton(this, back, fg, surfaceVariant, 16);
         back.setContentDescription("返回阅读");
         back.setOnClickListener(v -> onBackPressed());
         top.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -857,6 +973,9 @@ public class MainActivity extends Activity {
         input.setTextColor(fg);
         input.setHintTextColor(muted);
         input.setHint("搜索当前书籍");
+        input.setBackground(UiKit.roundedStroke(this, surface,
+                UiKit.withAlpha(muted, 80), 17, 1));
+        input.setPadding(dp(16), 0, dp(16), 0);
         input.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
         input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(32)});
@@ -864,13 +983,18 @@ public class MainActivity extends Activity {
             input.setText(searchSession.query);
             input.setSelection(input.length());
         }
-        top.addView(input, new LinearLayout.LayoutParams(0, dp(52), 1));
+        LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(52), 1);
+        inputLp.leftMargin = dp(10);
+        top.addView(input, inputLp);
 
         ImageButton submit = makeIconButton();
         submit.setImageResource(R.drawable.ic_search);
-        submit.setColorFilter(fg);
+        UiKit.styleIconButton(this, submit,
+                dark ? UiKit.DARK_BACKGROUND : Color.WHITE, accent, 16);
         submit.setContentDescription("开始搜索");
-        top.addView(submit, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        LinearLayout.LayoutParams submitLp = new LinearLayout.LayoutParams(dp(52), dp(52));
+        submitLp.leftMargin = dp(10);
+        top.addView(submit, submitLp);
         root.addView(top);
 
         TextView status = new TextView(this);
@@ -883,6 +1007,7 @@ public class MainActivity extends Activity {
         LinearLayout results = new LinearLayout(this);
         results.setOrientation(LinearLayout.VERTICAL);
         Button continueFromStart = makeButton("从开头继续搜索");
+        UiKit.styleButton(this, continueFromStart, accentContainer, accent, 16);
         continueFromStart.setVisibility(View.GONE);
         continueFromStart.setOnClickListener(v -> continueSearchFromBeginning(
                 results, status, continueFromStart));
@@ -931,7 +1056,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (keyword.length() > 32) {
-            status.setText("关键词最多 32 个字符");
+            status.setText(R.string.search_keyword_too_long);
             results.removeAllViews();
             continueFromStart.setVisibility(View.GONE);
             return;
@@ -980,7 +1105,7 @@ public class MainActivity extends Activity {
                         || currentBook != session.book) return;
                 session.loading = false;
                 if (finalError != null) {
-                    status.setText("搜索失败：" + finalError.getMessage());
+                    status.setText(getString(R.string.search_failed, finalError.getMessage()));
                     return;
                 }
                 session.results.addAll(finalBatch.results);
@@ -1014,31 +1139,34 @@ public class MainActivity extends Activity {
         if (session.loading) {
             status.setText("正在搜索...");
         } else if (session.needsWrapConfirmation) {
-            status.setText("当前位置向后已找到 " + session.results.size()
-                    + " 条结果，是否从开头继续搜索？");
+            status.setText(getString(R.string.search_wrap_prompt, session.results.size()));
             continueFromStart.setVisibility(View.VISIBLE);
         } else if (session.complete) {
-            status.setText("已回到最初搜索位置，共找到 " + session.results.size() + " 条结果");
+            status.setText(getString(R.string.search_complete, session.results.size()));
         } else if (session.results.isEmpty()) {
             status.setText("继续下滑可搜索下一批结果");
         } else {
-            status.setText("已加载 " + session.results.size() + " 条结果，继续下滑加载下一批");
+            status.setText(getString(R.string.search_loaded, session.results.size()));
         }
     }
 
     private View makeSearchResultRow(SearchResult result, Book book) {
+        boolean dark = isDarkReaderTheme(book.theme);
+        int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
         TextView row = new TextView(this);
         String query = searchSession != null && searchSession.book == book ? searchSession.query : "";
         row.setText(highlightSearchKeyword(result.snippet, query, book.theme));
         row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
         row.setTextColor(textColor(book.theme));
         row.setLineSpacing(dp(4), 1f);
-        row.setPadding(dp(4), dp(16), dp(4), dp(16));
-        row.setBackgroundColor(backgroundColor(book.theme));
+        row.setPadding(dp(16), dp(16), dp(16), dp(16));
+        row.setBackground(UiKit.interactive(this, surface, 18, UiKit.withAlpha(accent, 26)));
+        row.setClipToOutline(true);
         row.setOnClickListener(v -> openSearchResult(book, result.offset));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(1);
+        lp.bottomMargin = dp(10);
         row.setLayoutParams(lp);
         return row;
     }
@@ -1975,17 +2103,13 @@ public class MainActivity extends Activity {
     }
 
     private int statusBarHeight() {
-        return systemDimension("status_bar_height");
+        WindowInsets insets = getWindow().getDecorView().getRootWindowInsets();
+        return insets == null ? dp(24) : insets.getSystemWindowInsetTop();
     }
 
     private int navigationBarHeight() {
-        return systemDimension("navigation_bar_height");
-    }
-
-    private int systemDimension(String name) {
-        int resourceId = getResources().getIdentifier(name, "dimen", "android");
-        if (resourceId <= 0) return 0;
-        return getResources().getDimensionPixelSize(resourceId);
+        WindowInsets insets = getWindow().getDecorView().getRootWindowInsets();
+        return insets == null ? dp(24) : insets.getSystemWindowInsetBottom();
     }
 
     private int readerBottomOverlayHeight() {
@@ -2111,56 +2235,24 @@ public class MainActivity extends Activity {
         ImageButton button = new ImageButton(this);
         button.setBackgroundColor(Color.TRANSPARENT);
         button.setPadding(dp(10), dp(10), dp(10), dp(10));
-        button.setColorFilter(colorForSystem("#202124", "#F2F0EA"));
+        button.setColorFilter(isSystemNight() ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT);
         return button;
     }
 
     private int backgroundColor(int theme) {
-        if (theme == THEME_LIGHT) return Color.rgb(247, 244, 239);
-        if (theme == THEME_DARK) return Color.rgb(17, 20, 22);
-        return colorForSystem("#F7F4EF", "#111416");
+        if (theme == THEME_LIGHT) return UiKit.LIGHT_BACKGROUND;
+        if (theme == THEME_DARK) return UiKit.DARK_BACKGROUND;
+        return isSystemNight() ? UiKit.DARK_BACKGROUND : UiKit.LIGHT_BACKGROUND;
     }
 
     private boolean isDarkReaderTheme(int theme) {
         return theme == THEME_DARK || (theme == THEME_SYSTEM && isSystemNight());
     }
 
-    private void applyReaderThemeInPlace(Book book) {
-        int bg = backgroundColor(book.theme);
-        int fg = textColor(book.theme);
-        applyWindowColors(book.theme);
-        if (readerFrame != null) readerFrame.setBackgroundColor(bg);
-        if (readerRoot != null) readerRoot.setBackgroundColor(bg);
-        if (readerScroll != null) readerScroll.setBackgroundColor(bg);
-        if (readerText != null) {
-            readerText.setTextColor(fg);
-            if (temporarySearchReading && searchSession != null && searchSession.book == book) {
-                readerText.setText(readerDisplayText(readerText.getText().toString(), book));
-            }
-        }
-        pageStateGeneration++;
-        releasePageSnapshot();
-        if (readerScroll != null) {
-            readerScroll.post(this::cacheCurrentPageSnapshot);
-        }
-    }
-
     private int textColor(int theme) {
-        if (theme == THEME_LIGHT) return Color.rgb(32, 33, 36);
-        if (theme == THEME_DARK) return Color.rgb(242, 240, 234);
-        return colorForSystem("#202124", "#F2F0EA");
-    }
-
-    private int mutedTextColor(int theme) {
-        if (theme == THEME_LIGHT) return Color.rgb(107, 111, 115);
-        if (theme == THEME_DARK) return Color.rgb(180, 184, 186);
-        return colorForSystem("#6B6F73", "#B4B8BA");
-    }
-
-    private int colorForSystem(String light, String dark) {
-        boolean night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                == Configuration.UI_MODE_NIGHT_YES;
-        return Color.parseColor(night ? dark : light);
+        if (theme == THEME_LIGHT) return UiKit.LIGHT_TEXT;
+        if (theme == THEME_DARK) return UiKit.DARK_TEXT;
+        return isSystemNight() ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
     }
 
     private void applyWindowColors(int theme) {
@@ -2196,29 +2288,7 @@ public class MainActivity extends Activity {
     }
 
     private String detectEncoding(File file) {
-        byte[] bytes = new byte[4096];
-        try (FileInputStream input = new FileInputStream(file)) {
-            int read = input.read(bytes);
-            if (read >= 3 && (bytes[0] & 0xFF) == 0xEF && (bytes[1] & 0xFF) == 0xBB && (bytes[2] & 0xFF) == 0xBF) {
-                return "UTF-8";
-            }
-            if (read >= 2 && (bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xFE) {
-                return "UTF-16LE";
-            }
-            if (read >= 2 && (bytes[0] & 0xFF) == 0xFE && (bytes[1] & 0xFF) == 0xFF) {
-                return "UTF-16BE";
-            }
-            try {
-                StandardCharsets.UTF_8.newDecoder()
-                        .onMalformedInput(CodingErrorAction.REPORT)
-                        .decode(ByteBuffer.wrap(bytes, 0, Math.max(0, read)));
-                return "UTF-8";
-            } catch (CharacterCodingException ignored) {
-                return "GB18030";
-            }
-        } catch (Exception ignored) {
-            return "GB18030";
-        }
+        return TextFileUtils.detectEncoding(file);
     }
 
     private String getVersionText() {
@@ -2232,97 +2302,19 @@ public class MainActivity extends Activity {
     }
 
     private String formatFileSize(long bytes) {
-        long value = Math.max(0L, bytes);
-        if (value < 1024L) return value + " Byte";
-        if (value < 1024L * 1024L) return String.format(Locale.getDefault(), "%.1f KB", value / 1024f);
-        if (value < 1024L * 1024L * 1024L) {
-            return String.format(Locale.getDefault(), "%.1f MB", value / (1024f * 1024f));
-        }
-        return String.format(Locale.getDefault(), "%.1f GB", value / (1024f * 1024f * 1024f));
+        return TextFileUtils.formatFileSize(bytes);
     }
 
     private void loadBooks() {
         books.clear();
-        String raw = prefs.getString(KEY_BOOKS, "[]");
-        try {
-            JSONArray array = new JSONArray(raw);
-            for (int i = 0; i < array.length(); i++) {
-                JSONObject item = array.getJSONObject(i);
-                Book book = new Book();
-                book.id = item.optLong("id");
-                book.title = item.optString("title");
-                book.path = item.optString("path");
-                book.fileSize = item.optLong("fileSize", 0L);
-                book.encoding = item.optString("encoding", "UTF-8");
-                book.offset = item.optLong("offset", 0L);
-                book.progress = (float) item.optDouble("progress", 0d);
-                book.fontSize = (float) item.optDouble("fontSize", 20d);
-                book.theme = item.optInt("theme", THEME_SYSTEM);
-                book.pageMode = item.optBoolean("pageMode", true);
-                book.sensitivity = Math.max(
-                        SENSITIVITY_HIGH,
-                        Math.min(SENSITIVITY_LOW,
-                                item.optInt("sensitivity", SENSITIVITY_STANDARD)));
-                book.updatedAt = item.optLong("updatedAt", System.currentTimeMillis());
-                File file = new File(book.path);
-                if (!TextUtils.isEmpty(book.path) && file.exists()) {
-                    book.fileSize = file.length();
-                    if (TextUtils.isEmpty(book.encoding)) book.encoding = detectEncoding(file);
-                    if (book.offset <= 0 && book.progress > 0) book.offset = (long) (book.fileSize * book.progress);
-                    books.add(book);
-                }
-            }
-        } catch (Exception ignored) {
-            books.clear();
-        }
+        books.addAll(bookStore.load());
     }
 
     private void saveBooks() {
-        try {
-            JSONArray array = new JSONArray();
-            for (Book book : books) {
-                JSONObject item = new JSONObject();
-                item.put("id", book.id);
-                item.put("title", book.title);
-                item.put("path", book.path);
-                item.put("fileSize", book.fileSize);
-                item.put("encoding", book.encoding);
-                long savedOffset = book.offset;
-                float savedProgress = book.progress;
-                if (temporarySearchReading && searchSession != null && book == currentBook) {
-                    savedOffset = searchSession.returnOffset;
-                    savedProgress = searchSession.returnProgress;
-                }
-                item.put("offset", savedOffset);
-                item.put("progress", savedProgress);
-                item.put("fontSize", book.fontSize);
-                item.put("theme", book.theme);
-                item.put("pageMode", book.pageMode);
-                item.put("sensitivity", book.sensitivity);
-                item.put("updatedAt", book.updatedAt);
-                array.put(item);
-            }
-            prefs.edit().putString(KEY_BOOKS, array.toString()).apply();
-        } catch (Exception ignored) {
-        }
-    }
-
-    private static class Book {
-        long id;
-        String title;
-        String path;
-        long fileSize;
-        String encoding;
-        long offset;
-        float progress;
-        float fontSize;
-        int theme;
-        boolean pageMode;
-        int sensitivity;
-        long updatedAt;
-        transient long indexFileSize;
-        transient ArrayList<Long> indexOffsets;
-        transient boolean indexBuilding;
+        Book preservedBook = temporarySearchReading && searchSession != null ? currentBook : null;
+        long preservedOffset = preservedBook == null ? 0L : searchSession.returnOffset;
+        float preservedProgress = preservedBook == null ? 0f : searchSession.returnProgress;
+        bookStore.save(books, preservedBook, preservedOffset, preservedProgress);
     }
 
     private static class Chunk {

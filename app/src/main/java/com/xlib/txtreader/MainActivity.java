@@ -111,7 +111,9 @@ public class MainActivity extends Activity {
     private boolean readerMenusOpen;
     private boolean seekTracking;
     private boolean searchOpen;
+    private boolean temporarySearchReading;
     private ReaderCacheWrite pendingReaderCache;
+    private SearchSession searchSession;
     private float touchStartX;
     private float touchStartY;
     private float pendingSeekProgress;
@@ -179,6 +181,10 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (temporarySearchReading && searchSession != null && currentBook != null) {
+            returnToSearchPage();
+            return;
+        }
         if (searchOpen && currentBook != null) {
             searchRequestId++;
             searchOpen = false;
@@ -762,6 +768,20 @@ public class MainActivity extends Activity {
         bottomLp.bottomMargin = readerBottomInset(book.fontSize);
         frame.addView(readerBottomBar, bottomLp);
 
+        if (temporarySearchReading && searchSession != null) {
+            ImageButton returnToSearch = makeIconButton();
+            returnToSearch.setImageResource(R.drawable.ic_arrow_back);
+            returnToSearch.setColorFilter(menuFg);
+            returnToSearch.setBackgroundColor(menuBg);
+            returnToSearch.setContentDescription("返回搜索结果");
+            returnToSearch.setOnClickListener(v -> returnToSearchPage());
+            FrameLayout.LayoutParams returnLp = new FrameLayout.LayoutParams(
+                    dp(48), dp(48), Gravity.TOP | Gravity.LEFT);
+            returnLp.leftMargin = dp(12);
+            returnLp.topMargin = readerTopInset();
+            frame.addView(returnToSearch, returnLp);
+        }
+
         setContentView(frame);
         restoreReaderCache(book);
         frame.post(this::alignMenusToReaderViewport);
@@ -778,6 +798,24 @@ public class MainActivity extends Activity {
         loadRequestId++;
         releasePageSnapshot();
         searchOpen = true;
+        temporarySearchReading = false;
+        searchSession = null;
+        showSearchPage();
+    }
+
+    private void returnToSearchPage() {
+        if (currentBook == null || searchSession == null) return;
+        saveCurrentProgress();
+        flushReaderCacheWrite();
+        loadRequestId++;
+        releasePageSnapshot();
+        temporarySearchReading = false;
+        searchOpen = true;
+        showSearchPage();
+    }
+
+    private void showSearchPage() {
+        if (currentBook == null) return;
         Book book = currentBook;
         applyWindowColors(book.theme);
 
@@ -799,10 +837,7 @@ public class MainActivity extends Activity {
         back.setContentDescription("返回阅读");
         back.setOnClickListener(v -> onBackPressed());
         top.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        root.addView(top);
 
-        LinearLayout searchRow = new LinearLayout(this);
-        searchRow.setGravity(Gravity.CENTER_VERTICAL);
         EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
@@ -811,14 +846,18 @@ public class MainActivity extends Activity {
         input.setHint("搜索当前书籍");
         input.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
-        searchRow.addView(input, new LinearLayout.LayoutParams(0, dp(52), 1));
+        if (searchSession != null && searchSession.book == book) {
+            input.setText(searchSession.query);
+            input.setSelection(input.length());
+        }
+        top.addView(input, new LinearLayout.LayoutParams(0, dp(52), 1));
 
         ImageButton submit = makeIconButton();
         submit.setImageResource(R.drawable.ic_search);
         submit.setColorFilter(fg);
         submit.setContentDescription("开始搜索");
-        searchRow.addView(submit, new LinearLayout.LayoutParams(dp(52), dp(52)));
-        root.addView(searchRow);
+        top.addView(submit, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        root.addView(top);
 
         TextView status = new TextView(this);
         status.setText("输入关键词后，从当前阅读位置开始向后搜索");
@@ -829,13 +868,19 @@ public class MainActivity extends Activity {
 
         LinearLayout results = new LinearLayout(this);
         results.setOrientation(LinearLayout.VERTICAL);
+        Button continueFromStart = makeButton("从开头继续搜索");
+        continueFromStart.setVisibility(View.GONE);
+        continueFromStart.setOnClickListener(v -> continueSearchFromBeginning(
+                results, status, continueFromStart));
+        root.addView(continueFromStart, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
         ScrollView resultScroll = new ScrollView(this);
         resultScroll.addView(results);
         root.addView(resultScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         View.OnClickListener runSearch = v -> startBookSearch(
-                input.getText().toString(), results, status, book);
+                input.getText().toString(), results, status, continueFromStart, book);
         submit.setOnClickListener(runSearch);
         input.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
@@ -845,48 +890,114 @@ public class MainActivity extends Activity {
             return false;
         });
         setContentView(root);
+        resultScroll.getViewTreeObserver().addOnScrollChangedListener(() -> {
+            View content = resultScroll.getChildAt(0);
+            if (content == null) return;
+            int remaining = content.getBottom() - (resultScroll.getScrollY() + resultScroll.getHeight());
+            if (remaining <= dp(24)) {
+                loadNextSearchBatch(results, status, continueFromStart);
+            }
+        });
+        renderSearchSession(results, status, continueFromStart, true);
     }
 
-    private void startBookSearch(String query, LinearLayout results, TextView status, Book book) {
+    private void startBookSearch(String query, LinearLayout results, TextView status,
+                                 Button continueFromStart, Book book) {
         String keyword = query == null ? "" : query.trim();
         if (keyword.isEmpty()) {
             status.setText("请输入要搜索的文字");
             results.removeAllViews();
+            continueFromStart.setVisibility(View.GONE);
             return;
         }
-        long requestId = ++searchRequestId;
         long startOffset = Math.max(0L, Math.min(book.offset, book.fileSize));
+        searchSession = new SearchSession(book, keyword, startOffset, book.fileSize);
         results.removeAllViews();
-        status.setText("正在搜索...");
+        loadNextSearchBatch(results, status, continueFromStart);
+    }
+
+    private void continueSearchFromBeginning(LinearLayout results, TextView status,
+                                            Button continueFromStart) {
+        if (searchSession == null || searchSession.loading || !searchSession.needsWrapConfirmation) {
+            return;
+        }
+        searchSession.wrappedToStart = true;
+        searchSession.needsWrapConfirmation = false;
+        searchSession.nextOffset = 0L;
+        loadNextSearchBatch(results, status, continueFromStart);
+    }
+
+    private void loadNextSearchBatch(LinearLayout results, TextView status,
+                                     Button continueFromStart) {
+        SearchSession session = searchSession;
+        if (session == null || session.loading || session.complete
+                || session.needsWrapConfirmation || !searchOpen) {
+            return;
+        }
+        session.loading = true;
+        renderSearchSession(results, status, continueFromStart, false);
+        long requestId = ++searchRequestId;
+        long endOffset = session.wrappedToStart ? session.originOffset : session.fileSize;
         searchExecutor.execute(() -> {
-            List<SearchResult> matches;
+            SearchBatch batch;
             Exception error = null;
             try {
-                matches = searchBookFromOffset(book, keyword, startOffset);
+                batch = searchBookBatch(session.book, session.query, session.nextOffset, endOffset);
             } catch (Exception e) {
-                matches = new ArrayList<>();
+                batch = new SearchBatch(new ArrayList<>(), session.nextOffset, true);
                 error = e;
             }
-            List<SearchResult> finalMatches = matches;
+            SearchBatch finalBatch = batch;
             Exception finalError = error;
             mainHandler.post(() -> {
-                if (!searchOpen || requestId != searchRequestId || currentBook != book) return;
+                if (!searchOpen || requestId != searchRequestId || searchSession != session
+                        || currentBook != session.book) return;
+                session.loading = false;
                 if (finalError != null) {
                     status.setText("搜索失败：" + finalError.getMessage());
                     return;
                 }
-                if (finalMatches.isEmpty()) {
-                    status.setText("从当前位置往后未找到结果");
-                    return;
+                session.results.addAll(finalBatch.results);
+                for (SearchResult result : finalBatch.results) {
+                    results.addView(makeSearchResultRow(result, session.book));
                 }
-                status.setText(finalMatches.size() >= SEARCH_RESULT_LIMIT
-                        ? "已显示前 " + SEARCH_RESULT_LIMIT + " 条结果"
-                        : "找到 " + finalMatches.size() + " 条结果");
-                for (SearchResult result : finalMatches) {
-                    results.addView(makeSearchResultRow(result, book));
+                session.nextOffset = finalBatch.nextOffset;
+                if (finalBatch.reachedBoundary) {
+                    if (session.wrappedToStart || session.originOffset == 0L) {
+                        session.complete = true;
+                    } else {
+                        session.needsWrapConfirmation = true;
+                    }
                 }
+                renderSearchSession(results, status, continueFromStart, false);
             });
         });
+    }
+
+    private void renderSearchSession(LinearLayout results, TextView status,
+                                     Button continueFromStart, boolean rebuildResults) {
+        SearchSession session = searchSession;
+        continueFromStart.setVisibility(View.GONE);
+        if (session == null) return;
+        if (rebuildResults) {
+            results.removeAllViews();
+            for (SearchResult result : session.results) {
+                results.addView(makeSearchResultRow(result, session.book));
+            }
+        }
+        if (session.loading) {
+            status.setText("正在搜索...");
+        } else if (session.needsWrapConfirmation) {
+            status.setText("当前位置向后已找到 " + session.results.size()
+                    + " 条结果，是否从开头继续搜索？");
+            continueFromStart.setVisibility(View.VISIBLE);
+        } else if (session.complete) {
+            status.setText("已回到最初搜索位置，共找到 " + session.results.size() + " 条结果");
+        } else if (session.results.isEmpty()) {
+            status.setText("继续下滑可搜索下一批结果");
+        } else {
+            status.setText("已加载 " + session.results.size() + " 条结果，继续下滑加载下一批");
+        }
     }
 
     private View makeSearchResultRow(SearchResult result, Book book) {
@@ -908,6 +1019,7 @@ public class MainActivity extends Activity {
     private void openSearchResult(Book book, long offset) {
         searchRequestId++;
         searchOpen = false;
+        temporarySearchReading = true;
         book.offset = Math.max(0L, Math.min(offset, Math.max(0L, book.fileSize)));
         book.progress = book.fileSize <= 0 ? 0f : book.offset / (float) book.fileSize;
         book.updatedAt = System.currentTimeMillis();
@@ -915,21 +1027,26 @@ public class MainActivity extends Activity {
         showReader(book);
     }
 
-    private List<SearchResult> searchBookFromOffset(Book book, String query, long startOffset)
+    private SearchBatch searchBookBatch(Book book, String query, long startOffset, long endOffset)
             throws Exception {
         File file = new File(book.path);
         byte[] needle = query.getBytes(Charset.forName(book.encoding == null ? "UTF-8" : book.encoding));
         List<SearchResult> results = new ArrayList<>();
-        if (needle.length == 0 || !file.exists()) return results;
+        long boundary = Math.max(0L, Math.min(endOffset, file.length()));
+        long position = Math.max(0L, Math.min(startOffset, boundary));
+        if (needle.length == 0 || !file.exists() || position >= boundary) {
+            return new SearchBatch(results, position, true);
+        }
         int[] prefix = buildSearchPrefix(needle);
         byte[] buffer = new byte[SEARCH_READ_BYTES];
         int matched = 0;
-        long position = Math.max(0L, Math.min(startOffset, file.length()));
+        boolean reachedBoundary = false;
         try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
             input.seek(position);
-            int read;
-            while (results.size() < SEARCH_RESULT_LIMIT
-                    && (read = input.read(buffer)) != -1) {
+            int read = 0;
+            while (position < boundary && results.size() < SEARCH_RESULT_LIMIT
+                    && (read = input.read(buffer, 0,
+                    (int) Math.min(buffer.length, boundary - position))) != -1) {
                 for (int i = 0; i < read; i++, position++) {
                     byte value = buffer[i];
                     while (matched > 0 && value != needle[matched]) {
@@ -941,11 +1058,15 @@ public class MainActivity extends Activity {
                         results.add(new SearchResult(offset,
                                 makeSearchSnippet(file, offset, query, book.encoding, needle.length)));
                         matched = prefix[matched - 1];
+                        if (results.size() >= SEARCH_RESULT_LIMIT) {
+                            return new SearchBatch(results, offset + 1L, false);
+                        }
                     }
                 }
             }
+            reachedBoundary = position >= boundary || read == -1;
         }
-        return results;
+        return new SearchBatch(results, position, reachedBoundary);
     }
 
     private int[] buildSearchPrefix(byte[] needle) {
@@ -2191,6 +2312,39 @@ public class MainActivity extends Activity {
         SearchResult(long offset, String snippet) {
             this.offset = offset;
             this.snippet = snippet;
+        }
+    }
+
+    private static class SearchBatch {
+        final List<SearchResult> results;
+        final long nextOffset;
+        final boolean reachedBoundary;
+
+        SearchBatch(List<SearchResult> results, long nextOffset, boolean reachedBoundary) {
+            this.results = results;
+            this.nextOffset = nextOffset;
+            this.reachedBoundary = reachedBoundary;
+        }
+    }
+
+    private static class SearchSession {
+        final Book book;
+        final String query;
+        final long originOffset;
+        final long fileSize;
+        final List<SearchResult> results = new ArrayList<>();
+        long nextOffset;
+        boolean loading;
+        boolean wrappedToStart;
+        boolean needsWrapConfirmation;
+        boolean complete;
+
+        SearchSession(Book book, String query, long originOffset, long fileSize) {
+            this.book = book;
+            this.query = query;
+            this.originOffset = originOffset;
+            this.fileSize = fileSize;
+            this.nextOffset = originOffset;
         }
     }
 

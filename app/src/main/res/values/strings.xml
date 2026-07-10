@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Xlib Reader</string>
+    <string name="app_name">xLib Reader</string>
     <string name="txt_badge">TXT</string>
     <string name="empty_library_body">导入 TXT 文件，阅读进度只保存在本机</string>
     <string name="percent_end">100%</string>

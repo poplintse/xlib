@@ -21,9 +21,26 @@ if (versionPropsFile.exists()) {
 def currentCode = versionProps.getProperty("versionCode", "1").toInteger()
 def currentName = versionProps.getProperty("versionName", "0.1.0")
 
+// local.properties holds signing credentials for the release build. Kept out of
+// git (see .gitignore); copy local.properties.example if you need a fresh start.
+def localPropsFile = rootProject.file("local.properties")
+def localProps = new Properties()
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+
 android {
     namespace "com.xlib.txtreader"
     compileSdk 35
+
+    signingConfigs {
+        create("release") {
+            storeFile file(localProps.getProperty("RELEASE_STORE_FILE", "release.jks"))
+            storePassword localProps.getProperty("RELEASE_STORE_PASSWORD", "")
+            keyAlias localProps.getProperty("RELEASE_KEY_ALIAS", "")
+            keyPassword localProps.getProperty("RELEASE_KEY_PASSWORD", "")
+        }
+    }
 
     defaultConfig {
         applicationId "com.xlib.txtreader"
@@ -31,6 +48,12 @@ android {
         targetSdk 35
         versionCode currentCode
         versionName currentName
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     compileOptions {
@@ -46,6 +69,8 @@ android {
         variant.outputs.configureEach { output ->
             if (variant.buildType.name == "debug") {
                 output.outputFileName = "xlib-debug.apk"
+            } else if (variant.buildType.name == "release") {
+                output.outputFileName = "xlib-release.apk"
             }
         }
     }
@@ -69,4 +94,5 @@ def bumpVersion = tasks.register("bumpVersion") {
 
 afterEvaluate {
     tasks.findByName("assembleDebug")?.finalizedBy(bumpVersion)
+    tasks.findByName("assembleRelease")?.finalizedBy(bumpVersion)
 }

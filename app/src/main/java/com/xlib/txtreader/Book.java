@@ -14,6 +14,10 @@ final class Book {
     int theme;
     boolean pageMode;
     int sensitivity;
+    boolean keepScreenOn;
+    int autoPageIntervalSeconds;
+    int fontFamily;
+    float lineSpacingRatio;
     long updatedAt;
     transient long indexFileSize;
     transient ArrayList<Long> indexOffsets;

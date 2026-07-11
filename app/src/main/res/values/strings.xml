@@ -8,4 +8,8 @@
     <string name="search_wrap_prompt">当前位置向后已找到 %1$d 条结果，是否从开头继续搜索？</string>
     <string name="search_complete">已回到最初搜索位置，共找到 %1$d 条结果</string>
     <string name="search_loaded">已加载 %1$d 条结果，继续下滑加载下一批</string>
+    <string name="settings_current_book">当前书籍 · %1$s</string>
+    <string name="percent_value">%1$d%%</string>
+    <string name="seconds_value">%1$d 秒</string>
+    <string name="font_size_value">%1$dsp</string>
 </resources>

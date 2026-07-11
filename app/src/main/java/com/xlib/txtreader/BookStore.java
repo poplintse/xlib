@@ -74,6 +74,15 @@ final class BookStore {
         book.pageMode = item.optBoolean("pageMode", true);
         book.sensitivity = Math.max(SENSITIVITY_HIGH, Math.min(SENSITIVITY_LOW,
                 item.optInt("sensitivity", SENSITIVITY_STANDARD)));
+        book.keepScreenOn = item.optBoolean("keepScreenOn", false);
+        book.autoPageIntervalSeconds = AutoPageOptions.normalize(
+                item.optInt("autoPageIntervalSeconds", AutoPageOptions.DEFAULT_SECONDS));
+        if (book.autoPageIntervalSeconds == AutoPageOptions.OFF) {
+            book.autoPageIntervalSeconds = AutoPageOptions.DEFAULT_SECONDS;
+        }
+        book.fontFamily = Math.max(0, Math.min(4, item.optInt("fontFamily", 0)));
+        book.lineSpacingRatio = (float) item.optDouble("lineSpacingRatio", 0.18d);
+        book.lineSpacingRatio = Math.max(0.10f, Math.min(0.40f, book.lineSpacingRatio));
         book.updatedAt = item.optLong("updatedAt", System.currentTimeMillis());
         return book;
     }
@@ -91,6 +100,10 @@ final class BookStore {
         item.put("theme", book.theme);
         item.put("pageMode", book.pageMode);
         item.put("sensitivity", book.sensitivity);
+        item.put("keepScreenOn", book.keepScreenOn);
+        item.put("autoPageIntervalSeconds", book.autoPageIntervalSeconds);
+        item.put("fontFamily", book.fontFamily);
+        item.put("lineSpacingRatio", book.lineSpacingRatio);
         item.put("updatedAt", book.updatedAt);
         return item;
     }

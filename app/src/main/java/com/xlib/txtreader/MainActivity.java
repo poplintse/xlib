@@ -1,7 +1,9 @@
 package com.xlib.txtreader;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
@@ -38,7 +40,6 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.Switch;
-import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -57,9 +58,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.text.DateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -90,6 +89,9 @@ public class MainActivity extends Activity {
     private static final int SEARCH_RESULT_LIMIT = 200;
     private static final int SEARCH_CONTEXT_CHARS = 45;
     private static final long SEEK_PREVIEW_DELAY_MS = 220L;
+    private static final String KEY_AUTO_TOC = "auto_toc";
+    private static final int SETTINGS_GENERAL = 0;
+    private static final int SETTINGS_READING = 1;
 
     private final List<Book> books = new ArrayList<>();
     private final Set<Long> selectedBookIds = new HashSet<>();
@@ -97,6 +99,7 @@ public class MainActivity extends Activity {
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService readerCacheExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService searchExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService tocExecutor = Executors.newSingleThreadExecutor();
     private final Map<String, Chunk> chunkCache = new LinkedHashMap<String, Chunk>(8, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Chunk> eldest) {
@@ -104,6 +107,8 @@ public class MainActivity extends Activity {
         }
     };
     private BookStore bookStore;
+    private SharedPreferences preferences;
+    private TocStore tocStore;
     private Book currentBook;
     private boolean managingBooks;
     private boolean loadingChunk;
@@ -118,6 +123,8 @@ public class MainActivity extends Activity {
     private boolean seekTracking;
     private boolean searchOpen;
     private boolean settingsOpen;
+    private boolean settingsOpenedFromLibrary;
+    private boolean catalogOpen;
     private boolean temporarySearchReading;
     private boolean suppressProgressSave;
     private boolean activityResumed;
@@ -189,9 +196,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        bookStore = new BookStore(getSharedPreferences(PREFS, MODE_PRIVATE));
+        preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
+        bookStore = new BookStore(preferences);
+        tocStore = new TocStore(this);
         loadBooks();
         showLibrary();
+        if (isAutoTocEnabled()) scheduleMissingTocGeneration();
     }
 
     @Override
@@ -217,11 +227,17 @@ public class MainActivity extends Activity {
         ioExecutor.shutdownNow();
         readerCacheExecutor.shutdownNow();
         searchExecutor.shutdownNow();
+        tocExecutor.shutdownNow();
         super.onDestroy();
     }
 
     @Override
     public void onBackPressed() {
+        if (catalogOpen && currentBook != null) {
+            catalogOpen = false;
+            showReader(currentBook);
+            return;
+        }
         if (temporarySearchReading && searchSession != null && currentBook != null) {
             returnToSearchPage();
             return;
@@ -232,9 +248,10 @@ public class MainActivity extends Activity {
             showReader(currentBook);
             return;
         }
-        if (settingsOpen && currentBook != null) {
+        if (settingsOpen) {
             settingsOpen = false;
-            showReader(currentBook);
+            if (settingsOpenedFromLibrary || currentBook == null) showLibrary();
+            else showReader(currentBook);
             return;
         }
         if (currentBook != null) {
@@ -298,6 +315,16 @@ public class MainActivity extends Activity {
                 accent, 16);
         add.setOnClickListener(v -> pickTxtFile());
         header.addView(add, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        ImageButton settings = makeIconButton();
+        settings.setImageResource(R.drawable.ic_settings);
+        settings.setContentDescription("常规设置");
+        UiKit.styleIconButton(this, settings, dark ? UiKit.DARK_BACKGROUND : Color.WHITE,
+                accent, 16);
+        settings.setOnClickListener(v -> openSettingsPage(SETTINGS_GENERAL));
+        LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        settingsLp.leftMargin = dp(8);
+        header.addView(settings, settingsLp);
 
         ImageButton manage = makeIconButton();
         manage.setImageResource(managingBooks ? R.drawable.ic_done : R.drawable.ic_manage_books);
@@ -400,7 +427,7 @@ public class MainActivity extends Activity {
 
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(16), dp(16), dp(16), dp(16));
+        row.setPadding(dp(14), dp(13), dp(10), dp(13));
         row.setBackground(UiKit.interactive(this, surface, 22, UiKit.withAlpha(accent, 28)));
         row.setElevation(dp(1));
         row.setClipToOutline(true);
@@ -415,11 +442,11 @@ public class MainActivity extends Activity {
         TextView badge = new TextView(this);
         badge.setText(R.string.txt_badge);
         badge.setGravity(Gravity.CENTER);
-        badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         badge.setTextColor(accent);
         badge.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        badge.setBackground(UiKit.rounded(this, accentContainer, 16));
-        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dp(48), dp(58));
+        badge.setBackground(UiKit.rounded(this, accentContainer, 12));
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dp(58), dp(82));
         badgeLp.rightMargin = dp(14);
         row.addView(badge, badgeLp);
 
@@ -427,10 +454,10 @@ public class MainActivity extends Activity {
         texts.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText(book.title);
+        title.setText(shortBookTitle(book.title));
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         title.setTextColor(textColor);
         texts.addView(title);
@@ -440,10 +467,8 @@ public class MainActivity extends Activity {
         metaRow.setPadding(0, dp(5), 0, 0);
 
         TextView meta = new TextView(this);
-        meta.setText(String.format(Locale.getDefault(), "%.2f%% · %s",
-                book.progress * 100f,
-                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
-                        .format(new Date(book.updatedAt))));
+        meta.setText(String.format(Locale.getDefault(), "阅读进度 · %.2f%%",
+                book.progress * 100f));
         meta.setSingleLine(true);
         meta.setEllipsize(TextUtils.TruncateAt.END);
         meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
@@ -451,30 +476,26 @@ public class MainActivity extends Activity {
         metaRow.addView(meta, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        TextView size = new TextView(this);
-        size.setText(formatFileSize(book.fileSize));
-        size.setSingleLine(true);
-        size.setGravity(Gravity.END);
-        size.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        size.setTextColor(muted);
-        LinearLayout.LayoutParams sizeLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        sizeLp.leftMargin = dp(12);
-        metaRow.addView(size, sizeLp);
         texts.addView(metaRow);
 
-        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(1000);
-        progress.setProgress(Math.round(Math.max(0f, Math.min(1f, book.progress)) * 1000f));
-        progress.setProgressTintList(ColorStateList.valueOf(accent));
-        progress.setProgressBackgroundTintList(ColorStateList.valueOf(
-                dark ? Color.rgb(58, 66, 62) : Color.rgb(222, 229, 225)));
-        LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(4));
-        progressLp.topMargin = dp(12);
-        texts.addView(progress, progressLp);
+        TextView updated = new TextView(this);
+        updated.setText(relativeReadTime(book.updatedAt));
+        updated.setSingleLine(true);
+        updated.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        updated.setTextColor(muted);
+        updated.setPadding(0, dp(7), 0, 0);
+        texts.addView(updated);
 
         row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        if (!managingBooks) {
+            ImageButton more = makeIconButton();
+            more.setImageResource(R.drawable.ic_more);
+            more.setContentDescription("更多书籍操作");
+            more.setColorFilter(muted);
+            more.setOnClickListener(v -> showRenameBookDialog(book));
+            row.addView(more, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        }
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -499,12 +520,56 @@ public class MainActivity extends Activity {
         showLibrary();
     }
 
+    private String shortBookTitle(String title) {
+        if (title == null) return "";
+        int count = title.codePointCount(0, title.length());
+        if (count <= 10) return title;
+        return title.substring(0, title.offsetByCodePoints(0, 10)) + "…";
+    }
+
+    private String relativeReadTime(long timestamp) {
+        long hours = Math.max(1L, (System.currentTimeMillis() - timestamp) / (60L * 60L * 1000L));
+        return hours < 24L ? hours + "小时前" : (hours / 24L) + "天前";
+    }
+
+    private void showRenameBookDialog(Book book) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(book.title);
+        input.setSelection(input.length());
+        int padding = dp(20);
+        FrameLayout container = new FrameLayout(this);
+        container.setPadding(padding, dp(8), padding, 0);
+        container.addView(input, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("修改书籍名称")
+                .setView(container)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String value = input.getText().toString().trim();
+                    if (value.isEmpty()) {
+                        input.setError("书籍名称不能为空");
+                        return;
+                    }
+                    book.title = value;
+                    saveBooks();
+                    dialog.dismiss();
+                    showLibrary();
+                }));
+        dialog.show();
+    }
+
     private void deleteSelectedBooks() {
         List<Book> remaining = new ArrayList<>();
         for (Book book : books) {
             if (selectedBookIds.contains(book.id)) {
                 cancelReaderCacheWrite(book);
                 deleteReaderCache(book);
+                tocStore.delete(book);
                 File file = new File(book.path);
                 if (file.exists()) {
                     boolean ignored = file.delete();
@@ -578,6 +643,7 @@ public class MainActivity extends Activity {
             book.updatedAt = System.currentTimeMillis();
             books.add(0, book);
             saveBooks();
+            if (isAutoTocEnabled()) generateTocInBackground(book, false);
             showLibrary();
             Toast.makeText(this, "已添加：" + title, Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
@@ -594,6 +660,7 @@ public class MainActivity extends Activity {
 
     private void showReader(Book book) {
         settingsOpen = false;
+        catalogOpen = false;
         releasePageSnapshot();
         fittedReaderBottomInset = -1;
         fittedReaderFontSize = -1f;
@@ -691,7 +758,7 @@ public class MainActivity extends Activity {
         UiKit.styleIconButton(this, settings, menuFg,
                 darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
         settings.setContentDescription("阅读设置");
-        settings.setOnClickListener(v -> openSettingsPage());
+        settings.setOnClickListener(v -> openSettingsPage(SETTINGS_READING));
         LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(42), dp(42));
         settingsLp.leftMargin = dp(4);
         readerTopBar.addView(settings, settingsLp);
@@ -847,12 +914,14 @@ public class MainActivity extends Activity {
         readerBottomBar.setVisibility(View.GONE);
 
         seekPanel = new LinearLayout(this);
-        seekPanel.setGravity(Gravity.CENTER_VERTICAL);
+        seekPanel.setOrientation(LinearLayout.VERTICAL);
         seekPanel.setVisibility(View.GONE);
+        LinearLayout seekRow = new LinearLayout(this);
+        seekRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView start = new TextView(this);
         start.setText("0%");
         start.setTextColor(menuMuted);
-        seekPanel.addView(start, new LinearLayout.LayoutParams(dp(42), dp(44)));
+        seekRow.addView(start, new LinearLayout.LayoutParams(dp(42), dp(44)));
         seekBar = new SeekBar(this);
         seekBar.setMax(1000);
         seekBar.setProgress((int) (book.progress * 1000f));
@@ -873,30 +942,42 @@ public class MainActivity extends Activity {
                 loadChunkAtProgress(seekBar.getProgress() / 1000f);
             }
         });
-        seekPanel.addView(seekBar, new LinearLayout.LayoutParams(0, dp(44), 1));
+        seekRow.addView(seekBar, new LinearLayout.LayoutParams(0, dp(44), 1));
         TextView end = new TextView(this);
         end.setText(R.string.percent_end);
         end.setTextColor(menuMuted);
         end.setGravity(Gravity.END);
-        seekPanel.addView(end, new LinearLayout.LayoutParams(dp(52), dp(44)));
+        seekRow.addView(end, new LinearLayout.LayoutParams(dp(52), dp(44)));
+        seekPanel.addView(seekRow);
+
+        LinearLayout steps = new LinearLayout(this);
+        steps.setGravity(Gravity.CENTER_VERTICAL);
+        String[] stepLabels = {"−1%", "−0.1%", "−0.01%", "+0.01%", "+0.1%", "+1%"};
+        float[] stepValues = {-1f, -0.1f, -0.01f, 0.01f, 0.1f, 1f};
+        for (int i = 0; i < stepLabels.length; i++) {
+            Button step = makeProgressStepButton(stepLabels[i], 11);
+            UiKit.styleButton(this, step,
+                    i == 0 || i == stepLabels.length - 1 ? menuAccentContainer
+                            : darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
+                    i == 0 || i == stepLabels.length - 1 ? menuAccent : menuFg, 12);
+            configureRepeatingProgressStep(step, stepValues[i]);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1);
+            if (i > 0) lp.leftMargin = dp(4);
+            steps.addView(step, lp);
+        }
+        seekPanel.addView(steps);
         readerBottomBar.addView(seekPanel);
 
         LinearLayout nav = new LinearLayout(this);
         nav.setGravity(Gravity.CENTER_VERTICAL);
 
-        Button bigMinus = makeProgressStepButton("-", 20);
-        UiKit.styleButton(this, bigMinus, menuAccentContainer, menuAccent, 14);
-        bigMinus.setOnClickListener(v -> adjustProgressByPercent(-1f));
-        nav.addView(bigMinus, new LinearLayout.LayoutParams(dp(44), dp(46)));
-
-        Button smallMinus = makeProgressStepButton("-", 14);
-        UiKit.styleButton(this, smallMinus,
-                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
-                menuFg, 14);
-        smallMinus.setOnClickListener(v -> adjustProgressByPercent(-0.01f));
-        LinearLayout.LayoutParams smallMinusLp = new LinearLayout.LayoutParams(dp(38), dp(46));
-        smallMinusLp.leftMargin = dp(6);
-        nav.addView(smallMinus, smallMinusLp);
+        ImageButton catalog = makeIconButton();
+        catalog.setImageResource(R.drawable.ic_toc);
+        catalog.setContentDescription("目录");
+        UiKit.styleIconButton(this, catalog, menuFg,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
+        catalog.setOnClickListener(v -> openCatalogPage());
+        nav.addView(catalog, new LinearLayout.LayoutParams(dp(52), dp(46)));
 
         progressButton = makeButton("");
         progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
@@ -905,23 +986,8 @@ public class MainActivity extends Activity {
                 menuFg, 15);
         progressButton.setOnClickListener(v -> toggleSeekPanel());
         LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(0, dp(46), 1);
-        progressLp.leftMargin = dp(6);
-        progressLp.rightMargin = dp(6);
+        progressLp.leftMargin = dp(8);
         nav.addView(progressButton, progressLp);
-
-        Button smallPlus = makeProgressStepButton("+", 14);
-        UiKit.styleButton(this, smallPlus,
-                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
-                menuFg, 14);
-        smallPlus.setOnClickListener(v -> adjustProgressByPercent(0.01f));
-        nav.addView(smallPlus, new LinearLayout.LayoutParams(dp(38), dp(46)));
-
-        Button bigPlus = makeProgressStepButton("+", 20);
-        UiKit.styleButton(this, bigPlus, menuAccentContainer, menuAccent, 14);
-        bigPlus.setOnClickListener(v -> adjustProgressByPercent(1f));
-        LinearLayout.LayoutParams bigPlusLp = new LinearLayout.LayoutParams(dp(44), dp(46));
-        bigPlusLp.leftMargin = dp(6);
-        nav.addView(bigPlus, bigPlusLp);
         readerBottomBar.addView(nav);
 
         FrameLayout.LayoutParams bottomLp = new FrameLayout.LayoutParams(
@@ -971,23 +1037,153 @@ public class MainActivity extends Activity {
         showSearchPage();
     }
 
-    private void openSettingsPage() {
+    private boolean isAutoTocEnabled() {
+        return preferences != null && preferences.getBoolean(KEY_AUTO_TOC, false);
+    }
+
+    private void scheduleMissingTocGeneration() {
+        for (Book book : new ArrayList<>(books)) {
+            tocExecutor.execute(() -> {
+                if (tocStore.read(book) != null) return;
+                try {
+                    TocDocument document = TocGenerator.generate(
+                            new File(book.path), book.encoding);
+                    tocStore.write(book, document);
+                } catch (Exception ignored) {
+                    // A failed book must not stop indexing the rest of the shelf.
+                }
+            });
+        }
+    }
+
+    private void generateTocInBackground(Book book, boolean notify) {
+        tocExecutor.execute(() -> {
+            try {
+                TocDocument document = TocGenerator.generate(new File(book.path), book.encoding);
+                tocStore.write(book, document);
+                if (notify) mainHandler.post(() -> Toast.makeText(this,
+                        document.entries.isEmpty() ? "未识别到目录" : "目录已生成",
+                        Toast.LENGTH_SHORT).show());
+            } catch (Exception error) {
+                if (notify) mainHandler.post(() -> Toast.makeText(this,
+                        "目录生成失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    private void openCatalogPage() {
         if (currentBook == null) return;
+        TocDocument document = tocStore.read(currentBook);
+        if (document == null || document.entries.isEmpty()) {
+            Book book = currentBook;
+            new AlertDialog.Builder(this)
+                    .setTitle("目录不存在")
+                    .setMessage("请手工生成目录。生成会在后台完成，期间仍可继续阅读。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("生成目录", (dialog, which) -> {
+                        generateTocInBackground(book, true);
+                        Toast.makeText(this, "正在后台生成目录", Toast.LENGTH_SHORT).show();
+                    })
+                    .show();
+            return;
+        }
         saveCurrentProgress();
+        disableAutoPage();
+        loadRequestId++;
+        releasePageSnapshot();
+        catalogOpen = true;
+        showCatalogPage(currentBook, document);
+    }
+
+    private void showCatalogPage(Book book, TocDocument document) {
+        applyWindowColors(book.theme);
+        boolean dark = isDarkReaderTheme(book.theme);
+        int background = backgroundColor(book.theme);
+        int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int variant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
+        int text = textColor(book.theme);
+        int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+        int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(background);
+        root.setPadding(dp(12), statusBarHeight() + dp(10), dp(12), navigationBarHeight() + dp(8));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        ImageButton back = makeIconButton();
+        back.setImageResource(R.drawable.ic_arrow_back);
+        back.setContentDescription("返回阅读");
+        UiKit.styleIconButton(this, back, text, variant, 14);
+        back.setOnClickListener(v -> onBackPressed());
+        header.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        TextView title = new TextView(this);
+        title.setText("目录 · " + shortBookTitle(book.title));
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        UiKit.styleTitle(title, text, 22);
+        title.setPadding(dp(12), 0, 0, 0);
+        header.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+        root.addView(header);
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(0, dp(10), 0, dp(16));
+        for (TocEntry entry : document.entries) {
+            TextView item = new TextView(this);
+            item.setText(entry.title);
+            item.setTextColor(entry.level == 1 ? text : muted);
+            item.setTextSize(TypedValue.COMPLEX_UNIT_SP, entry.level == 1 ? 17 : 15);
+            item.setTypeface(entry.level == 1
+                    ? android.graphics.Typeface.DEFAULT_BOLD
+                    : android.graphics.Typeface.DEFAULT);
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setPadding(dp(16 + (entry.level - 1) * 18), dp(12), dp(14), dp(12));
+            item.setBackground(UiKit.interactive(this,
+                    entry.level == 1 ? variant : surface, entry.level == 1 ? 14 : 8,
+                    UiKit.withAlpha(accent, 28)));
+            item.setOnClickListener(v -> jumpToCatalogOffset(book, entry.offset));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = entry.level == 1 ? dp(10) : dp(2);
+            list.addView(item, lp);
+        }
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        setContentView(root);
+    }
+
+    private void jumpToCatalogOffset(Book book, long offset) {
+        book.offset = Math.max(0L, Math.min(book.fileSize, offset));
+        book.progress = book.fileSize <= 0 ? 0f : book.offset / (float) book.fileSize;
+        book.updatedAt = System.currentTimeMillis();
+        saveBooks();
+        catalogOpen = false;
+        readerMenusOpen = false;
+        showReader(book);
+    }
+
+    private void openSettingsPage(int initialTab) {
+        settingsOpenedFromLibrary = currentBook == null;
+        if (currentBook != null) saveCurrentProgress();
         disableAutoPage();
         loadRequestId++;
         releasePageSnapshot();
         settingsOpen = true;
         applyKeepScreenOn(false);
-        showSettingsPage(currentBook);
+        showSettingsPage(currentBook, initialTab);
     }
 
-    private void showSettingsPage(Book book) {
-        applyWindowColors(book.theme);
-        boolean dark = isDarkReaderTheme(book.theme);
-        int background = backgroundColor(book.theme);
+    private void showSettingsPage(Book book, int initialTab) {
+        int theme = book == null ? THEME_SYSTEM : book.theme;
+        applyWindowColors(theme);
+        boolean dark = isDarkReaderTheme(theme);
+        int background = backgroundColor(theme);
         int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
-        int text = textColor(book.theme);
+        int text = textColor(theme);
         int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
         int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
         int accentContainer = dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
@@ -1018,17 +1214,21 @@ public class MainActivity extends Activity {
         navTitle.setPadding(dp(10), 0, dp(8), 0);
         navigation.addView(navTitle, new LinearLayout.LayoutParams(0, dp(44), 1));
 
-        Button general = makeSettingsNavButton("常规", text, surface);
+        boolean showGeneral = initialTab == SETTINGS_GENERAL || book == null;
+        Button general = makeSettingsNavButton("常规", showGeneral ? accent : text,
+                showGeneral ? accentContainer : surface);
         navigation.addView(general, new LinearLayout.LayoutParams(dp(72), dp(44)));
 
-        Button reading = makeSettingsNavButton("阅读", accent, accentContainer);
+        Button reading = makeSettingsNavButton("阅读", showGeneral ? text : accent,
+                showGeneral ? surface : accentContainer);
+        reading.setEnabled(book != null);
         LinearLayout.LayoutParams readingLp = new LinearLayout.LayoutParams(dp(72), dp(44));
         readingLp.leftMargin = dp(4);
         navigation.addView(reading, readingLp);
         general.setOnClickListener(v -> {
             styleSettingsNavButton(general, true, text, surface, accent, accentContainer);
             styleSettingsNavButton(reading, false, text, surface, accent, accentContainer);
-            renderGeneralSettings(surface, text, muted);
+            renderGeneralSettings(surface, text, muted, accent);
         });
         reading.setOnClickListener(v -> {
             styleSettingsNavButton(general, false, text, surface, accent, accentContainer);
@@ -1051,7 +1251,8 @@ public class MainActivity extends Activity {
         root.addView(settingsScroll, contentLp);
 
         setContentView(root);
-        renderReadingSettings(book, surface, text, muted, accent, accentContainer);
+        if (showGeneral) renderGeneralSettings(surface, text, muted, accent);
+        else renderReadingSettings(book, surface, text, muted, accent, accentContainer);
     }
 
     private Button makeSettingsNavButton(String label, int foreground, int background) {
@@ -1069,17 +1270,32 @@ public class MainActivity extends Activity {
     }
 
 
-    private void renderGeneralSettings(int surface, int text, int muted) {
+    private void renderGeneralSettings(int surface, int text, int muted, int accent) {
         if (settingsContent == null) return;
         settingsContent.removeAllViews();
         TextView title = new TextView(this);
         title.setText("常规");
         UiKit.styleTitle(title, text, 27);
         settingsContent.addView(title);
-        LinearLayout empty = createSettingsSection("暂无常规设置", "这里将用于应用级通用选项。",
+        LinearLayout toc = createSettingsSection("TXT 自动生成目录",
+                "开启后在后台识别卷、章、节并保存对应的精确字节位置。",
                 surface, text, muted);
-        LinearLayout.LayoutParams lp = settingsSectionLayoutParams();
-        settingsContent.addView(empty, lp);
+        Switch tocSwitch = new Switch(this);
+        tocSwitch.setChecked(isAutoTocEnabled());
+        styleSettingsSwitch(tocSwitch, accent,
+                isSystemNight() ? Color.rgb(91, 96, 93) : Color.rgb(190, 198, 193));
+        tocSwitch.setShowText(false);
+        tocSwitch.setContentDescription("TXT 自动生成目录");
+        tocSwitch.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean(KEY_AUTO_TOC, checked).apply();
+            if (checked) scheduleMissingTocGeneration();
+        });
+        LinearLayout switchRow = new LinearLayout(this);
+        switchRow.setGravity(Gravity.END);
+        switchRow.addView(tocSwitch, new LinearLayout.LayoutParams(dp(56), dp(40)));
+        toc.addView(switchRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+        settingsContent.addView(toc, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
 
@@ -2365,14 +2581,45 @@ public class MainActivity extends Activity {
     private void toggleSeekPanel() {
         if (seekPanel != null) {
             seekPanel.setVisibility(seekPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+            alignMenusToReaderViewport();
         }
+    }
+
+    private void configureRepeatingProgressStep(Button button, float delta) {
+        final boolean[] repeated = {false};
+        final Runnable[] repeat = new Runnable[1];
+        repeat[0] = () -> {
+            repeated[0] = true;
+            adjustProgressByPercent(delta);
+            mainHandler.postDelayed(repeat[0], 120L);
+        };
+        button.setOnTouchListener((view, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    repeated[0] = false;
+                    mainHandler.postDelayed(repeat[0], 420L);
+                    view.setPressed(true);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    mainHandler.removeCallbacks(repeat[0]);
+                    view.setPressed(false);
+                    if (!repeated[0]) adjustProgressByPercent(delta);
+                    view.performClick();
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    mainHandler.removeCallbacks(repeat[0]);
+                    view.setPressed(false);
+                    return true;
+                default:
+                    return true;
+            }
+        });
     }
 
     private void showReaderMenus() {
         saveCurrentProgress();
         readerMenusOpen = true;
         alignMenusToReaderViewport();
-        if (seekPanel != null) seekPanel.setVisibility(View.VISIBLE);
         animateMenuIn(readerTopBar, -dp(72));
         animateMenuIn(readerBottomBar, dp(120));
     }
@@ -2425,6 +2672,10 @@ public class MainActivity extends Activity {
         if (currentBook == null) return;
         saveCurrentProgress();
         float next = Math.max(0f, Math.min(1f, currentBook.progress + percentDelta / 100f));
+        pendingSeekProgress = next;
+        currentBook.progress = next;
+        updateProgressText(next);
+        if (seekBar != null) seekBar.setProgress(Math.round(next * 1000f));
         loadChunkAtProgress(next);
     }
 
@@ -2629,7 +2880,7 @@ public class MainActivity extends Activity {
         if (readerBottomBar == null || readerBottomBar.getVisibility() != View.VISIBLE) return 0;
         int height = readerBottomBar.getHeight();
         if (height > 0) return height;
-        int seekHeight = seekPanel != null && seekPanel.getVisibility() == View.VISIBLE ? dp(44) : 0;
+        int seekHeight = seekPanel != null && seekPanel.getVisibility() == View.VISIBLE ? dp(86) : 0;
         return seekHeight + dp(46) + dp(20);
     }
 

@@ -23,6 +23,7 @@ import android.text.TextUtils;
 import android.text.style.BackgroundColorSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.Menu;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -36,6 +37,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -49,7 +51,11 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.util.ArrayList;
@@ -76,7 +82,8 @@ public class MainActivity extends Activity {
     private static final int WINDOW_BYTES = CHUNK_BYTES * 3;
     private static final int INDEX_STEP_BYTES = 64 * 1024;
     private static final int CHUNK_CACHE_LIMIT = 6;
-    private static final int READER_CACHE_MAGIC = 0x584C4942;
+    // XLI2: cache text is guaranteed to end on a complete encoded character.
+    private static final int READER_CACHE_MAGIC = 0x584C4932;
     private static final int MAX_READER_CACHE_TEXT_BYTES = WINDOW_BYTES * 6;
     private static final long READER_CACHE_WRITE_DELAY_MS = 800L;
     private static final int SEARCH_READ_BYTES = 64 * 1024;
@@ -111,6 +118,10 @@ public class MainActivity extends Activity {
     private boolean seekTracking;
     private boolean searchOpen;
     private boolean temporarySearchReading;
+    private boolean suppressProgressSave;
+    private boolean activityResumed;
+    private boolean autoPageDispatching;
+    private int autoPageSeconds = AutoPageOptions.OFF;
     private ReaderCacheWrite pendingReaderCache;
     private SearchSession searchSession;
     private float touchStartX;
@@ -120,6 +131,7 @@ public class MainActivity extends Activity {
     private volatile long searchRequestId;
     private long currentChunkOffset;
     private int currentChunkBytes;
+    private Chunk currentChunk;
     private Bitmap currentPageSnapshot;
     private long snapshotChunkOffset = -1L;
     private int snapshotScrollY = -1;
@@ -140,6 +152,7 @@ public class MainActivity extends Activity {
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
     private Button progressButton;
+    private Button autoPageButton;
     private LinearLayout seekPanel;
     private SeekBar seekBar;
 
@@ -153,6 +166,22 @@ public class MainActivity extends Activity {
         pendingReaderCache = null;
         if (cache != null) writeReaderCache(cache);
     };
+    private final Runnable autoPageRunnable = () -> {
+        Book book = currentBook;
+        if (book == null || AutoPageOptions.normalize(autoPageSeconds) == 0
+                || searchOpen || temporarySearchReading) {
+            return;
+        }
+        if (!pageAnimating && !loadingChunk && !suppressProgressSave && readerScroll != null) {
+            autoPageDispatching = true;
+            try {
+                pageForward();
+            } finally {
+                autoPageDispatching = false;
+            }
+        }
+        scheduleAutoPage();
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -164,9 +193,18 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        activityResumed = false;
+        disableAutoPage();
         saveCurrentProgress();
         flushReaderCacheWrite();
         super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        activityResumed = true;
+        scheduleAutoPage();
     }
 
     @Override
@@ -209,6 +247,7 @@ public class MainActivity extends Activity {
     }
 
     private void showLibrary() {
+        disableAutoPage();
         applyWindowColors(THEME_SYSTEM);
 
         boolean dark = isSystemNight();
@@ -533,6 +572,7 @@ public class MainActivity extends Activity {
     }
 
     private void openBook(Book book) {
+        disableAutoPage();
         readerMenusOpen = false;
         currentBook = book;
         showReader(book);
@@ -578,13 +618,13 @@ public class MainActivity extends Activity {
         UiKit.styleButton(this, smaller, menuAccentContainer, menuAccent, 14);
         smaller.setPadding(0, 0, 0, 0);
         smaller.setOnClickListener(v -> updateFontSize(-2f));
-        fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(56), dp(42)));
+        fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(44), dp(42)));
 
         Button larger = makeButton("A+");
         UiKit.styleButton(this, larger, menuAccentContainer, menuAccent, 14);
         larger.setPadding(0, 0, 0, 0);
         larger.setOnClickListener(v -> updateFontSize(2f));
-        LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(56), dp(42));
+        LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(44), dp(42));
         fontControls.addView(larger, largerLp);
         readerTopBar.addView(fontControls, new LinearLayout.LayoutParams(0, dp(42), 1));
 
@@ -594,8 +634,8 @@ public class MainActivity extends Activity {
                 darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
         search.setContentDescription("搜索当前书籍");
         search.setOnClickListener(v -> openSearchPage());
-        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(dp(48), dp(42));
-        searchLp.leftMargin = dp(6);
+        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(dp(42), dp(42));
+        searchLp.leftMargin = dp(4);
         readerTopBar.addView(search, searchLp);
 
         ImageButton theme = makeIconButton();
@@ -611,8 +651,8 @@ public class MainActivity extends Activity {
             readerMenusOpen = true;
             showReader(book);
         });
-        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(48), dp(42));
-        themeLp.leftMargin = dp(6);
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(42), dp(42));
+        themeLp.leftMargin = dp(4);
         readerTopBar.addView(theme, themeLp);
 
         Button sensitivity = makeButton(sensitivityShortLabel(book.sensitivity));
@@ -632,9 +672,28 @@ public class MainActivity extends Activity {
             saveBooks();
         });
         LinearLayout.LayoutParams sensitivityLp =
-                new LinearLayout.LayoutParams(dp(76), dp(42));
-        sensitivityLp.leftMargin = dp(6);
+                new LinearLayout.LayoutParams(dp(58), dp(42));
+        sensitivityLp.leftMargin = dp(4);
         readerTopBar.addView(sensitivity, sensitivityLp);
+
+        autoPageButton = makeButton(AutoPageOptions.shortLabel(autoPageSeconds));
+        UiKit.styleButton(this, autoPageButton,
+                autoPageSeconds == AutoPageOptions.OFF
+                        ? (darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT)
+                        : menuAccentContainer,
+                autoPageSeconds == AutoPageOptions.OFF ? menuFg : menuAccent, 14);
+        autoPageButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        autoPageButton.setPadding(dp(3), 0, dp(3), 0);
+        autoPageButton.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_auto_page, 0, 0, 0);
+        autoPageButton.setCompoundDrawableTintList(
+                android.content.res.ColorStateList.valueOf(
+                        autoPageSeconds == AutoPageOptions.OFF ? menuFg : menuAccent));
+        autoPageButton.setCompoundDrawablePadding(dp(1));
+        autoPageButton.setContentDescription(autoPageDescription(autoPageSeconds));
+        autoPageButton.setOnClickListener(v -> showAutoPageMenu(autoPageButton));
+        LinearLayout.LayoutParams autoPageLp = new LinearLayout.LayoutParams(dp(58), dp(42));
+        autoPageLp.leftMargin = dp(4);
+        readerTopBar.addView(autoPageButton, autoPageLp);
 
         readerScroll = new AccessibleScrollView(this);
         readerScroll.setFillViewport(true);
@@ -885,12 +944,17 @@ public class MainActivity extends Activity {
         }
 
         setContentView(frame);
-        restoreReaderCache(book);
+        long requestedOffset = book.offset;
+        suppressProgressSave = true;
+        CacheRestoreResult cacheResult = restoreReaderCache(book, requestedOffset);
         frame.post(this::alignMenusToReaderViewport);
-        loadChunkAtOffset(book.offset);
+        if (cacheResult != CacheRestoreResult.COVERS_OFFSET) {
+            loadChunkAtOffset(requestedOffset);
+        }
         if (readerMenusOpen) {
             frame.post(this::showReaderMenus);
         }
+        scheduleAutoPage();
     }
 
     private void openSearchPage() {
@@ -926,6 +990,7 @@ public class MainActivity extends Activity {
     }
 
     private void showSearchPage() {
+        disableAutoPage();
         if (currentBook == null) return;
         Book book = currentBook;
         applyWindowColors(book.theme);
@@ -1358,6 +1423,7 @@ public class MainActivity extends Activity {
                 if (requestId != loadRequestId || currentBook != book) return;
                 loadingChunk = false;
                 if (finalError != null) {
+                    suppressProgressSave = false;
                     Toast.makeText(this, "打开失败：" + finalError.getMessage(), Toast.LENGTH_LONG).show();
                     return;
                 }
@@ -1376,7 +1442,8 @@ public class MainActivity extends Activity {
         requestBookIndex(book);
         long windowStart = hasBookIndex(book, fileSize)
                 ? indexedReadableOffset(book, file, Math.max(0L, clampedTarget - CHUNK_BYTES))
-                : findReadableOffset(file, Math.max(0L, clampedTarget - CHUNK_BYTES));
+                : findReadableOffset(file, Math.max(0L, clampedTarget - CHUNK_BYTES),
+                        book.encoding);
         Chunk chunk = readCachedChunk(file, windowStart, WINDOW_BYTES, book.encoding);
         return new ChunkLoad(fileSize, clampedTarget, windowStart, chunk);
     }
@@ -1386,16 +1453,14 @@ public class MainActivity extends Activity {
         book.fileSize = load.fileSize;
         currentChunkOffset = load.windowStart;
         currentChunkBytes = load.chunk.bytesRead;
+        currentChunk = load.chunk;
         book.offset = load.targetOffset;
         book.progress = load.fileSize <= 0 ? 0f : load.targetOffset / (float) load.fileSize;
         book.updatedAt = System.currentTimeMillis();
         pageStateGeneration++;
         readerText.setText(readerDisplayText(load.chunk.text, book));
         refreshReaderSpacing(false);
-        readerScroll.post(() -> {
-            scrollToOffsetWithinWindow(load.targetOffset);
-            readerScroll.post(this::cacheCurrentPageSnapshot);
-        });
+        positionReaderAtOffset(book, load.chunk, load.targetOffset, true);
         saveBooks();
         if (!temporarySearchReading) {
             saveReaderCache(book, load);
@@ -1406,25 +1471,51 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void restoreReaderCache(Book book) {
+    private CacheRestoreResult restoreReaderCache(Book book, long requestedOffset) {
         ReaderCache cache = readReaderCache(book);
-        if (cache == null || readerText == null || readerScroll == null) return;
+        if (cache == null || readerText == null || readerScroll == null) {
+            return CacheRestoreResult.NOT_AVAILABLE;
+        }
+        Charset charset = charsetFor(book.encoding);
+        Chunk cachedChunk = new Chunk(cache.text, cache.bytesRead,
+                ByteOffsetMap.create(cache.text, charset));
         currentChunkOffset = cache.windowStart;
         currentChunkBytes = cache.bytesRead;
+        currentChunk = cachedChunk;
         book.fileSize = cache.fileSize;
-        book.offset = Math.max(0L, Math.min(book.offset, cache.fileSize));
+        book.offset = Math.max(0L, Math.min(requestedOffset, cache.fileSize));
         book.progress = cache.fileSize <= 0 ? 0f : book.offset / (float) cache.fileSize;
-        long displayOffset = Math.max(cache.windowStart,
-                Math.min(book.offset, cache.windowStart + Math.max(0, cache.bytesRead)));
+        boolean coversOffset = ReaderPosition.cacheCoversOffset(cache.fileSize,
+                cache.windowStart, cache.bytesRead, requestedOffset);
+        long displayOffset = ReaderPosition.previewOffset(cache.fileSize,
+                cache.windowStart, cache.bytesRead, requestedOffset);
         pageStateGeneration++;
         readerText.setText(readerDisplayText(cache.text, book));
         refreshReaderSpacing(false);
-        readerScroll.post(() -> {
-            scrollToOffsetWithinWindow(displayOffset);
-            readerScroll.post(this::cacheCurrentPageSnapshot);
-        });
+        positionReaderAtOffset(book, cachedChunk, displayOffset, coversOffset);
         updateProgressText();
         if (seekBar != null) seekBar.setProgress((int) (book.progress * 1000f));
+        if (coversOffset) {
+            preloadAdjacentWindows(book,
+                    new ChunkLoad(cache.fileSize, requestedOffset, cache.windowStart, cachedChunk));
+        }
+        return coversOffset
+                ? CacheRestoreResult.COVERS_OFFSET
+                : CacheRestoreResult.PREVIEW_ONLY;
+    }
+
+    private void positionReaderAtOffset(Book book, Chunk chunk, long targetOffset,
+                                        boolean finishRestore) {
+        AccessibleScrollView targetScroll = readerScroll;
+        targetScroll.post(() -> {
+            if (currentBook != book || readerScroll != targetScroll || currentChunk != chunk) return;
+            scrollToOffsetWithinWindow(targetOffset);
+            targetScroll.post(() -> {
+                if (currentBook != book || readerScroll != targetScroll || currentChunk != chunk) return;
+                if (finishRestore) suppressProgressSave = false;
+                cacheCurrentPageSnapshot();
+            });
+        });
     }
 
     private ReaderCache readReaderCache(Book book) {
@@ -1561,7 +1652,8 @@ public class MainActivity extends Activity {
     }
 
     private void maybeLoadAdjacentWindow() {
-        if (loadingChunk || pendingWindowLoad || currentBook == null || readerScroll == null || readerText == null) return;
+        if (suppressProgressSave || loadingChunk || pendingWindowLoad || currentBook == null
+                || readerScroll == null || readerText == null) return;
         int maxScroll = maxReaderScroll();
         if (maxScroll <= 0) return;
         int y = readerScroll.getScrollY();
@@ -1582,11 +1674,13 @@ public class MainActivity extends Activity {
     }
 
     private void pageBackward() {
+        if (!autoPageDispatching) scheduleAutoPage();
         if (pageAnimating) return;
         animatePageTurn(-1, this::performPageBackward);
     }
 
     private void pageForward() {
+        if (!autoPageDispatching) scheduleAutoPage();
         if (pageAnimating) return;
         animatePageTurn(1, this::performPageForward);
     }
@@ -1752,21 +1846,24 @@ public class MainActivity extends Activity {
     }
 
     private void scrollToOffsetWithinWindow(long targetOffset) {
-        if (readerScroll == null || readerText == null) return;
+        if (readerScroll == null || readerText == null || currentChunk == null) return;
         if (readerText.getLayout() == null) {
             readerText.post(() -> scrollToOffsetWithinWindow(targetOffset));
             return;
         }
-        int maxScroll = maxReaderScroll();
-        if (maxScroll == 0 || currentChunkBytes <= 0) {
+        Layout layout = readerText.getLayout();
+        if (layout.getLineCount() <= 0 || currentChunkBytes <= 0) {
             pageStateGeneration++;
             readerScroll.scrollTo(0, 0);
             return;
         }
-        float within = (targetOffset - currentChunkOffset) / (float) currentChunkBytes;
-        within = Math.max(0f, Math.min(1f, within));
+        long relativeByteOffset = Math.max(0L,
+                Math.min(targetOffset - currentChunkOffset, currentChunkBytes));
+        int charIndex = currentChunk.offsetMap.charIndexForByteOffset(relativeByteOffset);
+        int line = Math.max(0, Math.min(layout.getLineCount() - 1,
+                layout.getLineForOffset(Math.min(charIndex, readerText.length()))));
         pageStateGeneration++;
-        readerScroll.scrollTo(0, snapToLineTop(Math.round(maxScroll * within)));
+        readerScroll.scrollTo(0, Math.min(maxReaderScroll(), layout.getLineTop(line)));
     }
 
     private Chunk readChunk(File file, long offset, int maxBytes, String encoding) throws Exception {
@@ -1775,10 +1872,34 @@ public class MainActivity extends Activity {
             int length = (int) Math.min(maxBytes, Math.max(0L, file.length() - raf.getFilePointer()));
             byte[] bytes = new byte[length];
             int read = raf.read(bytes);
-            if (read <= 0) return new Chunk("", 0);
-            String text = new String(bytes, 0, read, Charset.forName(encoding == null ? "UTF-8" : encoding));
-            return new Chunk(text, read);
+            Charset charset = charsetFor(encoding);
+            if (read <= 0) return new Chunk("", 0, ByteOffsetMap.create("", charset));
+            return decodeCompleteChunk(bytes, read, charset);
         }
+    }
+
+    private Chunk decodeCompleteChunk(byte[] bytes, int read, Charset charset) {
+        int minimumLength = Math.max(0, read - 4);
+        for (int validLength = read; validLength >= minimumLength; validLength--) {
+            CharsetDecoder decoder = charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT);
+            try {
+                String text = decoder.decode(ByteBuffer.wrap(bytes, 0, validLength)).toString();
+                ByteOffsetMap map = ByteOffsetMap.create(text, charset);
+                if (map.totalBytes() == validLength) {
+                    return new Chunk(text, validLength, map);
+                }
+            } catch (CharacterCodingException ignored) {
+                // A chunk may end halfway through a multi-byte character; trim only that suffix.
+            }
+        }
+        String text = new String(bytes, 0, read, charset);
+        return new Chunk(text, read, ByteOffsetMap.create(text, charset));
+    }
+
+    private Charset charsetFor(String encoding) {
+        return Charset.forName(encoding == null ? "UTF-8" : encoding);
     }
 
     private Chunk readCachedChunk(File file, long offset, int maxBytes, String encoding) throws Exception {
@@ -1804,7 +1925,7 @@ public class MainActivity extends Activity {
         try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
             offsets.add(0L);
             for (long target = INDEX_STEP_BYTES; target < size; target += INDEX_STEP_BYTES) {
-                long offset = findReadableOffset(raf, size, target);
+                long offset = findReadableOffset(raf, size, target, book.encoding);
                 if (offsets.isEmpty() || offsets.get(offsets.size() - 1) < offset) {
                     offsets.add(offset);
                 }
@@ -1840,29 +1961,50 @@ public class MainActivity extends Activity {
                 return indexed;
             }
         }
-        return findReadableOffset(file, targetOffset);
+        return findReadableOffset(file, targetOffset, book.encoding);
     }
 
-    private long findReadableOffset(File file, long targetOffset) throws Exception {
+    private long findReadableOffset(File file, long targetOffset, String encoding) throws Exception {
         long size = file.length();
         if (targetOffset <= 0 || size <= 0) return 0L;
         try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            return findReadableOffset(raf, size, targetOffset);
+            return findReadableOffset(raf, size, targetOffset, encoding);
         }
     }
 
-    private long findReadableOffset(RandomAccessFile raf, long size, long targetOffset) throws Exception {
+    private long findReadableOffset(RandomAccessFile raf, long size, long targetOffset,
+                                    String encoding) throws Exception {
         if (targetOffset <= 0 || size <= 0) return 0L;
         long offset = Math.min(targetOffset, Math.max(0L, size - 1));
-        long start = Math.max(0L, offset - 4096L);
-        raf.seek(offset);
-        while (raf.getFilePointer() > start) {
-            raf.seek(raf.getFilePointer() - 1);
-            int b = raf.read();
-            if (b == '\n') {
-                return Math.min(size, raf.getFilePointer());
+        long start = Math.max(0L, offset - INDEX_STEP_BYTES);
+        String normalized = encoding == null ? "UTF-8" : encoding.toUpperCase(Locale.ROOT);
+        if (normalized.startsWith("UTF-16")) {
+            long position = offset - (offset % 2L);
+            boolean littleEndian = normalized.endsWith("LE");
+            for (long cursor = position - 2L; cursor >= start; cursor -= 2L) {
+                raf.seek(cursor);
+                int first = raf.read();
+                int second = raf.read();
+                boolean newline = littleEndian
+                        ? first == 0x0A && second == 0x00
+                        : first == 0x00 && second == 0x0A;
+                if (newline) return Math.min(size, cursor + 2L);
             }
-            raf.seek(raf.getFilePointer() - 1);
+            return position;
+        }
+        for (long cursor = offset - 1L; cursor >= start; cursor--) {
+            raf.seek(cursor);
+            if (raf.read() == 0x0A) return Math.min(size, cursor + 1L);
+        }
+        if (normalized.startsWith("UTF-8")) {
+            long aligned = offset;
+            while (aligned < size) {
+                raf.seek(aligned);
+                int value = raf.read();
+                if (value < 0 || (value & 0xC0) != 0x80) break;
+                aligned++;
+            }
+            return aligned;
         }
         return offset;
     }
@@ -2121,10 +2263,15 @@ public class MainActivity extends Activity {
     }
 
     private void saveCurrentProgress() {
-        if (currentBook == null || readerScroll == null || readerText == null) return;
-        int maxScroll = maxReaderScroll();
-        float chunkScroll = maxScroll == 0 ? 0f : Math.max(0f, Math.min(1f, readerScroll.getScrollY() / (float) maxScroll));
-        long visibleOffset = currentChunkOffset + Math.round(currentChunkBytes * chunkScroll);
+        if (suppressProgressSave || currentBook == null || readerScroll == null
+                || readerText == null || currentChunk == null) return;
+        Layout layout = readerText.getLayout();
+        if (layout == null || layout.getLineCount() <= 0) return;
+        int topLine = Math.max(0, Math.min(layout.getLineCount() - 1,
+                layout.getLineForVertical(Math.max(0, readerScroll.getScrollY()))));
+        int topCharIndex = layout.getLineStart(topLine);
+        long relativeByteOffset = currentChunk.offsetMap.byteOffsetForCharIndex(topCharIndex);
+        long visibleOffset = currentChunkOffset + relativeByteOffset;
         currentBook.offset = Math.min(Math.max(0L, visibleOffset), Math.max(0L, currentBook.fileSize));
         currentBook.progress = currentBook.fileSize <= 0 ? 0f : currentBook.offset / (float) currentBook.fileSize;
         currentBook.updatedAt = System.currentTimeMillis();
@@ -2224,6 +2371,74 @@ public class MainActivity extends Activity {
         return "中";
     }
 
+    private void showAutoPageMenu(View anchor) {
+        cancelAutoPage();
+        PopupMenu popup = new PopupMenu(this, anchor);
+        addAutoPageMenuItem(popup, AutoPageOptions.OFF, "关闭", autoPageSeconds);
+        addAutoPageMenuItem(popup, AutoPageOptions.FIVE_SECONDS, "每 5 秒", autoPageSeconds);
+        addAutoPageMenuItem(popup, AutoPageOptions.TEN_SECONDS, "每 10 秒", autoPageSeconds);
+        addAutoPageMenuItem(popup, AutoPageOptions.TWENTY_SECONDS, "每 20 秒", autoPageSeconds);
+        popup.setOnMenuItemClickListener(item -> {
+            autoPageSeconds = AutoPageOptions.normalize(item.getItemId());
+            refreshAutoPageButton();
+            scheduleAutoPage();
+            return true;
+        });
+        popup.setOnDismissListener(menu -> scheduleAutoPage());
+        popup.show();
+    }
+
+    private void addAutoPageMenuItem(PopupMenu popup, int seconds, String title,
+                                     int selectedSeconds) {
+        popup.getMenu().add(Menu.NONE, seconds, Menu.NONE, title)
+                .setCheckable(true)
+                .setChecked(AutoPageOptions.normalize(selectedSeconds) == seconds);
+    }
+
+    private void refreshAutoPageButton() {
+        Book book = currentBook;
+        if (autoPageButton == null || book == null) return;
+        boolean dark = isDarkReaderTheme(book.theme);
+        boolean enabled = AutoPageOptions.normalize(autoPageSeconds) != AutoPageOptions.OFF;
+        int foreground = enabled
+                ? (dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT)
+                : (dark ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT);
+        int background = enabled
+                ? (dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER)
+                : (dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT);
+        UiKit.styleButton(this, autoPageButton, background, foreground, 14);
+        autoPageButton.setText(AutoPageOptions.shortLabel(autoPageSeconds));
+        autoPageButton.setCompoundDrawableTintList(
+                android.content.res.ColorStateList.valueOf(foreground));
+        autoPageButton.setContentDescription(autoPageDescription(autoPageSeconds));
+    }
+
+    private String autoPageDescription(int seconds) {
+        int normalized = AutoPageOptions.normalize(seconds);
+        return normalized == AutoPageOptions.OFF
+                ? "自动翻页已关闭"
+                : "自动翻页，每 " + normalized + " 秒";
+    }
+
+    private void scheduleAutoPage() {
+        mainHandler.removeCallbacks(autoPageRunnable);
+        if (!activityResumed || currentBook == null || readerScroll == null
+                || searchOpen || temporarySearchReading) return;
+        int seconds = AutoPageOptions.normalize(autoPageSeconds);
+        if (seconds == AutoPageOptions.OFF) return;
+        mainHandler.postDelayed(autoPageRunnable, seconds * 1000L);
+    }
+
+    private void cancelAutoPage() {
+        mainHandler.removeCallbacks(autoPageRunnable);
+    }
+
+    private void disableAutoPage() {
+        autoPageSeconds = AutoPageOptions.OFF;
+        cancelAutoPage();
+        refreshAutoPageButton();
+    }
+
     private Button makeProgressStepButton(String text, int sp) {
         Button button = makeButton(text);
         button.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
@@ -2320,11 +2535,19 @@ public class MainActivity extends Activity {
     private static class Chunk {
         final String text;
         final int bytesRead;
+        final ByteOffsetMap offsetMap;
 
-        Chunk(String text, int bytesRead) {
+        Chunk(String text, int bytesRead, ByteOffsetMap offsetMap) {
             this.text = text;
             this.bytesRead = bytesRead;
+            this.offsetMap = offsetMap;
         }
+    }
+
+    private enum CacheRestoreResult {
+        NOT_AVAILABLE,
+        COVERS_OFFSET,
+        PREVIEW_ONLY
     }
 
     private static class ReaderCache {

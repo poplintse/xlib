@@ -527,6 +527,27 @@ public class MainActivity extends Activity {
                 openBook(book);
             }
         });
+        if (!managingBooks) {
+            final float[] touchDownX = new float[1];
+            row.setOnTouchListener((view, event) -> {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        touchDownX[0] = event.getRawX();
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        if (touchDownX[0] - event.getRawX() >= dp(72)) {
+                            showDeleteBookDialog(book);
+                        } else {
+                            view.performClick();
+                        }
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        return true;
+                    default:
+                        return true;
+                }
+            });
+        }
         return row;
     }
 
@@ -623,18 +644,41 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void showDeleteBookDialog(Book book) {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("删除书籍？")
+                .setMessage("将删除《" + book.title + "》及本地 TXT 文件，此操作无法撤销。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (ignored, which) -> deleteBook(book))
+                .create();
+        dialog.setCanceledOnTouchOutside(true);
+        dialog.show();
+    }
+
+    private void deleteBook(Book book) {
+        removeBookData(book);
+        books.remove(book);
+        selectedBookIds.remove(book.id);
+        saveBooks();
+        showLibrary();
+    }
+
+    private void removeBookData(Book book) {
+        cancelReaderCacheWrite(book);
+        deleteReaderCache(book);
+        tocStore.delete(book);
+        bookmarkStore.deleteForBook(book.id);
+        File file = new File(book.path);
+        if (file.exists()) {
+            boolean ignored = file.delete();
+        }
+    }
+
     private void deleteSelectedBooks() {
         List<Book> remaining = new ArrayList<>();
         for (Book book : books) {
             if (selectedBookIds.contains(book.id)) {
-                cancelReaderCacheWrite(book);
-                deleteReaderCache(book);
-                tocStore.delete(book);
-                bookmarkStore.deleteForBook(book.id);
-                File file = new File(book.path);
-                if (file.exists()) {
-                    boolean ignored = file.delete();
-                }
+                removeBookData(book);
             } else {
                 remaining.add(book);
             }
@@ -1606,10 +1650,12 @@ public class MainActivity extends Activity {
         body.setText(description);
         body.setTextColor(muted);
         body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+        body.setMinLines(2);
+        body.setMaxLines(2);
         body.setPadding(0, dp(3), dp(6), 0);
         details.addView(body);
         section.addView(details, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 2));
+                ViewGroup.LayoutParams.MATCH_PARENT, 1));
 
         LinearLayout control = new LinearLayout(this);
         control.setOrientation(LinearLayout.VERTICAL);
@@ -1630,7 +1676,7 @@ public class MainActivity extends Activity {
 
     private LinearLayout.LayoutParams settingsSectionLayoutParams() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(72));
         lp.topMargin = dp(8);
         return lp;
     }

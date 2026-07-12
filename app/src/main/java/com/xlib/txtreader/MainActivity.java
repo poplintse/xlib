@@ -107,6 +107,7 @@ public class MainActivity extends Activity {
         }
     };
     private BookStore bookStore;
+    private BookmarkStore bookmarkStore;
     private SharedPreferences preferences;
     private TocStore tocStore;
     private Book currentBook;
@@ -198,6 +199,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         bookStore = new BookStore(preferences);
+        bookmarkStore = new BookmarkStore(preferences);
         tocStore = new TocStore(this);
         loadBooks();
         showLibrary();
@@ -570,6 +572,7 @@ public class MainActivity extends Activity {
                 cancelReaderCacheWrite(book);
                 deleteReaderCache(book);
                 tocStore.delete(book);
+                bookmarkStore.deleteForBook(book.id);
                 File file = new File(book.path);
                 if (file.exists()) {
                     boolean ignored = file.delete();
@@ -979,6 +982,16 @@ public class MainActivity extends Activity {
         catalog.setOnClickListener(v -> openCatalogPage());
         nav.addView(catalog, new LinearLayout.LayoutParams(dp(52), dp(46)));
 
+        ImageButton bookmark = makeIconButton();
+        bookmark.setImageResource(R.drawable.ic_bookmark);
+        bookmark.setContentDescription("添加书签");
+        UiKit.styleIconButton(this, bookmark, menuFg,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
+        bookmark.setOnClickListener(v -> saveCurrentBookmark());
+        LinearLayout.LayoutParams bookmarkLp = new LinearLayout.LayoutParams(dp(52), dp(46));
+        bookmarkLp.leftMargin = dp(6);
+        nav.addView(bookmark, bookmarkLp);
+
         progressButton = makeButton("");
         progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         UiKit.styleButton(this, progressButton,
@@ -1061,9 +1074,14 @@ public class MainActivity extends Activity {
             try {
                 TocDocument document = TocGenerator.generate(new File(book.path), book.encoding);
                 tocStore.write(book, document);
-                if (notify) mainHandler.post(() -> Toast.makeText(this,
-                        document.entries.isEmpty() ? "未识别到目录" : "目录已生成",
-                        Toast.LENGTH_SHORT).show());
+                if (notify) mainHandler.post(() -> {
+                    Toast.makeText(this,
+                            document.entries.isEmpty() ? "未识别到目录" : "目录已生成",
+                            Toast.LENGTH_SHORT).show();
+                    if (catalogOpen && currentBook == book && !document.entries.isEmpty()) {
+                        showCatalogPage(book, document);
+                    }
+                });
             } catch (Exception error) {
                 if (notify) mainHandler.post(() -> Toast.makeText(this,
                         "目录生成失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
@@ -1074,25 +1092,20 @@ public class MainActivity extends Activity {
     private void openCatalogPage() {
         if (currentBook == null) return;
         TocDocument document = tocStore.read(currentBook);
-        if (document == null || document.entries.isEmpty()) {
-            Book book = currentBook;
-            new AlertDialog.Builder(this)
-                    .setTitle("目录不存在")
-                    .setMessage("请手工生成目录。生成会在后台完成，期间仍可继续阅读。")
-                    .setNegativeButton("取消", null)
-                    .setPositiveButton("生成目录", (dialog, which) -> {
-                        generateTocInBackground(book, true);
-                        Toast.makeText(this, "正在后台生成目录", Toast.LENGTH_SHORT).show();
-                    })
-                    .show();
-            return;
-        }
         saveCurrentProgress();
         disableAutoPage();
         loadRequestId++;
         releasePageSnapshot();
         catalogOpen = true;
         showCatalogPage(currentBook, document);
+    }
+
+    private void saveCurrentBookmark() {
+        if (currentBook == null) return;
+        saveCurrentProgress();
+        boolean added = bookmarkStore.add(currentBook.id, currentBook.offset);
+        Toast.makeText(this, added ? "书签已保存" : "当前位置已有书签",
+                Toast.LENGTH_SHORT).show();
     }
 
     private void showCatalogPage(Book book, TocDocument document) {
@@ -1119,7 +1132,7 @@ public class MainActivity extends Activity {
         back.setOnClickListener(v -> onBackPressed());
         header.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
         TextView title = new TextView(this);
-        title.setText("目录 · " + shortBookTitle(book.title));
+        title.setText(shortBookTitle(book.title));
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
         UiKit.styleTitle(title, text, 22);
@@ -1127,9 +1140,69 @@ public class MainActivity extends Activity {
         header.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
         root.addView(header);
 
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(0, dp(10), 0, dp(16));
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setPadding(dp(4), dp(4), dp(4), dp(4));
+        tabs.setBackground(UiKit.rounded(this, surface, 18));
+        Button directoryTab = makeButton("目录");
+        Button bookmarkTab = makeButton("书签");
+        UiKit.styleButton(this, directoryTab, variant, accent, 14);
+        UiKit.styleButton(this, bookmarkTab, Color.TRANSPARENT, text, 14);
+        tabs.addView(directoryTab, new LinearLayout.LayoutParams(0, dp(42), 1));
+        LinearLayout.LayoutParams bookmarkTabLp = new LinearLayout.LayoutParams(0, dp(42), 1);
+        bookmarkTabLp.leftMargin = dp(4);
+        tabs.addView(bookmarkTab, bookmarkTabLp);
+        LinearLayout.LayoutParams tabsLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        tabsLp.topMargin = dp(8);
+        root.addView(tabs, tabsLp);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(0, dp(10), 0, dp(16));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(content);
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        directoryTab.setOnClickListener(v -> {
+            UiKit.styleButton(this, directoryTab, variant, accent, 14);
+            UiKit.styleButton(this, bookmarkTab, Color.TRANSPARENT, text, 14);
+            renderDirectoryTab(content, book, document, surface, variant, text, muted, accent);
+        });
+        bookmarkTab.setOnClickListener(v -> {
+            UiKit.styleButton(this, directoryTab, Color.TRANSPARENT, text, 14);
+            UiKit.styleButton(this, bookmarkTab, variant, accent, 14);
+            renderBookmarkTab(content, book, surface, text, muted, accent);
+        });
+
+        setContentView(root);
+        renderDirectoryTab(content, book, document, surface, variant, text, muted, accent);
+    }
+
+    private void renderDirectoryTab(LinearLayout list, Book book, TocDocument document,
+                                    int surface, int variant, int text, int muted, int accent) {
+        list.removeAllViews();
+        if (document == null || document.entries.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("目录不存在，请手工生成目录");
+            empty.setTextColor(muted);
+            empty.setGravity(Gravity.CENTER);
+            empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            empty.setPadding(dp(16), dp(38), dp(16), dp(20));
+            list.addView(empty);
+            Button generate = makeButton("生成目录");
+            UiKit.styleButton(this, generate, variant, accent, 16);
+            generate.setOnClickListener(v -> {
+                generateTocInBackground(book, true);
+                Toast.makeText(this, "正在后台生成目录", Toast.LENGTH_SHORT).show();
+            });
+            LinearLayout.LayoutParams generateLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+            generateLp.leftMargin = dp(30);
+            generateLp.rightMargin = dp(30);
+            list.addView(generate, generateLp);
+            return;
+        }
         for (TocEntry entry : document.entries) {
             TextView item = new TextView(this);
             item.setText(entry.title);
@@ -1149,14 +1222,61 @@ public class MainActivity extends Activity {
             lp.topMargin = entry.level == 1 ? dp(10) : dp(2);
             list.addView(item, lp);
         }
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(list);
-        root.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        setContentView(root);
+    }
+
+    private void renderBookmarkTab(LinearLayout list, Book book, int surface,
+                                   int text, int muted, int accent) {
+        list.removeAllViews();
+        List<Bookmark> bookmarks = bookmarkStore.load(book.id);
+        if (bookmarks.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("还没有书签\n在阅读页点击书签按钮即可保存当前位置");
+            empty.setTextColor(muted);
+            empty.setGravity(Gravity.CENTER);
+            empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            empty.setLineSpacing(dp(6), 1f);
+            empty.setPadding(dp(16), dp(48), dp(16), dp(20));
+            list.addView(empty);
+            return;
+        }
+        for (int index = 0; index < bookmarks.size(); index++) {
+            Bookmark bookmark = bookmarks.get(index);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(16), dp(14), dp(16), dp(14));
+            row.setBackground(UiKit.interactive(this, surface, 14,
+                    UiKit.withAlpha(accent, 28)));
+            TextView name = new TextView(this);
+            name.setText("书签 " + (index + 1));
+            UiKit.styleTitle(name, text, 16);
+            row.addView(name);
+            float percent = book.fileSize <= 0 ? 0f
+                    : bookmark.offset * 100f / book.fileSize;
+            TextView detail = new TextView(this);
+            detail.setText(String.format(Locale.getDefault(), "%.2f%% · %s",
+                    percent, bookmarkDisplayTime(bookmark.createdAt)));
+            detail.setTextColor(muted);
+            detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            detail.setPadding(0, dp(6), 0, 0);
+            row.addView(detail);
+            row.setOnClickListener(v -> jumpToCatalogOffset(book, bookmark.offset));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = dp(8);
+            list.addView(row, lp);
+        }
+    }
+
+    private String bookmarkDisplayTime(long timestamp) {
+        long elapsed = Math.max(0L, System.currentTimeMillis() - timestamp);
+        if (elapsed < 60L * 60L * 1000L) return "刚刚";
+        return relativeReadTime(timestamp);
     }
 
     private void jumpToCatalogOffset(Book book, long offset) {
+        temporarySearchReading = false;
+        searchOpen = false;
+        searchSession = null;
         book.offset = Math.max(0L, Math.min(book.fileSize, offset));
         book.progress = book.fileSize <= 0 ? 0f : book.offset / (float) book.fileSize;
         book.updatedAt = System.currentTimeMillis();

@@ -563,7 +563,7 @@ public class MainActivity extends Activity {
                 case MotionEvent.ACTION_MOVE:
                     float translation = Math.min(0, Math.max(-actionMenuWidth,
                             event.getRawX() - touchDown[0]));
-                    if (translation < 0) actions.setVisibility(View.VISIBLE);
+                    actions.setVisibility(translation < 0 ? View.VISIBLE : View.INVISIBLE);
                     view.setTranslationX(translation);
                     return true;
                 case MotionEvent.ACTION_UP:

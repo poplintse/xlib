@@ -1493,27 +1493,27 @@ public class MainActivity extends Activity {
         boolean showGeneral = initialTab == SETTINGS_GENERAL;
         LinearLayout tabs = new LinearLayout(this);
         tabs.setGravity(Gravity.CENTER_VERTICAL);
-        Button general = makeSettingsNavButton("常规", showGeneral ? accent : text,
-                showGeneral ? accentContainer : surface);
-        tabs.addView(general, new LinearLayout.LayoutParams(dp(72), dp(44)));
+        tabs.setPadding(dp(4), dp(4), dp(4), dp(4));
+        tabs.setBackground(UiKit.rounded(this,
+                dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 18));
+        Button general = makeSettingsNavButton("常规", showGeneral, text, surface, accent);
+        tabs.addView(general, new LinearLayout.LayoutParams(dp(72), dp(36)));
 
-        Button reading = makeSettingsNavButton("阅读", showGeneral ? text : accent,
-                showGeneral ? surface : accentContainer);
-        LinearLayout.LayoutParams readingLp = new LinearLayout.LayoutParams(dp(72), dp(44));
-        readingLp.leftMargin = dp(4);
+        Button reading = makeSettingsNavButton("阅读", !showGeneral, text, surface, accent);
+        LinearLayout.LayoutParams readingLp = new LinearLayout.LayoutParams(dp(72), dp(36));
         tabs.addView(reading, readingLp);
         FrameLayout.LayoutParams tabsLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(44),
                 Gravity.CENTER_VERTICAL | Gravity.END);
         navigation.addView(tabs, tabsLp);
         general.setOnClickListener(v -> {
-            styleSettingsNavButton(general, true, text, surface, accent, accentContainer);
-            styleSettingsNavButton(reading, false, text, surface, accent, accentContainer);
+            styleSettingsNavButton(general, true, text, surface, accent);
+            styleSettingsNavButton(reading, false, text, surface, accent);
             renderGeneralSettings(surface, text, muted, accent);
         });
         reading.setOnClickListener(v -> {
-            styleSettingsNavButton(general, false, text, surface, accent, accentContainer);
-            styleSettingsNavButton(reading, true, text, surface, accent, accentContainer);
+            styleSettingsNavButton(general, false, text, surface, accent);
+            styleSettingsNavButton(reading, true, text, surface, accent);
             renderReadingSettings(surface, text, muted, accent, accentContainer);
         });
 
@@ -1536,17 +1536,18 @@ public class MainActivity extends Activity {
         else renderReadingSettings(surface, text, muted, accent, accentContainer);
     }
 
-    private Button makeSettingsNavButton(String label, int foreground, int background) {
+    private Button makeSettingsNavButton(String label, boolean selected, int text, int surface,
+                                         int accent) {
         Button button = makeButton(label);
-        UiKit.styleButton(this, button, background, foreground, 14);
+        styleSettingsNavButton(button, selected, text, surface, accent);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(dp(8), 0, dp(8), 0);
+        button.setPadding(0, 0, 0, 0);
         return button;
     }
 
     private void styleSettingsNavButton(Button button, boolean selected, int text, int surface,
-                                        int accent, int accentContainer) {
-        UiKit.styleButton(this, button, selected ? accentContainer : surface,
+                                        int accent) {
+        UiKit.styleButton(this, button, selected ? surface : Color.TRANSPARENT,
                 selected ? accent : text, 14);
     }
 
@@ -1580,7 +1581,7 @@ public class MainActivity extends Activity {
             if (enabled) scheduleMissingTocGeneration();
         });
         settingsControl(toc).addView(tocToggle, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         settingsContent.addView(toc, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
@@ -1591,16 +1592,16 @@ public class MainActivity extends Activity {
         settingsContent.removeAllViews();
         LinearLayout keepAwake = createSettingsSection("阅读时锁屏",
                 "开启后阻止系统在阅读期间自动锁屏，离开阅读页后恢复系统行为。", surface, text, muted);
-        Button keepToggle = makeSettingsToggleButton(readingKeepScreenOn(), text, accent,
-                accentContainer, surface);
+        FrameLayout keepToggle = makeSettingsSwitchControl(readingKeepScreenOn(), accentContainer,
+                surface);
         keepToggle.setContentDescription("阅读时锁屏");
         keepToggle.setOnClickListener(v -> {
             boolean enabled = !readingKeepScreenOn();
             setReadingKeepScreenOn(enabled);
-            styleSettingsToggleButton(keepToggle, enabled, text, accent, accentContainer, surface);
+            styleSettingsSwitchControl(keepToggle, enabled, accentContainer, surface);
         });
         settingsControl(keepAwake).addView(keepToggle, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         settingsContent.addView(keepAwake, settingsSectionLayoutParams());
 
         LinearLayout autoPage = createSettingsSection("自动翻页（秒）",
@@ -1662,9 +1663,13 @@ public class MainActivity extends Activity {
         spacingValue.setTextColor(accent);
         spacingValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         spacingValue.setGravity(Gravity.CENTER);
+        LinearLayout spacingControl = new LinearLayout(this);
+        spacingControl.setOrientation(LinearLayout.VERTICAL);
+        spacingControl.setGravity(Gravity.CENTER);
+        spacingControl.setBackground(UiKit.rounded(this, surface, 14));
         LinearLayout.LayoutParams spacingValueLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        settingsControl(lineSpacing).addView(spacingValue, spacingValueLp);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(12));
+        spacingControl.addView(spacingValue, spacingValueLp);
         SeekBar spacingSeek = new SeekBar(this);
         spacingSeek.setMax(30);
         spacingSeek.setProgress(Math.round(readingLineSpacingRatio() * 100f) - 10);
@@ -1676,8 +1681,10 @@ public class MainActivity extends Activity {
             }
             @Override public void onStopTrackingTouch(SeekBar seekBar) { }
         });
-        settingsControl(lineSpacing).addView(spacingSeek, new LinearLayout.LayoutParams(
+        spacingControl.addView(spacingSeek, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+        settingsControl(lineSpacing).addView(spacingControl, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         settingsContent.addView(lineSpacing, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
@@ -1747,6 +1754,28 @@ public class MainActivity extends Activity {
                 enabled ? accent : text, 14);
     }
 
+    private FrameLayout makeSettingsSwitchControl(boolean enabled, int activeColor, int surface) {
+        FrameLayout toggle = new FrameLayout(this);
+        toggle.setClickable(true);
+        View thumb = new View(this);
+        thumb.setBackground(UiKit.rounded(this, Color.WHITE, 15));
+        toggle.setTag(thumb);
+        toggle.addView(thumb);
+        styleSettingsSwitchControl(toggle, enabled, activeColor, surface);
+        return toggle;
+    }
+
+    private void styleSettingsSwitchControl(FrameLayout toggle, boolean enabled,
+                                            int activeColor, int surface) {
+        toggle.setBackground(UiKit.rounded(this, enabled ? activeColor : surface, 18));
+        View thumb = (View) toggle.getTag();
+        FrameLayout.LayoutParams thumbLp = new FrameLayout.LayoutParams(dp(56), dp(30),
+                Gravity.CENTER_VERTICAL | (enabled ? Gravity.END : Gravity.START));
+        thumbLp.leftMargin = dp(3);
+        thumbLp.rightMargin = dp(3);
+        thumb.setLayoutParams(thumbLp);
+    }
+
     private void addChoiceButtons(LinearLayout parent, String[] labels, int[] values,
                                   int selectedValue, ChoiceListener onSelected, int text,
                                   int accent, int accentContainer, int surface) {
@@ -1762,12 +1791,12 @@ public class MainActivity extends Activity {
                 row.setBackground(UiKit.rounded(this, surface, 14));
                 if (i > 0) {
                     LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(34));
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
                     rowLp.topMargin = dp(8);
                     group.addView(row, rowLp);
                 } else {
                     group.addView(row, new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(34)));
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
                 }
             }
             int value = values[i];
@@ -1786,7 +1815,7 @@ public class MainActivity extends Activity {
                             active ? accent : text, 14);
                 }
             });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1);
             if (i % 3 > 0) lp.leftMargin = dp(3);
             row.addView(button, lp);
         }
@@ -1797,6 +1826,14 @@ public class MainActivity extends Activity {
     private void addChoiceDropdown(LinearLayout parent, String[] labels, int[] values,
                                    int selectedValue, ChoiceListener onSelected,
                                    int text, int surface) {
+        int selectedIndex = 0;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == selectedValue) {
+                selectedIndex = i;
+                break;
+            }
+        }
+        final int[] selectedPosition = {selectedIndex};
         ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
                 android.R.layout.simple_spinner_item, labels) {
             @Override public View getView(int position, View convertView, ViewGroup parent) {
@@ -1805,18 +1842,38 @@ public class MainActivity extends Activity {
                 item.setTextColor(text);
                 item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
                 item.setGravity(Gravity.CENTER);
+                item.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
                 item.setSingleLine(true);
                 item.setPadding(dp(8), 0, dp(8), 0);
+                item.setLayoutParams(new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 return item;
             }
 
             @Override public View getDropDownView(int position, View convertView, ViewGroup parent) {
-                TextView item = new TextView(MainActivity.this);
-                item.setText(labels[position]);
-                item.setTextColor(text);
-                item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-                item.setGravity(Gravity.CENTER_VERTICAL);
-                item.setPadding(dp(10), dp(6), dp(10), dp(6));
+                LinearLayout item = new LinearLayout(MainActivity.this);
+                item.setGravity(Gravity.CENTER);
+                item.setPadding(dp(6), dp(6), dp(6), dp(6));
+
+                TextView label = new TextView(MainActivity.this);
+                label.setText(labels[position]);
+                label.setTextColor(text);
+                label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+                label.setGravity(Gravity.CENTER_VERTICAL);
+                item.addView(label, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                if (position == selectedPosition[0]) {
+                    TextView check = new TextView(MainActivity.this);
+                    check.setText("✓");
+                    check.setTextColor(isDarkTheme(appTheme()) ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT);
+                    check.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    check.setGravity(Gravity.CENTER_VERTICAL);
+                    LinearLayout.LayoutParams checkLp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    checkLp.leftMargin = dp(4);
+                    item.addView(check, checkLp);
+                }
                 return item;
             }
         };
@@ -1826,24 +1883,23 @@ public class MainActivity extends Activity {
                 UiKit.withAlpha(text, 64), 14, 1));
         spinner.setPopupBackgroundDrawable(UiKit.rounded(this, surface, 14));
         spinner.setGravity(Gravity.CENTER);
-        int selectedIndex = 0;
-        for (int i = 0; i < values.length; i++) {
-            if (values[i] == selectedValue) {
-                selectedIndex = i;
-                break;
-            }
-        }
         spinner.setSelection(selectedIndex, false);
         spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent,
                                                  View view, int position, long id) {
+                selectedPosition[0] = position;
                 onSelected.accept(values[position]);
             }
 
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { }
         });
         parent.addView(spinner, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+        spinner.post(() -> {
+            int popupWidth = spinner.getWidth() / 2;
+            spinner.setDropDownWidth(popupWidth);
+            spinner.setDropDownHorizontalOffset((spinner.getWidth() - popupWidth) / 2);
+        });
     }
 
     private void addStepper(LinearLayout parent, String minusLabel, String plusLabel,
@@ -1852,34 +1908,58 @@ public class MainActivity extends Activity {
                             int text, int accent, int accentContainer, int surface) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        Button minus = makeButton(minusLabel);
-        UiKit.styleButton(this, minus, surface, text, 10);
-        minus.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeControl ? 12 : 10);
-        minus.setGravity(Gravity.CENTER);
-        minus.setIncludeFontPadding(false);
-        minus.setPadding(0, 0, 0, 0);
-        minus.setOnClickListener(v -> onMinus.run());
-        row.addView(minus, new LinearLayout.LayoutParams(0, dp(36), 1));
+        View minus;
+        if (fontSizeControl) {
+            Button button = makeButton(minusLabel);
+            UiKit.styleButton(this, button, surface, text, 10);
+            button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            button.setGravity(Gravity.CENTER);
+            button.setIncludeFontPadding(false);
+            button.setPadding(0, 0, 0, 0);
+            button.setOnClickListener(v -> onMinus.run());
+            minus = button;
+        } else {
+            ImageButton button = makeIconButton();
+            button.setImageResource(R.drawable.ic_step_minus);
+            button.setContentDescription("减少自动翻页间隔");
+            UiKit.styleIconButton(this, button, text, surface, 10);
+            button.setPadding(dp(6), dp(6), dp(6), dp(6));
+            button.setOnClickListener(v -> onMinus.run());
+            minus = button;
+        }
+        row.addView(minus, new LinearLayout.LayoutParams(0, dp(40), 1));
 
         valueView.setGravity(Gravity.CENTER);
         valueView.setTextColor(accent);
         valueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         valueView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         valueView.setIncludeFontPadding(false);
-        LinearLayout.LayoutParams valueLp = new LinearLayout.LayoutParams(0, dp(36), 1);
+        LinearLayout.LayoutParams valueLp = new LinearLayout.LayoutParams(0, dp(40), 1);
         valueView.setBackground(UiKit.rounded(this, accentContainer, 14));
         row.addView(valueView, valueLp);
 
-        Button plus = makeButton(plusLabel);
-        UiKit.styleButton(this, plus, surface, text, 10);
-        plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeControl ? 15 : 10);
-        plus.setGravity(Gravity.CENTER);
-        plus.setIncludeFontPadding(false);
-        plus.setPadding(0, 0, 0, 0);
-        plus.setOnClickListener(v -> onPlus.run());
-        row.addView(plus, new LinearLayout.LayoutParams(0, dp(36), 1));
+        View plus;
+        if (fontSizeControl) {
+            Button button = makeButton(plusLabel);
+            UiKit.styleButton(this, button, surface, text, 10);
+            button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            button.setGravity(Gravity.CENTER);
+            button.setIncludeFontPadding(false);
+            button.setPadding(0, 0, 0, 0);
+            button.setOnClickListener(v -> onPlus.run());
+            plus = button;
+        } else {
+            ImageButton button = makeIconButton();
+            button.setImageResource(R.drawable.ic_step_plus);
+            button.setContentDescription("增加自动翻页间隔");
+            UiKit.styleIconButton(this, button, text, surface, 10);
+            button.setPadding(dp(6), dp(6), dp(6), dp(6));
+            button.setOnClickListener(v -> onPlus.run());
+            plus = button;
+        }
+        row.addView(plus, new LinearLayout.LayoutParams(0, dp(40), 1));
         parent.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
     }
 
     private abstract static class SimpleSeekListener implements SeekBar.OnSeekBarChangeListener {

@@ -39,8 +39,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ArrayAdapter;
-import android.widget.Spinner;
+import android.widget.PopupWindow;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -1470,6 +1469,7 @@ public class MainActivity extends Activity {
         int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
         int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
         int accentContainer = dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
+        int surfaceVariant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -1478,12 +1478,11 @@ public class MainActivity extends Activity {
 
         FrameLayout navigation = new FrameLayout(this);
         navigation.setPadding(dp(6), dp(6), dp(6), dp(6));
-        UiKit.styleCard(this, navigation, surface, 22, 2);
+        UiKit.styleCard(this, navigation, surfaceVariant, 22, 2);
 
         ImageButton back = makeIconButton();
         back.setImageResource(R.drawable.ic_arrow_back);
-        UiKit.styleIconButton(this, back, text,
-                dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
+        UiKit.styleIconButton(this, back, text, surface, 14);
         back.setContentDescription("返回阅读");
         back.setOnClickListener(v -> onBackPressed());
         FrameLayout.LayoutParams backLp = new FrameLayout.LayoutParams(dp(44), dp(44),
@@ -1494,12 +1493,13 @@ public class MainActivity extends Activity {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setGravity(Gravity.CENTER_VERTICAL);
         tabs.setPadding(dp(4), dp(4), dp(4), dp(4));
-        tabs.setBackground(UiKit.rounded(this,
-                dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 18));
-        Button general = makeSettingsNavButton("常规", showGeneral, text, surface, accent);
+        tabs.setBackground(UiKit.rounded(this, surface, 18));
+        Button general = makeSettingsNavButton("常规", showGeneral, text, accent,
+                accentContainer);
         tabs.addView(general, new LinearLayout.LayoutParams(dp(72), dp(36)));
 
-        Button reading = makeSettingsNavButton("阅读", !showGeneral, text, surface, accent);
+        Button reading = makeSettingsNavButton("阅读", !showGeneral, text, accent,
+                accentContainer);
         LinearLayout.LayoutParams readingLp = new LinearLayout.LayoutParams(dp(72), dp(36));
         tabs.addView(reading, readingLp);
         FrameLayout.LayoutParams tabsLp = new FrameLayout.LayoutParams(
@@ -1507,13 +1507,13 @@ public class MainActivity extends Activity {
                 Gravity.CENTER_VERTICAL | Gravity.END);
         navigation.addView(tabs, tabsLp);
         general.setOnClickListener(v -> {
-            styleSettingsNavButton(general, true, text, surface, accent);
-            styleSettingsNavButton(reading, false, text, surface, accent);
+            styleSettingsNavButton(general, true, text, accent, accentContainer);
+            styleSettingsNavButton(reading, false, text, accent, accentContainer);
             renderGeneralSettings(surface, text, muted, accent);
         });
         reading.setOnClickListener(v -> {
-            styleSettingsNavButton(general, false, text, surface, accent);
-            styleSettingsNavButton(reading, true, text, surface, accent);
+            styleSettingsNavButton(general, false, text, accent, accentContainer);
+            styleSettingsNavButton(reading, true, text, accent, accentContainer);
             renderReadingSettings(surface, text, muted, accent, accentContainer);
         });
 
@@ -1536,18 +1536,18 @@ public class MainActivity extends Activity {
         else renderReadingSettings(surface, text, muted, accent, accentContainer);
     }
 
-    private Button makeSettingsNavButton(String label, boolean selected, int text, int surface,
-                                         int accent) {
+    private Button makeSettingsNavButton(String label, boolean selected, int text, int accent,
+                                         int accentContainer) {
         Button button = makeButton(label);
-        styleSettingsNavButton(button, selected, text, surface, accent);
+        styleSettingsNavButton(button, selected, text, accent, accentContainer);
         button.setGravity(Gravity.CENTER);
         button.setPadding(0, 0, 0, 0);
         return button;
     }
 
-    private void styleSettingsNavButton(Button button, boolean selected, int text, int surface,
-                                        int accent) {
-        UiKit.styleButton(this, button, selected ? surface : Color.TRANSPARENT,
+    private void styleSettingsNavButton(Button button, boolean selected, int text, int accent,
+                                        int accentContainer) {
+        UiKit.styleButton(this, button, selected ? accentContainer : Color.TRANSPARENT,
                 selected ? accent : text, 14);
     }
 
@@ -1598,7 +1598,7 @@ public class MainActivity extends Activity {
         keepToggle.setOnClickListener(v -> {
             boolean enabled = !readingKeepScreenOn();
             setReadingKeepScreenOn(enabled);
-            styleSettingsSwitchControl(keepToggle, enabled, accentContainer, surface);
+            styleSettingsSwitchControl(keepToggle, enabled, surface);
         });
         settingsControl(keepAwake).addView(keepToggle, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
@@ -1663,12 +1663,13 @@ public class MainActivity extends Activity {
         spacingValue.setTextColor(accent);
         spacingValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         spacingValue.setGravity(Gravity.CENTER);
+        spacingValue.setIncludeFontPadding(false);
         LinearLayout spacingControl = new LinearLayout(this);
-        spacingControl.setOrientation(LinearLayout.VERTICAL);
-        spacingControl.setGravity(Gravity.CENTER);
+        spacingControl.setOrientation(LinearLayout.HORIZONTAL);
+        spacingControl.setGravity(Gravity.CENTER_VERTICAL);
         spacingControl.setBackground(UiKit.rounded(this, surface, 14));
         LinearLayout.LayoutParams spacingValueLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(12));
+                dp(44), ViewGroup.LayoutParams.MATCH_PARENT);
         spacingControl.addView(spacingValue, spacingValueLp);
         SeekBar spacingSeek = new SeekBar(this);
         spacingSeek.setMax(30);
@@ -1682,7 +1683,7 @@ public class MainActivity extends Activity {
             @Override public void onStopTrackingTouch(SeekBar seekBar) { }
         });
         spacingControl.addView(spacingSeek, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
         settingsControl(lineSpacing).addView(spacingControl, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         settingsContent.addView(lineSpacing, settingsSectionLayoutParams());
@@ -1758,18 +1759,20 @@ public class MainActivity extends Activity {
         FrameLayout toggle = new FrameLayout(this);
         toggle.setClickable(true);
         View thumb = new View(this);
-        thumb.setBackground(UiKit.rounded(this, Color.WHITE, 15));
+        thumb.setBackground(UiKit.rounded(this, activeColor, 15));
         toggle.setTag(thumb);
         toggle.addView(thumb);
-        styleSettingsSwitchControl(toggle, enabled, activeColor, surface);
+        styleSettingsSwitchControl(toggle, enabled, surface);
+        toggle.post(() -> styleSettingsSwitchControl(toggle, enabled, surface));
         return toggle;
     }
 
-    private void styleSettingsSwitchControl(FrameLayout toggle, boolean enabled,
-                                            int activeColor, int surface) {
-        toggle.setBackground(UiKit.rounded(this, enabled ? activeColor : surface, 18));
+    private void styleSettingsSwitchControl(FrameLayout toggle, boolean enabled, int surface) {
+        toggle.setBackground(UiKit.rounded(this, surface, 18));
         View thumb = (View) toggle.getTag();
-        FrameLayout.LayoutParams thumbLp = new FrameLayout.LayoutParams(dp(56), dp(30),
+        int thumbWidth = toggle.getWidth() > 0
+                ? Math.max(dp(30), (toggle.getWidth() - dp(6)) / 2) : dp(56);
+        FrameLayout.LayoutParams thumbLp = new FrameLayout.LayoutParams(thumbWidth, dp(30),
                 Gravity.CENTER_VERTICAL | (enabled ? Gravity.END : Gravity.START));
         thumbLp.leftMargin = dp(3);
         thumbLp.rightMargin = dp(3);
@@ -1834,72 +1837,65 @@ public class MainActivity extends Activity {
             }
         }
         final int[] selectedPosition = {selectedIndex};
-        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
-                android.R.layout.simple_spinner_item, labels) {
-            @Override public View getView(int position, View convertView, ViewGroup parent) {
-                TextView item = new TextView(MainActivity.this);
-                item.setText(labels[position]);
-                item.setTextColor(text);
-                item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-                item.setGravity(Gravity.CENTER);
-                item.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
-                item.setSingleLine(true);
-                item.setPadding(dp(8), 0, dp(8), 0);
-                item.setLayoutParams(new ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                return item;
-            }
+        Button selector = makeButton(labels[selectedIndex]);
+        selector.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        selector.setGravity(Gravity.CENTER);
+        selector.setIncludeFontPadding(false);
+        selector.setPadding(0, 0, 0, 0);
+        UiKit.styleButton(this, selector, surface, text, 14);
+        selector.setOnClickListener(v -> {
+            LinearLayout menu = new LinearLayout(this);
+            menu.setOrientation(LinearLayout.VERTICAL);
+            menu.setPadding(dp(2), dp(2), dp(2), dp(2));
+            int popupWidth = selector.getWidth() / 2;
+            PopupWindow popup = new PopupWindow(menu, popupWidth,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, true);
+            popup.setBackgroundDrawable(UiKit.rounded(this, surface, 14));
+            popup.setOutsideTouchable(true);
+            popup.setElevation(dp(8));
+            int accent = isDarkTheme(appTheme()) ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+            for (int i = 0; i < labels.length; i++) {
+                int position = i;
+                LinearLayout option = new LinearLayout(this);
+                option.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                option.setPadding(dp(12), 0, dp(8), 0);
+                option.setBackground(UiKit.interactive(this, surface, 12,
+                        UiKit.withAlpha(accent, 24)));
 
-            @Override public View getDropDownView(int position, View convertView, ViewGroup parent) {
-                LinearLayout item = new LinearLayout(MainActivity.this);
-                item.setGravity(Gravity.CENTER);
-                item.setPadding(dp(6), dp(6), dp(6), dp(6));
-
-                TextView label = new TextView(MainActivity.this);
-                label.setText(labels[position]);
+                TextView label = new TextView(this);
+                label.setText(labels[i]);
                 label.setTextColor(text);
                 label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-                label.setGravity(Gravity.CENTER_VERTICAL);
-                item.addView(label, new LinearLayout.LayoutParams(
+                label.setGravity(Gravity.CENTER);
+                label.setIncludeFontPadding(false);
+                option.addView(label, new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-                if (position == selectedPosition[0]) {
-                    TextView check = new TextView(MainActivity.this);
+                if (i == selectedPosition[0]) {
+                    TextView check = new TextView(this);
                     check.setText("✓");
-                    check.setTextColor(isDarkTheme(appTheme()) ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT);
+                    check.setTextColor(accent);
                     check.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                    check.setGravity(Gravity.CENTER_VERTICAL);
+                    check.setGravity(Gravity.CENTER);
+                    check.setIncludeFontPadding(false);
                     LinearLayout.LayoutParams checkLp = new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                     checkLp.leftMargin = dp(4);
-                    item.addView(check, checkLp);
+                    option.addView(check, checkLp);
                 }
-                return item;
+                option.setOnClickListener(ignored -> {
+                    selectedPosition[0] = position;
+                    selector.setText(labels[position]);
+                    onSelected.accept(values[position]);
+                    popup.dismiss();
+                });
+                menu.addView(option, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
             }
-        };
-        Spinner spinner = new Spinner(this);
-        spinner.setAdapter(adapter);
-        spinner.setBackground(UiKit.roundedStroke(this, surface,
-                UiKit.withAlpha(text, 64), 14, 1));
-        spinner.setPopupBackgroundDrawable(UiKit.rounded(this, surface, 14));
-        spinner.setGravity(Gravity.CENTER);
-        spinner.setSelection(selectedIndex, false);
-        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> parent,
-                                                 View view, int position, long id) {
-                selectedPosition[0] = position;
-                onSelected.accept(values[position]);
-            }
-
-            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { }
+            popup.showAsDropDown(selector, (selector.getWidth() - popupWidth) / 2, 0);
         });
-        parent.addView(spinner, new LinearLayout.LayoutParams(
+        parent.addView(selector, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
-        spinner.post(() -> {
-            int popupWidth = spinner.getWidth() / 2;
-            spinner.setDropDownWidth(popupWidth);
-            spinner.setDropDownHorizontalOffset((spinner.getWidth() - popupWidth) / 2);
-        });
     }
 
     private void addStepper(LinearLayout parent, String minusLabel, String plusLabel,

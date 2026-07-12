@@ -399,7 +399,7 @@ public class MainActivity extends Activity {
         } else {
             LinearLayout list = new LinearLayout(this);
             list.setOrientation(LinearLayout.VERTICAL);
-            list.setPadding(dp(2), dp(18), dp(2), dp(8));
+            list.setPadding(0, dp(18), 0, dp(8));
             for (Book book : books) {
                 list.addView(makeBookRow(book));
             }
@@ -445,7 +445,7 @@ public class MainActivity extends Activity {
 
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(13), dp(10), dp(13));
+        row.setPadding(dp(2), dp(13), dp(2), dp(13));
         row.setBackground(UiKit.interactive(this, surface, 22, UiKit.withAlpha(accent, 28)));
         row.setElevation(dp(1));
         row.setClipToOutline(true);
@@ -545,6 +545,7 @@ public class MainActivity extends Activity {
         delete.setOnClickListener(v -> showDeleteBookDialog(book));
         actions.addView(delete, new LinearLayout.LayoutParams(actionWidth,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+        actions.setVisibility(View.INVISIBLE);
 
         FrameLayout container = new FrameLayout(this);
         FrameLayout.LayoutParams actionsLp = new FrameLayout.LayoutParams(
@@ -562,24 +563,35 @@ public class MainActivity extends Activity {
                 case MotionEvent.ACTION_MOVE:
                     float translation = Math.min(0, Math.max(-actionMenuWidth,
                             event.getRawX() - touchDown[0]));
+                    if (translation < 0) actions.setVisibility(View.VISIBLE);
                     view.setTranslationX(translation);
                     return true;
                 case MotionEvent.ACTION_UP:
                     float distance = event.getRawX() - touchDown[0];
                     if (Math.abs(distance) < dp(8)) {
                         if (view.getTranslationX() < 0) {
-                            view.animate().translationX(0).setDuration(160).start();
+                            view.animate().translationX(0).setDuration(160)
+                                    .withEndAction(() -> actions.setVisibility(View.INVISIBLE))
+                                    .start();
                         } else {
                             view.performClick();
                         }
                     } else {
                         float target = view.getTranslationX() <= -actionMenuWidth / 2f
                                 ? -actionMenuWidth : 0;
-                        view.animate().translationX(target).setDuration(160).start();
+                        if (target == 0) {
+                            view.animate().translationX(0).setDuration(160)
+                                    .withEndAction(() -> actions.setVisibility(View.INVISIBLE))
+                                    .start();
+                        } else {
+                            view.animate().translationX(target).setDuration(160).start();
+                        }
                     }
                     return true;
                 case MotionEvent.ACTION_CANCEL:
-                    view.animate().translationX(0).setDuration(160).start();
+                    view.animate().translationX(0).setDuration(160)
+                            .withEndAction(() -> actions.setVisibility(View.INVISIBLE))
+                            .start();
                     return true;
                 default:
                     return true;

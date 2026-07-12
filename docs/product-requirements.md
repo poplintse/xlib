@@ -1,152 +1,244 @@
-# XLib TXT Reader Product Requirements
+# XLib TXT 阅读器产品与交互规范
 
-## 1. Scope And Priority
+> 本文档是当前有效的产品规范。它已合并此前讨论，并按“后确认的要求优先”清理了互相冲突或已经过期的描述；未在本文保留的旧方案不再作为实现依据。
 
-XLib is a fast, simple, native Android TXT reader. The product starts on the
-bookshelf and has two primary user-facing areas: the bookshelf and the reader.
+## 1. 产品范围与设置边界
 
-When requirements conflict, the newest confirmed rule in this document takes
-priority. Historical alternatives are intentionally omitted.
+XLib 是原生 Android TXT 阅读器，主要页面包括书架、阅读、搜索、目录/书签和设置。
 
-## 2. Release Rules
+设置和状态分为两类：
 
-- Current version source: `version.properties`.
-- The bookshelf displays the installed app version as `v<versionName> build <versionCode>`.
-- A successful `assembleDebug` build outputs `xlib-debug.apk` and then increments
-  `versionCode` by one. `versionName` changes only when explicitly requested.
-- Do not package an APK unless the user explicitly requests packaging.
+- **全局设置**：主题、TXT 自动生成目录、阅读时锁屏、自动翻页间隔、触摸灵敏度、字体、字号和行间距。设置页“常规”和“阅读”两个页签中的项目全部属于全局设置，并应用于所有书籍。
+- **当前书籍相关操作**：目录、书签和阅读进度。它们放在阅读页下菜单栏，不进入全局设置页。
+- 搜索和自动翻页开关是不绑定单本书的即时操作，放在阅读页上菜单栏。自动翻页的间隔是全局设置，但每次开启/关闭的状态不持久化。
+- 书籍内部可以保留阅读模式等运行状态，但不得把它们混入当前的全局设置页面；当前单书设置范围仍以目录、书签和进度为准。
 
-## 3. Bookshelf
+## 2. 全局主题
 
-- The app opens on the bookshelf.
-- A book row opens the reader when tapped; there is no separate Read button.
-- Add TXT and Manage Books use icons rather than text buttons.
-- Manage Books supports selecting multiple books and deleting the selected books.
-- The bookshelf title leaves enough top safe-area spacing to avoid the system bar.
-- Each book row shows:
-  - Title on the first line.
-  - Reading progress with two decimal places and the last-read time on the left of
-    the second line.
-  - Current file size on the right of the second line, formatted as `Byte`, `KB`,
-    `MB`, or `GB`.
-- The bookshelf bottom-left displays the app version and build number.
-- The launcher icon uses the supplied source image, sized to approximately 60% of
-  its icon background without crossing the icon boundary.
+- 主题选项为“跟随”“浅色”“深色”；“跟随”表示跟随系统。
+- 主题作用于整个 App，包括书架、阅读、搜索、目录/书签和设置页面，不只作用于阅读框架。
+- 所有页面必须共用设计令牌，避免同一语义在不同页面出现不同颜色、字号、高度或圆角。
+- 浅色主题中的常规图标按钮使用浅绿色或中性浅色容器，不使用深绿色实心底色；阅读页上方的 `A-`、`A+` 与相邻图标按钮保持一致。
+- 深色主题必须保证正文、辅助文字、选中态、禁用态和控件轨道具有足够区分度。
 
-## 4. Reading Position And Large Files
+### 2.1 “阅读时锁屏”开关颜色
 
-- Each book persists its reading position and resumes from that position.
-- TXT files around 30 MB to 100 MB must be handled without loading the full file
-  into memory.
-- Text is read in windows and adjacent windows are preloaded. A byte-offset index
-  is built in the background to make large-file seeking practical.
-- The reader keeps a disk cache of the most recent reading window. On reopening a
-  book, it displays this cache first, then validates and refreshes from the source
-  file in the background using the saved reading position.
-- Cache writes are not performed for every page turn. The latest window is written
-  after a short idle delay (currently 800 ms), on a separate background executor.
-- A source file size or modification-time change invalidates its reader cache.
+该开关使用“轨道 + 占轨道约一半宽度的药丸滑块”，不是圆形滑块。开启时药丸位于右侧，关闭时位于左侧。
 
-## 5. Reader Layout
+| 主题与状态 | 轨道 | 药丸滑块 | 位置 |
+| --- | --- | --- | --- |
+| 浅色开启 | 浅绿色 | 白色 | 右侧 |
+| 浅色关闭 | 接近页面底色、但仍可分辨的浅灰色 | 白色 | 左侧 |
+| 深色开启 | 深绿色 | 与设置项控制容器底色一致的深灰绿色 | 右侧 |
+| 深色关闭 | 略亮于页面底色的深灰色 | 与设置项控制容器底色一致的深灰绿色 | 左侧 |
 
-- The reader has a fixed-height container. Its bounds exclude the status bar,
-  navigation area, and bottom rounded-corner area.
-- The text viewport is a child of that fixed container. It calculates how many
-  complete text rows fit, discards any remainder smaller than a row, and must not
-  show clipped half-rows at the top or bottom.
-- Floating top and bottom menus align exactly with the fixed reader container's
-  top and bottom bounds. Showing or hiding menus must not resize the reader
-  container or move the text viewport.
-- Menus animate in from the top and bottom with fade, and animate out in the
-  opposite directions. They hide only after a touch inside the lower reader
-  content area, not after interacting with a menu control.
-- Opening menus temporarily disables page-turn gestures until the user dismisses
-  the menus by touching reader content.
+当前颜色令牌：浅色开启轨道 `LIGHT_ACCENT_CONTAINER`，浅色关闭轨道 `LIGHT_SWITCH_DISABLED_TRACK`；深色开启轨道 `DARK_ACCENT_CONTAINER`，深色关闭轨道 `DARK_SWITCH_DISABLED_TRACK`；深色药丸使用 `DARK_SURFACE_VARIANT`。
 
-## 6. Reader Controls
+## 3. 书籍数据与编辑
 
-- Menus are hidden during immersive reading. In page mode, tapping the center 30%
-  of the content area shows the menus.
-- The top menu is always light themed and contains:
-  - Font decrease (`A-`) and increase (`A+`) controls, left aligned.
-  - A search icon.
-  - A light/dark theme toggle using sun and moon icons. The reader can also follow
-    the system theme.
-  - A touch-sensitivity control with three levels: high, standard, and low.
-- The bottom menu contains a seek bar, `0%` and `100%` labels, and progress steps:
-  - Progress is displayed with two decimal places.
-  - Large minus/plus changes progress by `1%`.
-  - Small minus/plus changes progress by `0.01%`.
-- The seek bar updates the target preview while dragging and loads the final target
-  position when the drag ends. It must not cause the bottom menu to jump.
+### 3.1 Metadata
 
-## 7. Reading Modes And Gestures
+每本书至少持久化以下数据：
 
-- Newly added books default to left/right page mode.
-- The product supports vertical scrolling and left/right page mode. A mode-switch
-  control is part of the required reader controls and must accurately show and
-  change the current mode. This needs device verification because the current UI
-  implementation retains the mode state but does not expose a visible switch.
-- In page mode:
-  - Left 30% tap: previous page.
-  - Center 30% tap: show menus.
-  - Right 40% tap: next page.
-  - Swiping from left to right: previous page.
-  - Swiping from right to left: next page.
-  - Tap and swipe are distinct; a drag must not be treated as a tap.
-- A standard edge-back gesture from outside-left toward the right returns to the
-  bookshelf when not in a search preview.
-- Page-turn animation duration is 0.3 seconds. The turning sheet uses the current
-  page as an opaque snapshot, with the destination page underneath. It must not
-  expose transparent text, flash a blank page, bounce back, or reverse direction.
+- 唯一标识；
+- 书名；
+- 原始系统文件名 `sourceName`；
+- 作者；
+- 本地文件路径、大小和编码；
+- 阅读字节位置、进度和最后阅读时间；
+- 与阅读恢复所需的内部状态。
 
-## 8. In-Book Search
+`sourceName` 必须保存用户导入时操作系统返回的完整显示文件名，包括 `.txt` 后缀，不能用 App 内修改后的书名替代。
 
-- The search entry is a magnifier in the reader top menu, to the left of the
-  reading-mode control area.
-- The search page uses one top row: back arrow, input field, and search-confirm
-  magnifier. The input field must not occupy a separate row.
-- Search query rules:
-  - Minimum 2 characters.
-  - Maximum 32 characters.
-  - The input control and submission validation both enforce the limits.
-- Search runs in the background using byte-stream scanning, so full text is not
-  loaded into memory.
-- Results are exact-text matches, ordered from the reader position toward the end
-  of the file. Each result shows approximately 45 characters before and after the
-  match, plus the full matched query.
-- Search is paged in batches of up to 200 results:
-  - The first pass searches from the original reading position toward file end.
-  - If fewer than 200 results are found before file end, offer an explicit
-    `从开头继续搜索` action.
-  - Continuing from the beginning searches only up to the original reading
-    position, then finishes to avoid duplicates and looping forever.
-  - Reaching the bottom of the displayed results loads the next 200-result batch
-    in the same direction. Existing result rows stay visible and the scroll
-    position must not jump to the top.
-- The matched query has a clearly visible background highlight in both the search
-  results and the temporary result-reading page. Highlight colors must remain
-  legible in light and dark themes.
+### 3.2 编辑书名和作者
 
-## 9. Search Result Preview
+- 书籍左滑菜单中的“更多”进入现有书籍信息编辑功能，可修改书名和作者。
+- 书名已有用户修改值时，输入框预填修改后的值；没有修改值时，预填原始 TXT 文件名。
+- 作者已有用户修改值时，输入框预填修改后的作者。
+- 当前 metadata 中作者为空时，作者输入框预填操作系统上的原始完整 TXT 文件名，包括 `.txt` 后缀；不得预填当前书名。
+- 保存时以输入框中的最终内容更新 metadata；若用户主动清空作者，书架显示“佚名”。
+- 再次编辑时必须显示最近一次保存的书名和作者。
 
-- Tapping a search result opens a temporary reader at that result's location.
-- Temporary reader navigation supports normal forward and backward page reading.
-- A back arrow remains visible at the temporary reader's top-left and returns to
-  the search page.
-- The search query, loaded results, and pending continuation position remain
-  available after returning to search.
-- Temporary preview reading must never replace the primary reader's saved progress
-  or its normal reader-window cache. Leaving search and returning to ordinary
-  reading resumes at the position that was active before search began.
+## 4. 书架页面
 
-## 10. Acceptance Focus
+### 4.1 页面结构
 
-- Verify the reader on actual target devices after each substantial layout change:
-  no clipped top/bottom text, stable floating menus, and no system-bar overlap.
-- Verify both page-turn directions and their animation snapshots after changes to
-  loading, caching, or layout.
-- Verify large-file opening, seek dragging, cached reopen, search pagination, and
-  temporary search preview with at least one 30 MB or larger TXT file.
-- Verify search mode switching, as the visible vertical/page-mode toggle still
-  needs to be restored or confirmed in the UI.
+- App 默认进入书架。
+- 标题为“我的书架”，并显示本地书籍数量。
+- 右上角依次放置添加、管理、设置图标，设置按钮位于最右侧。
+- 浅色主题下，右上角所有图标使用一致的浅绿色底色，不出现个别深绿色按钮。
+- 页面与书籍卡片之间不保留额外左右外边距，书籍列表视觉上贴近页面边界。
+- 书籍卡片内部左右保留约 `2dp` 空间，封面占位、文字和卡片边界不能完全粘连。这里的 `2dp` 是卡片内部留白，不是列表外层留白。
+
+### 4.2 书籍卡片内容
+
+每本书固定显示三行信息：
+
+1. 第一行：书名；
+2. 第二行：作者，作者为空时显示“佚名”；
+3. 第三行：相对阅读时间和两位小数的进度，例如 `1个小时前 · 15.67%`。
+
+不得显示“阅读进度：”前缀，也不在卡片中恢复旧版文件大小布局。封面占位位于卡片最左侧的内部内容区。
+
+### 4.3 点击、左滑和删除
+
+- 卡片处于正常状态时，点击书籍进入阅读。
+- 从右向左滑动卡片，露出两个操作：删除、更多（三点图标）。卡片正常收起时，操作层必须完全隐藏。
+- 用户手工把卡片拉回后，删除按钮的红色底色不得在圆角处或右侧残留。
+- 点击“更多”进入与原有三点按钮相同的书籍信息编辑功能；正常卡片上不再需要永久显示三点按钮。
+- 点击删除先进入确认菜单，不直接执行删除。
+- 删除确认菜单可通过点击菜单外任何位置取消；点击书籍区域也只取消确认，不进入阅读。
+- 确认删除后，清理该书的本地 TXT、副本缓存、目录、书签和 metadata。该操作不可撤销，必须明确提示。
+- 管理模式继续支持多选并批量删除。
+
+### 4.4 版本号
+
+- 页面左下角固定显示 `v<versionName> build <versionCode>`。
+- 版本号必须锚定在页面底部安全区，不参与书籍列表剩余空间的垂直居中。
+- 编辑书籍信息、软键盘弹出/收起或列表刷新时，版本号都不能跳到页面中部。
+
+## 5. 设置页面
+
+### 5.1 顶部导航
+
+- 页面不显示额外的“设置”标题。
+- 顶部只有返回按钮和“常规 / 阅读”页签；从书架进入时默认选择“常规”，但仍可正常切换到“阅读”。
+- “常规 / 阅读”页签组靠右排列。
+- 顶部导航外容器使用浅灰/深灰的主题变体底色；返回按钮底色使用页面表面色（浅色主题下为白色）。
+- 页签轨道使用表面色（浅色主题下为白色），选中项使用主题浅绿色，未选中项透明或使用轨道底色。
+- 页签样式、圆角和高度保持一致，文字水平、垂直居中。
+- 内容区域不再重复显示“常规”“阅读设置”或“当前书籍……”等标题。
+
+### 5.2 设置项统一布局
+
+- 每个设置项为固定一致高度，当前基准为 `72dp`。
+- 横向空间按 `1:1` 分为左右两半：左侧为名称和描述，右侧为具体设置控件。
+- 左侧名称在上、描述在下；描述固定预留两行高度，不能因一行或两行内容导致卡片高度变化。
+- 设置项尽量靠近页面左右边缘，仅保留必要安全间距。
+- 右侧整体作为一个有明显主题变体底色的圆角容器，并在所有设置项中左右对齐、宽度统一。
+- 右侧内部交互区域统一为 `40dp` 高，使用相同圆角半径；字体、触摸灵敏度、字号、自动翻页、行间距等不得各自出现不同高度。
+- 内部白色/表面色圆角矩形不得有黑色描边，外圆角与选中框圆角应协调一致。
+- 右侧普通数值和选项文字统一使用同一字号（当前基准 `10sp`）；`A⌄` 与 `A^` 可为表达减小/增大而有语义化大小差异。
+- 右侧内容少时靠右排列；控件本身的值必须按该控件规范居中。
+- 同一行最多直接展示 3 个选项，超过 3 个必须使用下拉列表。
+
+### 5.3 常规设置
+
+- 应用主题：`跟随 / 浅色 / 深色`，三段选择。
+- TXT 自动生成目录：全局开关。开启后后台识别卷、章、节并保存精确字节位置。
+
+### 5.4 阅读设置
+
+- 阅读时锁屏：全局开关；开启后阅读期间阻止系统自动锁屏，离开阅读页后恢复系统行为。视觉状态按 2.1 节执行。
+- 自动翻页（秒）：默认 `15`，最小 `10`，最大 `30`，每次加减 `1` 秒。数值只显示数字，不显示“秒”；单位放在左侧名称中。左右减/加使用矢量图标而非普通文本字符，视觉尺寸比普通设置文字大约 `4sp`，三部分等宽、上下居中。
+- 触摸灵敏度：`高 / 中 / 低` 三段等宽，选中块与轨道的圆角弧度一致。
+- 字体：使用自定义下拉控件，折叠状态为无描边的表面色圆角矩形，宽度占满右侧控制区，当前字体文字水平和垂直居中。
+- 字号：三部分等宽，依次为 `A⌄ / 数值 / A^`；数值不显示 `sp`。`A^` 中的 A 较大，`A⌄` 中的 A 较小，并保证符号完整显示、上下居中。
+- 行间距：使用统一高度的表面色内圆角矩形。百分比放在前部固定区域并居中，滑动条放在其后；百分比不得被顶部裁切。
+
+### 5.5 字体下拉列表
+
+- 可选项为：系统、黑体、宋体、仿宋、等宽。
+- 弹出列表宽度约为折叠选择框的 `50%`，相对选择框居中弹出。
+- 所有弹出列表项文字靠左排列，不用空格模拟对齐。
+- 当前选中项带对勾；文字与对勾应在列表项内形成清晰、稳定的整体布局。
+- 折叠选择框中只显示当前字体并保持居中，不显示系统 Spinner 的 `v` 字符或额外箭头，不得出现异常空白或黑色边框。
+
+## 6. 阅读页面与菜单
+
+### 6.1 阅读框架
+
+- 阅读页遵循全局主题，状态栏、导航区、正文和浮层使用同一套浅色/深色令牌。
+- 正文视口避开状态栏、导航栏和底部圆角安全区，只显示完整文字行，不在顶部或底部裁出半行。
+- 上下菜单为浮层，显示或隐藏不得改变正文容器尺寸或导致阅读位置跳动。
+- 点击正文中间区域呼出上下菜单；菜单打开时再次点击主阅读区应收起菜单。
+
+### 6.2 上菜单栏：全局和即时操作
+
+上菜单栏依次包含：
+
+- 字号减小 `A-`、字号增大 `A+`；
+- 搜索；
+- 主题；
+- 自动翻页；
+- 设置。
+
+约束：
+
+- `A-`、`A+` 与右侧图标按钮使用一致的中性/浅色容器，不使用突兀的深绿色底色。
+- 搜索位于上菜单栏，不在下菜单栏。搜索是即时操作，不保存开关状态。
+- 自动翻页的当前开启状态不持久化；下次进入阅读页默认关闭，间隔使用全局设置值。
+- 主题按钮修改的是整个 App 的全局主题。
+
+### 6.3 下菜单栏：当前书籍操作
+
+- 默认只显示目录、书签和阅读进度数值。
+- 默认进度格式为两位小数，例如 `0.00%`；字体应适当缩小，数字完整显示并在容器内水平、垂直居中。
+- 首次呼出菜单时，无论上次如何退出，都必须恢复为仅显示进度数值的默认状态。
+- 点击进度数值后，仅在上层展开滑动进度条，同时把下方进度区域切换为四个步进图标按钮和居中的进度数值。
+- 四个步进分别为后退 `1%`、后退 `0.01%`、前进 `0.01%`、前进 `1%`；按钮使用能表达方向和步幅的图标，不直接显示 `1%`、`0.01%` 文本，图标必须清晰可辨。
+- 滑动进度条时预览目标进度，松手后加载最终位置；浮层尺寸不得跳动。
+- 展开状态下再次点击进度数值，应同时收起滑动进度条和四个步进按钮，并恢复默认字号的进度数值。
+- 展开状态下点击主阅读区会收起上下菜单并重置展开状态；再次呼出菜单仍只显示数字，必须重新点击进度数值才能展开。
+
+## 7. 阅读、缓存与大文件
+
+- 每本书持久化阅读位置，重新打开时从原位置恢复。
+- 新导入书籍默认使用左右翻页阅读；左侧点击/右滑为上一页，右侧点击/左滑为下一页，中间点击呼出菜单。拖动不能误判为点击。
+- 标准左边缘向右返回手势返回书架；搜索临时阅读页按其自身返回规则处理。
+- 翻页动画时长约 `0.3s`，不得出现透明文字、白屏闪烁、回弹或方向反转。
+- 约 `30MB` 到 `100MB` 的 TXT 不得一次性完整载入内存；正文按窗口读取，并在后台构建字节偏移索引和预加载相邻窗口。
+- 重开书籍时优先显示最近阅读窗口缓存，再根据原文件大小和修改时间校验；源文件变化时缓存失效。
+- 缓存写入在短暂空闲后于后台执行，不能每翻一页就同步写盘阻塞界面。
+
+## 8. 书内搜索
+
+- 入口为阅读页上菜单栏的放大镜。
+- 搜索页顶部一行放置返回、输入框、确认搜索按钮。
+- 查询长度最少 `2` 个字符、最多 `32` 个字符，输入和提交阶段都要校验。
+- 使用字节流后台搜索，不能把整本大文件载入内存。
+- 结果是精确文本匹配，从当前阅读位置向文件末尾排序；每项显示命中前后约 `45` 个字符并高亮完整关键词。
+- 每批最多 `200` 条；到文件末尾且不足一批时提供“从开头继续搜索”，只搜索到原始阅读位置，防止重复和无限循环。
+- 滚动到底部继续加载下一批时，保留已有结果和当前滚动位置。
+- 高亮在浅色和深色主题中都必须清晰可读。
+
+### 8.1 搜索结果临时阅读
+
+- 点击结果进入该位置的临时阅读页，可正常前后翻页。
+- 临时阅读页保留明确返回入口，返回后恢复原查询、已有结果和继续搜索位置。
+- 临时阅读不得覆盖主阅读进度或普通阅读窗口缓存；退出搜索后恢复搜索前的正常阅读位置。
+
+## 9. 发布与版本
+
+- `version.properties` 是 `versionCode` 和 `versionName` 的唯一来源。
+- 书架显示安装包实际版本，格式为 `v<versionName> build <versionCode>`。
+- 当前 Gradle 规则在成功完成 `assembleDebug` 或 `assembleRelease` 后把 `versionCode` 增加 `1`；`versionName` 仅在明确要求时修改。
+- Debug APK 文件名为 `xlib-debug.apk`，Release APK 文件名为 `xlib-release.apk`。
+- 只在用户明确要求构建/打包时生成 APK；普通文档或代码整理不应触发版本递增。
+
+## 10. 验收清单
+
+### 10.1 主题和设置
+
+- 分别在浅色、深色和跟随系统三种模式检查所有页面，没有局部固定浅色或固定深色。
+- 检查设置页顶部、所有 `72dp` 行、`1:1` 分栏、两行描述占位和 `40dp` 控件高度。
+- 检查字体下拉的折叠居中、半宽弹层、左对齐选项、选中对勾和无边框状态。
+- 检查阅读时锁屏开关的四种主题/状态组合，药丸宽度、左右位置和状态辨识度正确。
+
+### 10.2 书架
+
+- 检查无列表外层左右留白、卡片内部 `2dp` 留白、三行文字和“佚名”回退。
+- 编辑书名/作者后检查预填规则，并确认软键盘收起后版本号仍固定在左下角。
+- 左滑后手动拉回，红色删除层必须完全不可见；删除确认外部点击只取消，不进入阅读。
+
+### 10.3 阅读与搜索
+
+- 每次呼出菜单默认只显示进度数字；展开、二次点击收起、点击正文收起后再呼出均符合 6.3 节。
+- 在目标真机检查正文无上下半行、菜单不推动正文、进度数字不裁切且上下居中。
+- 检查两个方向的点击/滑动翻页和动画快照。
+- 使用至少一本 `30MB` 以上 TXT 验证打开、缓存重开、进度跳转、搜索分页和临时阅读。
+
+### 10.4 工程验证
+
+- 代码改动后按项目能力执行单元测试、Lint、编译或构建；涉及 UI 的改动还需真机或模拟器视觉验收。
+- 编译通过不等于视觉验收通过；无法执行的验证必须在交付时明确说明。

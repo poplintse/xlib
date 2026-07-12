@@ -547,7 +547,13 @@ public class MainActivity extends Activity {
     }
 
     private String defaultBookName(Book book) {
-        return TextUtils.isEmpty(book.sourceName) ? book.title : book.sourceName;
+        if (!TextUtils.isEmpty(book.sourceName)) return book.sourceName;
+        String storedName = new File(book.path).getName();
+        int separator = storedName.indexOf('-');
+        if (separator > 0 && separator + 1 < storedName.length()) {
+            storedName = storedName.substring(separator + 1);
+        }
+        return TextUtils.isEmpty(storedName) ? "未命名.txt" : storedName;
     }
 
     private String bookAuthor(Book book) {
@@ -601,7 +607,7 @@ public class MainActivity extends Activity {
                     saveBooks();
                     hideKeyboard(titleInput);
                     dialog.dismiss();
-                    showLibrary();
+                    mainHandler.postDelayed(this::showLibrary, 200L);
                 }));
         dialog.show();
     }
@@ -1044,10 +1050,11 @@ public class MainActivity extends Activity {
             step.setImageResource(progressIcons[i]);
             step.setContentDescription(progressDescriptions[i]);
             UiKit.styleIconButton(this, step, menuFg, Color.TRANSPARENT, 11);
+            step.setPadding(dp(6), dp(6), dp(6), dp(6));
             configureRepeatingProgressStep(step, progressSteps[i]);
             step.setVisibility(View.GONE);
             progressStepButtons.add(step);
-            progressControls.addView(step, new LinearLayout.LayoutParams(dp(28), dp(38)));
+            progressControls.addView(step, new LinearLayout.LayoutParams(dp(36), dp(38)));
         }
         LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(0, dp(46), 1);
         progressLp.leftMargin = dp(6);
@@ -1365,9 +1372,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(background);
         root.setPadding(dp(8), statusBarHeight() + dp(12), dp(8), navigationBarHeight() + dp(12));
 
-        LinearLayout navigation = new LinearLayout(this);
-        navigation.setOrientation(LinearLayout.HORIZONTAL);
-        navigation.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout navigation = new FrameLayout(this);
         navigation.setPadding(dp(6), dp(6), dp(6), dp(6));
         UiKit.styleCard(this, navigation, surface, 22, 2);
 
@@ -1377,18 +1382,25 @@ public class MainActivity extends Activity {
                 dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
         back.setContentDescription("返回阅读");
         back.setOnClickListener(v -> onBackPressed());
-        navigation.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        FrameLayout.LayoutParams backLp = new FrameLayout.LayoutParams(dp(44), dp(44),
+                Gravity.CENTER_VERTICAL | Gravity.START);
+        navigation.addView(back, backLp);
 
         boolean showGeneral = initialTab == SETTINGS_GENERAL;
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setGravity(Gravity.CENTER_VERTICAL);
         Button general = makeSettingsNavButton("常规", showGeneral ? accent : text,
                 showGeneral ? accentContainer : surface);
-        navigation.addView(general, new LinearLayout.LayoutParams(dp(72), dp(44)));
+        tabs.addView(general, new LinearLayout.LayoutParams(dp(72), dp(44)));
 
         Button reading = makeSettingsNavButton("阅读", showGeneral ? text : accent,
                 showGeneral ? surface : accentContainer);
         LinearLayout.LayoutParams readingLp = new LinearLayout.LayoutParams(dp(72), dp(44));
         readingLp.leftMargin = dp(4);
-        navigation.addView(reading, readingLp);
+        tabs.addView(reading, readingLp);
+        FrameLayout.LayoutParams tabsLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44), Gravity.CENTER);
+        navigation.addView(tabs, tabsLp);
         general.setOnClickListener(v -> {
             styleSettingsNavButton(general, true, text, surface, accent, accentContainer);
             styleSettingsNavButton(reading, false, text, surface, accent, accentContainer);
@@ -1463,9 +1475,9 @@ public class MainActivity extends Activity {
         });
         LinearLayout switchRow = new LinearLayout(this);
         switchRow.setGravity(Gravity.END);
-        switchRow.addView(tocSwitch, new LinearLayout.LayoutParams(dp(56), dp(40)));
+        switchRow.addView(tocSwitch, new LinearLayout.LayoutParams(dp(44), dp(36)));
         settingsControl(toc).addView(switchRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
         settingsContent.addView(toc, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
@@ -1488,9 +1500,9 @@ public class MainActivity extends Activity {
         });
         LinearLayout switchRow = new LinearLayout(this);
         switchRow.setGravity(Gravity.END);
-        switchRow.addView(keepSwitch, new LinearLayout.LayoutParams(dp(56), dp(40)));
+        switchRow.addView(keepSwitch, new LinearLayout.LayoutParams(dp(44), dp(36)));
         settingsControl(keepAwake).addView(switchRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
         settingsContent.addView(keepAwake, settingsSectionLayoutParams());
 
         LinearLayout autoPage = createSettingsSection("自动翻页",
@@ -1532,7 +1544,7 @@ public class MainActivity extends Activity {
                 "与阅读页的 A− / A+ 使用相同的两级字号调整。", surface, text, muted);
         TextView fontSizeValue = new TextView(this);
         fontSizeValue.setText(getString(R.string.font_size_value, Math.round(readingFontSize())));
-        addStepper(settingsControl(fontSize), "A−", "A+", fontSizeValue,
+        addStepper(settingsControl(fontSize), "A-", "A+", fontSizeValue,
                 () -> {
                     float size = Math.max(14f, readingFontSize() - 2f);
                     setReadingFontSize(size);
@@ -1553,7 +1565,10 @@ public class MainActivity extends Activity {
                 Math.round(readingLineSpacingRatio() * 100f)));
         spacingValue.setTextColor(accent);
         spacingValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        settingsControl(lineSpacing).addView(spacingValue);
+        LinearLayout.LayoutParams spacingValueLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        spacingValueLp.gravity = Gravity.END;
+        settingsControl(lineSpacing).addView(spacingValue, spacingValueLp);
         SeekBar spacingSeek = new SeekBar(this);
         spacingSeek.setMax(30);
         spacingSeek.setProgress(Math.round(readingLineSpacingRatio() * 100f) - 10);
@@ -1565,7 +1580,8 @@ public class MainActivity extends Activity {
             }
             @Override public void onStopTrackingTouch(SeekBar seekBar) { }
         });
-        settingsControl(lineSpacing).addView(spacingSeek);
+        settingsControl(lineSpacing).addView(spacingSeek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
         settingsContent.addView(lineSpacing, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
@@ -1590,7 +1606,7 @@ public class MainActivity extends Activity {
         body.setPadding(0, dp(3), dp(6), 0);
         details.addView(body);
         section.addView(details, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                ViewGroup.LayoutParams.WRAP_CONTENT, 2));
 
         LinearLayout control = new LinearLayout(this);
         control.setOrientation(LinearLayout.VERTICAL);
@@ -1655,7 +1671,8 @@ public class MainActivity extends Activity {
             if (i % 3 > 0) lp.leftMargin = dp(3);
             row.addView(button, lp);
         }
-        parent.addView(group);
+        parent.addView(group, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
     private void addChoiceDropdown(LinearLayout parent, String[] labels, int[] values,
@@ -1664,31 +1681,31 @@ public class MainActivity extends Activity {
         ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
                 android.R.layout.simple_spinner_item, labels) {
             @Override public View getView(int position, View convertView, ViewGroup parent) {
-                View view = super.getView(position, convertView, parent);
-                if (view instanceof TextView) {
-                    TextView item = (TextView) view;
-                    item.setTextColor(text);
-                    item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-                    item.setPadding(dp(8), 0, dp(8), 0);
-                }
-                return view;
+                TextView item = new TextView(MainActivity.this);
+                item.setText(labels[position] + "⌄");
+                item.setTextColor(text);
+                item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+                item.setGravity(Gravity.CENTER_VERTICAL);
+                item.setSingleLine(true);
+                item.setPadding(dp(8), 0, dp(8), 0);
+                return item;
             }
 
             @Override public View getDropDownView(int position, View convertView, ViewGroup parent) {
-                View view = super.getDropDownView(position, convertView, parent);
-                if (view instanceof TextView) {
-                    TextView item = (TextView) view;
-                    item.setTextColor(text);
-                    item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-                    item.setPadding(dp(10), dp(6), dp(10), dp(6));
-                }
-                return view;
+                TextView item = new TextView(MainActivity.this);
+                item.setText(labels[position]);
+                item.setTextColor(text);
+                item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+                item.setGravity(Gravity.CENTER_VERTICAL);
+                item.setPadding(dp(10), dp(6), dp(10), dp(6));
+                return item;
             }
         };
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         Spinner spinner = new Spinner(this);
         spinner.setAdapter(adapter);
-        spinner.setBackground(UiKit.rounded(this, surface, 12));
+        spinner.setBackground(UiKit.roundedStroke(this, surface,
+                UiKit.withAlpha(text, 64), 12, 1));
+        spinner.setPopupBackgroundDrawable(UiKit.rounded(this, surface, 12));
         int selectedIndex = 0;
         for (int i = 0; i < values.length; i++) {
             if (values[i] == selectedValue) {
@@ -1748,7 +1765,8 @@ public class MainActivity extends Activity {
         plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         plus.setOnClickListener(v -> onPlus.run());
         row.addView(plus, new LinearLayout.LayoutParams(dp(36), dp(36)));
-        parent.addView(row);
+        parent.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
     }
 
     private abstract static class SimpleSeekListener implements SeekBar.OnSeekBarChangeListener {
@@ -2804,11 +2822,28 @@ public class MainActivity extends Activity {
     private void toggleSeekPanel() {
         if (seekPanel != null) {
             boolean show = seekPanel.getVisibility() != View.VISIBLE;
-            seekPanel.setVisibility(show ? View.VISIBLE : View.GONE);
-            for (View stepButton : progressStepButtons) {
-                stepButton.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (show) {
+                seekPanel.setVisibility(View.VISIBLE);
+                for (View stepButton : progressStepButtons) {
+                    stepButton.setVisibility(View.VISIBLE);
+                }
+                if (progressButton != null) {
+                    progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                }
+            } else {
+                collapseSeekPanel();
             }
             alignMenusToReaderViewport();
+        }
+    }
+
+    private void collapseSeekPanel() {
+        if (seekPanel != null) seekPanel.setVisibility(View.GONE);
+        for (View stepButton : progressStepButtons) {
+            stepButton.setVisibility(View.GONE);
+        }
+        if (progressButton != null) {
+            progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         }
     }
 
@@ -2845,6 +2880,7 @@ public class MainActivity extends Activity {
 
     private void showReaderMenus() {
         saveCurrentProgress();
+        collapseSeekPanel();
         readerMenusOpen = true;
         alignMenusToReaderViewport();
         animateMenuIn(readerTopBar, -dp(72));
@@ -2853,6 +2889,7 @@ public class MainActivity extends Activity {
 
     private void hideReaderMenus() {
         saveCurrentProgress();
+        collapseSeekPanel();
         readerMenusOpen = false;
         animateMenuOut(readerTopBar, -dp(72));
         animateMenuOut(readerBottomBar, dp(120));

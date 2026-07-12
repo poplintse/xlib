@@ -60,8 +60,7 @@ final class BookStore {
         Book book = new Book();
         book.id = item.optLong("id");
         book.title = item.optString("title");
-        book.sourceName = item.optString("sourceName", book.title);
-        if (book.sourceName.isEmpty()) book.sourceName = book.title;
+        book.sourceName = item.optString("sourceName", "");
         book.author = item.optString("author", "");
         book.path = item.optString("path");
         book.fileSize = item.optLong("fileSize", 0L);

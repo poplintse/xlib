@@ -1593,7 +1593,7 @@ public class MainActivity extends Activity {
         settingsContent.removeAllViews();
         LinearLayout keepAwake = createSettingsSection("阅读时锁屏",
                 "开启后阻止系统在阅读期间自动锁屏，离开阅读页后恢复系统行为。", surface, text, muted);
-        int switchThumbColor = Color.WHITE;
+        int switchThumbColor = dark ? UiKit.DARK_SURFACE_VARIANT : Color.WHITE;
         int switchEnabledTrackColor = dark
                 ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
         int switchDisabledTrackColor = dark

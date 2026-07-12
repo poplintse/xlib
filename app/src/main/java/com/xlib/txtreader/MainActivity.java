@@ -507,19 +507,6 @@ public class MainActivity extends Activity {
 
         row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        if (!managingBooks) {
-            ImageButton more = makeIconButton();
-            more.setImageResource(R.drawable.ic_more);
-            more.setContentDescription("更多书籍操作");
-            more.setColorFilter(muted);
-            more.setOnClickListener(v -> showEditBookDialog(book));
-            row.addView(more, new LinearLayout.LayoutParams(dp(46), dp(46)));
-        }
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(12);
-        row.setLayoutParams(lp);
         row.setOnClickListener(v -> {
             if (managingBooks) {
                 toggleBookSelection(book);
@@ -527,28 +514,83 @@ public class MainActivity extends Activity {
                 openBook(book);
             }
         });
-        if (!managingBooks) {
-            final float[] touchDownX = new float[1];
-            row.setOnTouchListener((view, event) -> {
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        touchDownX[0] = event.getRawX();
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        if (touchDownX[0] - event.getRawX() >= dp(72)) {
-                            showDeleteBookDialog(book);
+        if (managingBooks) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = dp(12);
+            row.setLayoutParams(lp);
+            return row;
+        }
+
+        int actionWidth = dp(64);
+        int actionMenuWidth = actionWidth * 2;
+        int actionText = Color.WHITE;
+        int moreBackground = dark ? Color.rgb(78, 91, 105) : Color.rgb(112, 130, 149);
+        int deleteBackground = dark ? Color.rgb(164, 58, 62) : Color.rgb(222, 72, 79);
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+
+        ImageButton more = makeIconButton();
+        more.setImageResource(R.drawable.ic_more);
+        more.setContentDescription("编辑书籍信息");
+        UiKit.styleIconButton(this, more, actionText, moreBackground, 0);
+        more.setOnClickListener(v -> showEditBookDialog(book));
+        actions.addView(more, new LinearLayout.LayoutParams(actionWidth,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        ImageButton delete = makeIconButton();
+        delete.setImageResource(R.drawable.ic_delete);
+        delete.setContentDescription("删除书籍");
+        UiKit.styleIconButton(this, delete, actionText, deleteBackground, 0);
+        delete.setOnClickListener(v -> showDeleteBookDialog(book));
+        actions.addView(delete, new LinearLayout.LayoutParams(actionWidth,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        FrameLayout container = new FrameLayout(this);
+        FrameLayout.LayoutParams actionsLp = new FrameLayout.LayoutParams(
+                actionMenuWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END);
+        container.addView(actions, actionsLp);
+        container.addView(row, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final float[] touchDown = new float[1];
+        row.setOnTouchListener((view, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    touchDown[0] = event.getRawX();
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    float translation = Math.min(0, Math.max(-actionMenuWidth,
+                            event.getRawX() - touchDown[0]));
+                    view.setTranslationX(translation);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    float distance = event.getRawX() - touchDown[0];
+                    if (Math.abs(distance) < dp(8)) {
+                        if (view.getTranslationX() < 0) {
+                            view.animate().translationX(0).setDuration(160).start();
                         } else {
                             view.performClick();
                         }
-                        return true;
-                    case MotionEvent.ACTION_CANCEL:
-                        return true;
-                    default:
-                        return true;
-                }
-            });
-        }
-        return row;
+                    } else {
+                        float target = view.getTranslationX() <= -actionMenuWidth / 2f
+                                ? -actionMenuWidth : 0;
+                        view.animate().translationX(target).setDuration(160).start();
+                    }
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    view.animate().translationX(0).setDuration(160).start();
+                    return true;
+                default:
+                    return true;
+            }
+        });
+
+        LinearLayout.LayoutParams containerLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        containerLp.bottomMargin = dp(12);
+        container.setLayoutParams(containerLp);
+        return container;
     }
 
     private void toggleBookSelection(Book book) {

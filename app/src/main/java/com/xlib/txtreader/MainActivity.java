@@ -5,7 +5,6 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
-import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -42,7 +41,6 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ArrayAdapter;
 import android.widget.Spinner;
-import android.widget.Switch;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -1135,7 +1133,11 @@ public class MainActivity extends Activity {
                 darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 15));
 
         progressButton = makeButton("");
-        progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        progressButton.setGravity(Gravity.CENTER);
+        progressButton.setIncludeFontPadding(false);
+        progressButton.setSingleLine(true);
+        progressButton.setPadding(0, 0, 0, 0);
         UiKit.styleButton(this, progressButton, Color.TRANSPARENT, menuFg, 11);
         progressButton.setOnClickListener(v -> toggleSeekPanel());
 
@@ -1552,6 +1554,8 @@ public class MainActivity extends Activity {
     private void renderGeneralSettings(int surface, int text, int muted, int accent) {
         if (settingsContent == null) return;
         settingsContent.removeAllViews();
+        int accentContainer = isDarkTheme(appTheme())
+                ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
         LinearLayout theme = createSettingsSection("应用主题",
                 "应用内的书架、阅读、搜索和设置页面都会使用此主题。",
                 surface, text, muted);
@@ -1560,27 +1564,23 @@ public class MainActivity extends Activity {
                     setAppTheme(value);
                     showSettingsPage(currentBook, SETTINGS_GENERAL);
                 }, text, accent,
-                isDarkTheme(appTheme()) ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER,
+                accentContainer,
                 surface);
         settingsContent.addView(theme, settingsSectionLayoutParams());
         LinearLayout toc = createSettingsSection("TXT 自动生成目录",
                 "开启后在后台识别卷、章、节并保存对应的精确字节位置。",
                 surface, text, muted);
-        Switch tocSwitch = new Switch(this);
-        tocSwitch.setChecked(isAutoTocEnabled());
-        styleSettingsSwitch(tocSwitch, accent,
-                isDarkTheme(appTheme()) ? Color.rgb(91, 96, 93) : Color.rgb(190, 198, 193));
-        tocSwitch.setShowText(false);
-        tocSwitch.setContentDescription("TXT 自动生成目录");
-        tocSwitch.setOnCheckedChangeListener((button, checked) -> {
-            preferences.edit().putBoolean(KEY_AUTO_TOC, checked).apply();
-            if (checked) scheduleMissingTocGeneration();
+        Button tocToggle = makeSettingsToggleButton(isAutoTocEnabled(), text, accent,
+                accentContainer, surface);
+        tocToggle.setContentDescription("TXT 自动生成目录");
+        tocToggle.setOnClickListener(v -> {
+            boolean enabled = !isAutoTocEnabled();
+            preferences.edit().putBoolean(KEY_AUTO_TOC, enabled).apply();
+            styleSettingsToggleButton(tocToggle, enabled, text, accent, accentContainer, surface);
+            if (enabled) scheduleMissingTocGeneration();
         });
-        LinearLayout switchRow = new LinearLayout(this);
-        switchRow.setGravity(Gravity.END);
-        switchRow.addView(tocSwitch, new LinearLayout.LayoutParams(dp(44), dp(36)));
-        settingsControl(toc).addView(switchRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
+        settingsControl(toc).addView(tocToggle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         settingsContent.addView(toc, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
@@ -1588,24 +1588,19 @@ public class MainActivity extends Activity {
     private void renderReadingSettings(int surface, int text,
                                        int muted, int accent, int accentContainer) {
         if (settingsContent == null || settingsScroll == null) return;
-        boolean dark = isDarkTheme(appTheme());
         settingsContent.removeAllViews();
         LinearLayout keepAwake = createSettingsSection("阅读时锁屏",
                 "开启后阻止系统在阅读期间自动锁屏，离开阅读页后恢复系统行为。", surface, text, muted);
-        Switch keepSwitch = new Switch(this);
-        keepSwitch.setChecked(readingKeepScreenOn());
-        styleSettingsSwitch(keepSwitch, accent,
-                dark ? Color.rgb(91, 96, 93) : Color.rgb(190, 198, 193));
-        keepSwitch.setShowText(false);
-        keepSwitch.setContentDescription("阅读时锁屏");
-        keepSwitch.setOnCheckedChangeListener((button, checked) -> {
-            setReadingKeepScreenOn(checked);
+        Button keepToggle = makeSettingsToggleButton(readingKeepScreenOn(), text, accent,
+                accentContainer, surface);
+        keepToggle.setContentDescription("阅读时锁屏");
+        keepToggle.setOnClickListener(v -> {
+            boolean enabled = !readingKeepScreenOn();
+            setReadingKeepScreenOn(enabled);
+            styleSettingsToggleButton(keepToggle, enabled, text, accent, accentContainer, surface);
         });
-        LinearLayout switchRow = new LinearLayout(this);
-        switchRow.setGravity(Gravity.END);
-        switchRow.addView(keepSwitch, new LinearLayout.LayoutParams(dp(44), dp(36)));
-        settingsControl(keepAwake).addView(switchRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
+        settingsControl(keepAwake).addView(keepToggle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         settingsContent.addView(keepAwake, settingsSectionLayoutParams());
 
         LinearLayout autoPage = createSettingsSection("自动翻页（秒）",
@@ -1666,9 +1661,9 @@ public class MainActivity extends Activity {
                 Math.round(readingLineSpacingRatio() * 100f)));
         spacingValue.setTextColor(accent);
         spacingValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        spacingValue.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams spacingValueLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        spacingValueLp.gravity = Gravity.END;
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         settingsControl(lineSpacing).addView(spacingValue, spacingValueLp);
         SeekBar spacingSeek = new SeekBar(this);
         spacingSeek.setMax(30);
@@ -1735,6 +1730,23 @@ public class MainActivity extends Activity {
         return lp;
     }
 
+    private Button makeSettingsToggleButton(boolean enabled, int text, int accent,
+                                            int accentContainer, int surface) {
+        Button button = makeButton("");
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(0, 0, 0, 0);
+        styleSettingsToggleButton(button, enabled, text, accent, accentContainer, surface);
+        return button;
+    }
+
+    private void styleSettingsToggleButton(Button button, boolean enabled, int text, int accent,
+                                           int accentContainer, int surface) {
+        button.setText(enabled ? "开启" : "关闭");
+        UiKit.styleButton(this, button, enabled ? accentContainer : surface,
+                enabled ? accent : text, 14);
+    }
+
     private void addChoiceButtons(LinearLayout parent, String[] labels, int[] values,
                                   int selectedValue, ChoiceListener onSelected, int text,
                                   int accent, int accentContainer, int surface) {
@@ -1747,7 +1759,7 @@ public class MainActivity extends Activity {
                 row = new LinearLayout(this);
                 row.setGravity(Gravity.CENTER_VERTICAL);
                 row.setPadding(dp(2), dp(2), dp(2), dp(2));
-                row.setBackground(UiKit.rounded(this, surface, 18));
+                row.setBackground(UiKit.rounded(this, surface, 14));
                 if (i > 0) {
                     LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT, dp(34));
@@ -1792,7 +1804,7 @@ public class MainActivity extends Activity {
                 item.setText(labels[position]);
                 item.setTextColor(text);
                 item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-                item.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+                item.setGravity(Gravity.CENTER);
                 item.setSingleLine(true);
                 item.setPadding(dp(8), 0, dp(8), 0);
                 return item;
@@ -1811,10 +1823,9 @@ public class MainActivity extends Activity {
         Spinner spinner = new Spinner(this);
         spinner.setAdapter(adapter);
         spinner.setBackground(UiKit.roundedStroke(this, surface,
-                UiKit.withAlpha(text, 64), 12, 1));
-        spinner.setPopupBackgroundDrawable(UiKit.rounded(this, surface, 12));
-        spinner.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-        spinner.setMinimumWidth(dp(64));
+                UiKit.withAlpha(text, 64), 14, 1));
+        spinner.setPopupBackgroundDrawable(UiKit.rounded(this, surface, 14));
+        spinner.setGravity(Gravity.CENTER);
         int selectedIndex = 0;
         for (int i = 0; i < values.length; i++) {
             if (values[i] == selectedValue) {
@@ -1832,20 +1843,7 @@ public class MainActivity extends Activity {
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { }
         });
         parent.addView(spinner, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)));
-    }
-
-    private void styleSettingsSwitch(Switch view, int checkedColor, int uncheckedColor) {
-        int[][] states = new int[][]{
-                new int[]{android.R.attr.state_checked},
-                new int[]{}
-        };
-        view.setTrackTintList(new ColorStateList(states,
-                new int[]{checkedColor, uncheckedColor}));
-        view.setThumbTintList(new ColorStateList(states,
-                new int[]{Color.WHITE, Color.WHITE}));
-        view.setMinWidth(dp(44));
-        view.setPadding(0, 0, 0, 0);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
     }
 
     private void addStepper(LinearLayout parent, String minusLabel, String plusLabel,
@@ -1856,25 +1854,30 @@ public class MainActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         Button minus = makeButton(minusLabel);
         UiKit.styleButton(this, minus, surface, text, 10);
-        minus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        minus.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeControl ? 12 : 10);
+        minus.setGravity(Gravity.CENTER);
+        minus.setIncludeFontPadding(false);
+        minus.setPadding(0, 0, 0, 0);
         minus.setOnClickListener(v -> onMinus.run());
-        row.addView(minus, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        row.addView(minus, new LinearLayout.LayoutParams(0, dp(36), 1));
 
         valueView.setGravity(Gravity.CENTER);
         valueView.setTextColor(accent);
         valueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         valueView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        valueView.setIncludeFontPadding(false);
         LinearLayout.LayoutParams valueLp = new LinearLayout.LayoutParams(0, dp(36), 1);
-        valueLp.leftMargin = dp(3);
-        valueLp.rightMargin = dp(3);
         valueView.setBackground(UiKit.rounded(this, accentContainer, 14));
         row.addView(valueView, valueLp);
 
         Button plus = makeButton(plusLabel);
         UiKit.styleButton(this, plus, surface, text, 10);
-        plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeControl ? 17 : 10);
+        plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeControl ? 15 : 10);
+        plus.setGravity(Gravity.CENTER);
+        plus.setIncludeFontPadding(false);
+        plus.setPadding(0, 0, 0, 0);
         plus.setOnClickListener(v -> onPlus.run());
-        row.addView(plus, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        row.addView(plus, new LinearLayout.LayoutParams(0, dp(36), 1));
         parent.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
     }
@@ -2938,7 +2941,7 @@ public class MainActivity extends Activity {
                     stepButton.setVisibility(View.VISIBLE);
                 }
                 if (progressButton != null) {
-                    progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                    progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
                 }
             } else {
                 collapseSeekPanel();
@@ -2953,7 +2956,7 @@ public class MainActivity extends Activity {
             stepButton.setVisibility(View.GONE);
         }
         if (progressButton != null) {
-            progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         }
     }
 

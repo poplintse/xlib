@@ -21,6 +21,7 @@ final class UiKit {
     static final int LIGHT_MUTED = Color.rgb(99, 107, 102);
     static final int LIGHT_ACCENT = Color.rgb(26, 104, 91);
     static final int LIGHT_ACCENT_CONTAINER = Color.rgb(210, 239, 230);
+    static final int LIGHT_SWITCH_DISABLED_TRACK = Color.rgb(157, 166, 161);
 
     static final int DARK_BACKGROUND = Color.rgb(16, 19, 18);
     static final int DARK_SURFACE = Color.rgb(28, 32, 30);
@@ -29,6 +30,7 @@ final class UiKit {
     static final int DARK_MUTED = Color.rgb(174, 183, 178);
     static final int DARK_ACCENT = Color.rgb(137, 216, 197);
     static final int DARK_ACCENT_CONTAINER = Color.rgb(30, 79, 69);
+    static final int DARK_SWITCH_DISABLED_TRACK = Color.rgb(74, 82, 78);
 
     private UiKit() {
     }

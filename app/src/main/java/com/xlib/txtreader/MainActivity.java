@@ -1560,7 +1560,7 @@ public class MainActivity extends Activity {
         LinearLayout theme = createSettingsSection("应用主题",
                 "应用内的书架、阅读、搜索和设置页面都会使用此主题。",
                 surface, text, muted);
-        addChoiceButtons(settingsControl(theme), new String[]{"跟随系统", "浅色", "深色"},
+        addChoiceButtons(settingsControl(theme), new String[]{"跟随", "浅色", "深色"},
                 new int[]{THEME_SYSTEM, THEME_LIGHT, THEME_DARK}, appTheme(), value -> {
                     setAppTheme(value);
                     showSettingsPage(currentBook, SETTINGS_GENERAL);
@@ -1589,16 +1589,23 @@ public class MainActivity extends Activity {
     private void renderReadingSettings(int surface, int text,
                                        int muted, int accent, int accentContainer) {
         if (settingsContent == null || settingsScroll == null) return;
+        boolean dark = isDarkTheme(appTheme());
         settingsContent.removeAllViews();
         LinearLayout keepAwake = createSettingsSection("阅读时锁屏",
                 "开启后阻止系统在阅读期间自动锁屏，离开阅读页后恢复系统行为。", surface, text, muted);
-        FrameLayout keepToggle = makeSettingsSwitchControl(readingKeepScreenOn(), accentContainer,
-                surface);
+        int switchThumbColor = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT_CONTAINER;
+        int switchEnabledTrackColor = dark
+                ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT;
+        int switchDisabledTrackColor = dark
+                ? UiKit.DARK_SWITCH_DISABLED_TRACK : UiKit.LIGHT_SWITCH_DISABLED_TRACK;
+        FrameLayout keepToggle = makeSettingsSwitchControl(readingKeepScreenOn(),
+                switchThumbColor, switchEnabledTrackColor, switchDisabledTrackColor);
         keepToggle.setContentDescription("阅读时锁屏");
         keepToggle.setOnClickListener(v -> {
             boolean enabled = !readingKeepScreenOn();
             setReadingKeepScreenOn(enabled);
-            styleSettingsSwitchControl(keepToggle, enabled, surface);
+            styleSettingsSwitchControl(keepToggle, enabled, switchEnabledTrackColor,
+                    switchDisabledTrackColor);
         });
         settingsControl(keepAwake).addView(keepToggle, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
@@ -1755,20 +1762,26 @@ public class MainActivity extends Activity {
                 enabled ? accent : text, 14);
     }
 
-    private FrameLayout makeSettingsSwitchControl(boolean enabled, int activeColor, int surface) {
+    private FrameLayout makeSettingsSwitchControl(boolean enabled, int thumbColor,
+                                                  int enabledTrackColor,
+                                                  int disabledTrackColor) {
         FrameLayout toggle = new FrameLayout(this);
         toggle.setClickable(true);
         View thumb = new View(this);
-        thumb.setBackground(UiKit.rounded(this, activeColor, 15));
+        thumb.setBackground(UiKit.rounded(this, thumbColor, 15));
         toggle.setTag(thumb);
         toggle.addView(thumb);
-        styleSettingsSwitchControl(toggle, enabled, surface);
-        toggle.post(() -> styleSettingsSwitchControl(toggle, enabled, surface));
+        styleSettingsSwitchControl(toggle, enabled, enabledTrackColor, disabledTrackColor);
+        toggle.post(() -> styleSettingsSwitchControl(toggle, enabled,
+                enabledTrackColor, disabledTrackColor));
         return toggle;
     }
 
-    private void styleSettingsSwitchControl(FrameLayout toggle, boolean enabled, int surface) {
-        toggle.setBackground(UiKit.rounded(this, surface, 18));
+    private void styleSettingsSwitchControl(FrameLayout toggle, boolean enabled,
+                                            int enabledTrackColor,
+                                            int disabledTrackColor) {
+        toggle.setBackground(UiKit.rounded(this,
+                enabled ? enabledTrackColor : disabledTrackColor, 18));
         View thumb = (View) toggle.getTag();
         int thumbWidth = toggle.getWidth() > 0
                 ? Math.max(dp(30), (toggle.getWidth() - dp(6)) / 2) : dp(56);

@@ -11,10 +11,6 @@ import java.util.List;
 
 final class BookStore {
     private static final String KEY_BOOKS = "books";
-    private static final int THEME_SYSTEM = 0;
-    private static final int SENSITIVITY_HIGH = 0;
-    private static final int SENSITIVITY_STANDARD = 1;
-    private static final int SENSITIVITY_LOW = 2;
 
     private final SharedPreferences preferences;
 
@@ -64,25 +60,15 @@ final class BookStore {
         Book book = new Book();
         book.id = item.optLong("id");
         book.title = item.optString("title");
+        book.sourceName = item.optString("sourceName", book.title);
+        if (book.sourceName.isEmpty()) book.sourceName = book.title;
+        book.author = item.optString("author", "");
         book.path = item.optString("path");
         book.fileSize = item.optLong("fileSize", 0L);
         book.encoding = item.optString("encoding", "UTF-8");
         book.offset = item.optLong("offset", 0L);
         book.progress = (float) item.optDouble("progress", 0d);
-        book.fontSize = (float) item.optDouble("fontSize", 20d);
-        book.theme = item.optInt("theme", THEME_SYSTEM);
         book.pageMode = item.optBoolean("pageMode", true);
-        book.sensitivity = Math.max(SENSITIVITY_HIGH, Math.min(SENSITIVITY_LOW,
-                item.optInt("sensitivity", SENSITIVITY_STANDARD)));
-        book.keepScreenOn = item.optBoolean("keepScreenOn", false);
-        book.autoPageIntervalSeconds = AutoPageOptions.normalize(
-                item.optInt("autoPageIntervalSeconds", AutoPageOptions.DEFAULT_SECONDS));
-        if (book.autoPageIntervalSeconds == AutoPageOptions.OFF) {
-            book.autoPageIntervalSeconds = AutoPageOptions.DEFAULT_SECONDS;
-        }
-        book.fontFamily = Math.max(0, Math.min(4, item.optInt("fontFamily", 0)));
-        book.lineSpacingRatio = (float) item.optDouble("lineSpacingRatio", 0.18d);
-        book.lineSpacingRatio = Math.max(0.10f, Math.min(0.40f, book.lineSpacingRatio));
         book.updatedAt = item.optLong("updatedAt", System.currentTimeMillis());
         return book;
     }
@@ -91,19 +77,14 @@ final class BookStore {
         JSONObject item = new JSONObject();
         item.put("id", book.id);
         item.put("title", book.title);
+        item.put("sourceName", book.sourceName);
+        item.put("author", book.author);
         item.put("path", book.path);
         item.put("fileSize", book.fileSize);
         item.put("encoding", book.encoding);
         item.put("offset", offset);
         item.put("progress", progress);
-        item.put("fontSize", book.fontSize);
-        item.put("theme", book.theme);
         item.put("pageMode", book.pageMode);
-        item.put("sensitivity", book.sensitivity);
-        item.put("keepScreenOn", book.keepScreenOn);
-        item.put("autoPageIntervalSeconds", book.autoPageIntervalSeconds);
-        item.put("fontFamily", book.fontFamily);
-        item.put("lineSpacingRatio", book.lineSpacingRatio);
         item.put("updatedAt", book.updatedAt);
         return item;
     }

@@ -32,6 +32,7 @@ import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -39,6 +40,8 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ArrayAdapter;
+import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -90,6 +93,13 @@ public class MainActivity extends Activity {
     private static final int SEARCH_CONTEXT_CHARS = 45;
     private static final long SEEK_PREVIEW_DELAY_MS = 220L;
     private static final String KEY_AUTO_TOC = "auto_toc";
+    private static final String KEY_APP_THEME = "app_theme";
+    private static final String KEY_KEEP_SCREEN_ON = "keep_screen_on";
+    private static final String KEY_AUTO_PAGE_INTERVAL = "auto_page_interval";
+    private static final String KEY_SENSITIVITY = "sensitivity";
+    private static final String KEY_FONT_FAMILY = "font_family";
+    private static final String KEY_FONT_SIZE = "font_size";
+    private static final String KEY_LINE_SPACING = "line_spacing";
     private static final int SETTINGS_GENERAL = 0;
     private static final int SETTINGS_READING = 1;
 
@@ -161,6 +171,7 @@ public class MainActivity extends Activity {
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
     private Button progressButton;
+    private final List<View> progressStepButtons = new ArrayList<>();
     private ImageButton autoPageButton;
     private LinearLayout seekPanel;
     private SeekBar seekBar;
@@ -277,12 +288,13 @@ public class MainActivity extends Activity {
     private void showLibrary() {
         disableAutoPage();
         applyKeepScreenOn(false);
-        applyWindowColors(THEME_SYSTEM);
+        int theme = appTheme();
+        applyWindowColors(theme);
 
-        boolean dark = isSystemNight();
-        int background = dark ? UiKit.DARK_BACKGROUND : UiKit.LIGHT_BACKGROUND;
+        boolean dark = isDarkTheme(theme);
+        int background = backgroundColor(theme);
         int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
-        int text = dark ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
+        int text = textColor(theme);
         int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
         int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
         int accentContainer = dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
@@ -290,10 +302,11 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(background);
-        root.setPadding(dp(20), statusBarHeight() + dp(18), dp(20), navigationBarHeight() + dp(10));
+        root.setPadding(0, statusBarHeight() + dp(18), 0, navigationBarHeight() + dp(10));
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(20), 0, dp(20), 0);
 
         LinearLayout heading = new LinearLayout(this);
         heading.setOrientation(LinearLayout.VERTICAL);
@@ -313,16 +326,14 @@ public class MainActivity extends Activity {
         ImageButton add = makeIconButton();
         add.setImageResource(R.drawable.ic_add_book);
         add.setContentDescription("添加 TXT");
-        UiKit.styleIconButton(this, add, dark ? UiKit.DARK_BACKGROUND : Color.WHITE,
-                accent, 16);
+        UiKit.styleIconButton(this, add, accent, accentContainer, 16);
         add.setOnClickListener(v -> pickTxtFile());
         header.addView(add, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
         ImageButton settings = makeIconButton();
         settings.setImageResource(R.drawable.ic_settings);
         settings.setContentDescription("常规设置");
-        UiKit.styleIconButton(this, settings, dark ? UiKit.DARK_BACKGROUND : Color.WHITE,
-                accent, 16);
+        UiKit.styleIconButton(this, settings, accent, accentContainer, 16);
         settings.setOnClickListener(v -> openSettingsPage(SETTINGS_GENERAL));
         LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(48), dp(48));
         settingsLp.leftMargin = dp(8);
@@ -382,6 +393,8 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
             emptyLp.topMargin = dp(24);
             emptyLp.bottomMargin = dp(16);
+            emptyLp.leftMargin = dp(20);
+            emptyLp.rightMargin = dp(20);
             root.addView(empty, emptyLp);
         } else {
             LinearLayout list = new LinearLayout(this);
@@ -403,8 +416,11 @@ public class MainActivity extends Activity {
                     dark ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27), 18);
             deleteSelected.setEnabled(!selectedBookIds.isEmpty());
             deleteSelected.setOnClickListener(v -> deleteSelectedBooks());
-            root.addView(deleteSelected, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+            LinearLayout.LayoutParams deleteLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+            deleteLp.leftMargin = dp(20);
+            deleteLp.rightMargin = dp(20);
+            root.addView(deleteSelected, deleteLp);
         }
 
         TextView version = new TextView(this);
@@ -412,7 +428,7 @@ public class MainActivity extends Activity {
         version.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         version.setTextColor(muted);
         version.setGravity(Gravity.START);
-        version.setPadding(0, dp(8), 0, 0);
+        version.setPadding(dp(20), dp(8), dp(20), 0);
         root.addView(version, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
 
@@ -420,7 +436,7 @@ public class MainActivity extends Activity {
     }
 
     private View makeBookRow(Book book) {
-        boolean dark = isSystemNight();
+        boolean dark = isDarkTheme(appTheme());
         int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
         int textColor = dark ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
         int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
@@ -429,7 +445,7 @@ public class MainActivity extends Activity {
 
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(14), dp(13), dp(10), dp(13));
+        row.setPadding(0, dp(13), dp(10), dp(13));
         row.setBackground(UiKit.interactive(this, surface, 22, UiKit.withAlpha(accent, 28)));
         row.setElevation(dp(1));
         row.setClipToOutline(true);
@@ -469,8 +485,7 @@ public class MainActivity extends Activity {
         metaRow.setPadding(0, dp(5), 0, 0);
 
         TextView meta = new TextView(this);
-        meta.setText(String.format(Locale.getDefault(), "阅读进度 · %.2f%%",
-                book.progress * 100f));
+        meta.setText(bookAuthor(book));
         meta.setSingleLine(true);
         meta.setEllipsize(TextUtils.TruncateAt.END);
         meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
@@ -481,8 +496,10 @@ public class MainActivity extends Activity {
         texts.addView(metaRow);
 
         TextView updated = new TextView(this);
-        updated.setText(relativeReadTime(book.updatedAt));
+        updated.setText(String.format(Locale.getDefault(), "%s · %.2f%%",
+                relativeReadTime(book.updatedAt), book.progress * 100f));
         updated.setSingleLine(true);
+        updated.setEllipsize(TextUtils.TruncateAt.END);
         updated.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         updated.setTextColor(muted);
         updated.setPadding(0, dp(7), 0, 0);
@@ -495,7 +512,7 @@ public class MainActivity extends Activity {
             more.setImageResource(R.drawable.ic_more);
             more.setContentDescription("更多书籍操作");
             more.setColorFilter(muted);
-            more.setOnClickListener(v -> showRenameBookDialog(book));
+            more.setOnClickListener(v -> showEditBookDialog(book));
             row.addView(more, new LinearLayout.LayoutParams(dp(46), dp(46)));
         }
 
@@ -529,40 +546,71 @@ public class MainActivity extends Activity {
         return title.substring(0, title.offsetByCodePoints(0, 10)) + "…";
     }
 
+    private String defaultBookName(Book book) {
+        return TextUtils.isEmpty(book.sourceName) ? book.title : book.sourceName;
+    }
+
+    private String bookAuthor(Book book) {
+        return TextUtils.isEmpty(book.author) ? "佚名" : book.author;
+    }
+
+    private String editableBookAuthor(Book book) {
+        return TextUtils.isEmpty(book.author) ? defaultBookName(book) : book.author;
+    }
+
     private String relativeReadTime(long timestamp) {
         long hours = Math.max(1L, (System.currentTimeMillis() - timestamp) / (60L * 60L * 1000L));
         return hours < 24L ? hours + "小时前" : (hours / 24L) + "天前";
     }
 
-    private void showRenameBookDialog(Book book) {
-        EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setText(book.title);
-        input.setSelection(input.length());
+    private void showEditBookDialog(Book book) {
+        EditText titleInput = new EditText(this);
+        titleInput.setSingleLine(true);
+        titleInput.setHint("书名");
+        titleInput.setText(TextUtils.isEmpty(book.title) ? defaultBookName(book) : book.title);
+        titleInput.setSelection(titleInput.length());
+        EditText authorInput = new EditText(this);
+        authorInput.setSingleLine(true);
+        authorInput.setHint("作者");
+        authorInput.setText(editableBookAuthor(book));
+        authorInput.setSelection(authorInput.length());
         int padding = dp(20);
-        FrameLayout container = new FrameLayout(this);
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
         container.setPadding(padding, dp(8), padding, 0);
-        container.addView(input, new FrameLayout.LayoutParams(
+        container.addView(titleInput, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        container.addView(authorInput, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("修改书籍名称")
+                .setTitle("编辑书籍信息")
                 .setView(container)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("保存", null)
                 .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(v -> {
-                    String value = input.getText().toString().trim();
-                    if (value.isEmpty()) {
-                        input.setError("书籍名称不能为空");
+                    String title = titleInput.getText().toString().trim();
+                    if (title.isEmpty()) {
+                        titleInput.setError("书籍名称不能为空");
                         return;
                     }
-                    book.title = value;
+                    String author = authorInput.getText().toString().trim();
+                    book.title = title;
+                    book.author = author.equals(defaultBookName(book)) ? "" : author;
                     saveBooks();
+                    hideKeyboard(titleInput);
                     dialog.dismiss();
                     showLibrary();
                 }));
         dialog.show();
+    }
+
+    private void hideKeyboard(View view) {
+        InputMethodManager manager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (manager != null) {
+            manager.hideSoftInputFromWindow(view.getWindowToken(), 0);
+        }
     }
 
     private void deleteSelectedBooks() {
@@ -630,19 +678,14 @@ public class MainActivity extends Activity {
             Book book = new Book();
             book.id = System.currentTimeMillis();
             book.title = title;
+            book.sourceName = title;
+            book.author = "";
             book.path = target.getAbsolutePath();
             book.fileSize = target.length();
             book.encoding = detectEncoding(target);
             book.offset = 0L;
             book.progress = 0f;
-            book.fontSize = 20f;
-            book.theme = THEME_SYSTEM;
             book.pageMode = true;
-            book.sensitivity = SENSITIVITY_STANDARD;
-            book.keepScreenOn = false;
-            book.autoPageIntervalSeconds = AutoPageOptions.DEFAULT_SECONDS;
-            book.fontFamily = 0;
-            book.lineSpacingRatio = 0.18f;
             book.updatedAt = System.currentTimeMillis();
             books.add(0, book);
             saveBooks();
@@ -668,17 +711,16 @@ public class MainActivity extends Activity {
         fittedReaderBottomInset = -1;
         fittedReaderFontSize = -1f;
         fittedReaderVisibleHeight = -1;
-        applyWindowColors(book.theme);
-        applyKeepScreenOn(book.keepScreenOn);
-        int bg = backgroundColor(book.theme);
-        int fg = textColor(book.theme);
-        boolean darkTheme = isDarkReaderTheme(book.theme);
+        progressStepButtons.clear();
+        int readerTheme = appTheme();
+        applyWindowColors(readerTheme);
+        applyKeepScreenOn(readingKeepScreenOn());
+        int bg = backgroundColor(readerTheme);
+        int fg = textColor(readerTheme);
+        boolean darkTheme = isDarkTheme(readerTheme);
         int menuBg = darkTheme ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
         int menuFg = darkTheme ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
         int menuMuted = darkTheme ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
-        int menuAccent = darkTheme ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
-        int menuAccentContainer = darkTheme
-                ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER;
 
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(bg);
@@ -701,13 +743,17 @@ public class MainActivity extends Activity {
         fontControls.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
 
         Button smaller = makeButton("A-");
-        UiKit.styleButton(this, smaller, menuAccentContainer, menuAccent, 14);
+        UiKit.styleButton(this, smaller,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
+                menuFg, 14);
         smaller.setPadding(0, 0, 0, 0);
         smaller.setOnClickListener(v -> updateFontSize(-2f));
         fontControls.addView(smaller, new LinearLayout.LayoutParams(dp(44), dp(42)));
 
         Button larger = makeButton("A+");
-        UiKit.styleButton(this, larger, menuAccentContainer, menuAccent, 14);
+        UiKit.styleButton(this, larger,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
+                menuFg, 14);
         larger.setPadding(0, 0, 0, 0);
         larger.setOnClickListener(v -> updateFontSize(2f));
         LinearLayout.LayoutParams largerLp = new LinearLayout.LayoutParams(dp(44), dp(42));
@@ -716,9 +762,9 @@ public class MainActivity extends Activity {
 
         ImageButton search = makeIconButton();
         search.setImageResource(R.drawable.ic_search);
+        search.setContentDescription("搜索当前书籍");
         UiKit.styleIconButton(this, search, menuFg,
                 darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
-        search.setContentDescription("搜索当前书籍");
         search.setOnClickListener(v -> openSearchPage());
         LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(dp(42), dp(42));
         searchLp.leftMargin = dp(4);
@@ -731,9 +777,7 @@ public class MainActivity extends Activity {
         theme.setContentDescription(darkTheme ? "深色主题" : "浅色主题");
         theme.setOnClickListener(v -> {
             saveCurrentProgress();
-            book.theme = isDarkReaderTheme(book.theme) ? THEME_LIGHT : THEME_DARK;
-            book.updatedAt = System.currentTimeMillis();
-            saveBooks();
+            setAppTheme(isDarkTheme(appTheme()) ? THEME_LIGHT : THEME_DARK);
             readerMenusOpen = true;
             showReader(book);
         });
@@ -746,7 +790,7 @@ public class MainActivity extends Activity {
         autoPageButton.setContentDescription(autoPageDescription(autoPageSeconds));
         autoPageButton.setOnClickListener(v -> {
             autoPageSeconds = autoPageSeconds == AutoPageOptions.OFF
-                    ? AutoPageOptions.normalize(book.autoPageIntervalSeconds)
+                    ? readingAutoPageInterval()
                     : AutoPageOptions.OFF;
             refreshAutoPageButton();
             scheduleAutoPage();
@@ -770,17 +814,17 @@ public class MainActivity extends Activity {
         readerScroll.setFillViewport(true);
         readerScroll.setClipToPadding(true);
         readerScroll.setClipChildren(true);
-        applyReaderSafePadding(book.fontSize);
+        applyReaderSafePadding(readingFontSize());
 
         readerText = new TextView(this);
         readerText.setTextColor(fg);
-        readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, book.fontSize);
-        readerText.setTypeface(readerTypeface(book.fontFamily));
+        readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, readingFontSize());
+        readerText.setTypeface(readerTypeface(readingFontFamily()));
         // The viewport is fitted to whole rendered rows, so font padding must not add
         // an extra partial row above or below the text layout.
         readerText.setIncludeFontPadding(false);
         readerText.setPadding(dp(22), 0, dp(22), 0);
-        applyReaderLineSpacing(book.fontSize);
+        applyReaderLineSpacing(readingFontSize());
         readerScroll.setOnTouchListener((v, event) -> {
             int action = event.getActionMasked();
             if (pageAnimating) return true;
@@ -888,7 +932,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT);
         readerLp.topMargin = readerTopInset();
-        readerLp.bottomMargin = readerBottomInset(book.fontSize);
+        readerLp.bottomMargin = readerBottomInset(readingFontSize());
         frame.addView(readerRoot, readerLp);
         readerRoot.addOnLayoutChangeListener((v, left, top, right, bottom,
                                               oldLeft, oldTop, oldRight, oldBottom) -> {
@@ -896,7 +940,7 @@ public class MainActivity extends Activity {
             if (height > 0 && height != readerContainerHeight) {
                 readerContainerHeight = height;
                 if (readerText != null && currentBook != null) {
-                    readerText.post(() -> fitReaderViewportToWholeLines(currentBook.fontSize));
+                    readerText.post(() -> fitReaderViewportToWholeLines(readingFontSize()));
                 }
             }
         });
@@ -953,22 +997,6 @@ public class MainActivity extends Activity {
         seekRow.addView(end, new LinearLayout.LayoutParams(dp(52), dp(44)));
         seekPanel.addView(seekRow);
 
-        LinearLayout steps = new LinearLayout(this);
-        steps.setGravity(Gravity.CENTER_VERTICAL);
-        String[] stepLabels = {"−1%", "−0.1%", "−0.01%", "+0.01%", "+0.1%", "+1%"};
-        float[] stepValues = {-1f, -0.1f, -0.01f, 0.01f, 0.1f, 1f};
-        for (int i = 0; i < stepLabels.length; i++) {
-            Button step = makeProgressStepButton(stepLabels[i], 11);
-            UiKit.styleButton(this, step,
-                    i == 0 || i == stepLabels.length - 1 ? menuAccentContainer
-                            : darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
-                    i == 0 || i == stepLabels.length - 1 ? menuAccent : menuFg, 12);
-            configureRepeatingProgressStep(step, stepValues[i]);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1);
-            if (i > 0) lp.leftMargin = dp(4);
-            steps.addView(step, lp);
-        }
-        seekPanel.addView(steps);
         readerBottomBar.addView(seekPanel);
 
         LinearLayout nav = new LinearLayout(this);
@@ -980,7 +1008,7 @@ public class MainActivity extends Activity {
         UiKit.styleIconButton(this, catalog, menuFg,
                 darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
         catalog.setOnClickListener(v -> openCatalogPage());
-        nav.addView(catalog, new LinearLayout.LayoutParams(dp(52), dp(46)));
+        nav.addView(catalog, new LinearLayout.LayoutParams(dp(44), dp(46)));
 
         ImageButton bookmark = makeIconButton();
         bookmark.setImageResource(R.drawable.ic_bookmark);
@@ -988,25 +1016,48 @@ public class MainActivity extends Activity {
         UiKit.styleIconButton(this, bookmark, menuFg,
                 darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 14);
         bookmark.setOnClickListener(v -> saveCurrentBookmark());
-        LinearLayout.LayoutParams bookmarkLp = new LinearLayout.LayoutParams(dp(52), dp(46));
-        bookmarkLp.leftMargin = dp(6);
+        LinearLayout.LayoutParams bookmarkLp = new LinearLayout.LayoutParams(dp(44), dp(46));
+        bookmarkLp.leftMargin = dp(4);
         nav.addView(bookmark, bookmarkLp);
 
+        LinearLayout progressControls = new LinearLayout(this);
+        progressControls.setGravity(Gravity.CENTER_VERTICAL);
+        progressControls.setPadding(dp(4), dp(4), dp(4), dp(4));
+        progressControls.setBackground(UiKit.rounded(this,
+                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT, 15));
+
         progressButton = makeButton("");
-        progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        UiKit.styleButton(this, progressButton,
-                darkTheme ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
-                menuFg, 15);
+        progressButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        UiKit.styleButton(this, progressButton, Color.TRANSPARENT, menuFg, 11);
         progressButton.setOnClickListener(v -> toggleSeekPanel());
+
+        int[] progressIcons = {R.drawable.ic_progress_back, R.drawable.ic_progress_back_fine,
+                R.drawable.ic_progress_forward_fine, R.drawable.ic_progress_forward};
+        String[] progressDescriptions = {"后退 1%", "后退 0.01%", "前进 0.01%", "前进 1%"};
+        float[] progressSteps = {-1f, -0.01f, 0.01f, 1f};
+        for (int i = 0; i < progressIcons.length; i++) {
+            if (i == 2) {
+                progressControls.addView(progressButton,
+                        new LinearLayout.LayoutParams(0, dp(38), 1));
+            }
+            ImageButton step = makeIconButton();
+            step.setImageResource(progressIcons[i]);
+            step.setContentDescription(progressDescriptions[i]);
+            UiKit.styleIconButton(this, step, menuFg, Color.TRANSPARENT, 11);
+            configureRepeatingProgressStep(step, progressSteps[i]);
+            step.setVisibility(View.GONE);
+            progressStepButtons.add(step);
+            progressControls.addView(step, new LinearLayout.LayoutParams(dp(28), dp(38)));
+        }
         LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(0, dp(46), 1);
-        progressLp.leftMargin = dp(8);
-        nav.addView(progressButton, progressLp);
+        progressLp.leftMargin = dp(6);
+        nav.addView(progressControls, progressLp);
         readerBottomBar.addView(nav);
 
         FrameLayout.LayoutParams bottomLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM);
-        bottomLp.bottomMargin = readerBottomInset(book.fontSize);
+        bottomLp.bottomMargin = readerBottomInset(readingFontSize());
         bottomLp.leftMargin = dp(12);
         bottomLp.rightMargin = dp(12);
         frame.addView(readerBottomBar, bottomLp);
@@ -1109,12 +1160,13 @@ public class MainActivity extends Activity {
     }
 
     private void showCatalogPage(Book book, TocDocument document) {
-        applyWindowColors(book.theme);
-        boolean dark = isDarkReaderTheme(book.theme);
-        int background = backgroundColor(book.theme);
+        int theme = appTheme();
+        applyWindowColors(theme);
+        boolean dark = isDarkTheme(theme);
+        int background = backgroundColor(theme);
         int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
         int variant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
-        int text = textColor(book.theme);
+        int text = textColor(theme);
         int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
         int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
 
@@ -1298,9 +1350,9 @@ public class MainActivity extends Activity {
     }
 
     private void showSettingsPage(Book book, int initialTab) {
-        int theme = book == null ? THEME_SYSTEM : book.theme;
+        int theme = appTheme();
         applyWindowColors(theme);
-        boolean dark = isDarkReaderTheme(theme);
+        boolean dark = isDarkTheme(theme);
         int background = backgroundColor(theme);
         int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
         int text = textColor(theme);
@@ -1311,7 +1363,7 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(background);
-        root.setPadding(dp(12), statusBarHeight() + dp(12), dp(12), navigationBarHeight() + dp(12));
+        root.setPadding(dp(8), statusBarHeight() + dp(12), dp(8), navigationBarHeight() + dp(12));
 
         LinearLayout navigation = new LinearLayout(this);
         navigation.setOrientation(LinearLayout.HORIZONTAL);
@@ -1327,21 +1379,13 @@ public class MainActivity extends Activity {
         back.setOnClickListener(v -> onBackPressed());
         navigation.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
-        TextView navTitle = new TextView(this);
-        navTitle.setText("设置");
-        UiKit.styleTitle(navTitle, text, 20);
-        navTitle.setGravity(Gravity.CENTER_VERTICAL);
-        navTitle.setPadding(dp(10), 0, dp(8), 0);
-        navigation.addView(navTitle, new LinearLayout.LayoutParams(0, dp(44), 1));
-
-        boolean showGeneral = initialTab == SETTINGS_GENERAL || book == null;
+        boolean showGeneral = initialTab == SETTINGS_GENERAL;
         Button general = makeSettingsNavButton("常规", showGeneral ? accent : text,
                 showGeneral ? accentContainer : surface);
         navigation.addView(general, new LinearLayout.LayoutParams(dp(72), dp(44)));
 
         Button reading = makeSettingsNavButton("阅读", showGeneral ? text : accent,
                 showGeneral ? surface : accentContainer);
-        reading.setEnabled(book != null);
         LinearLayout.LayoutParams readingLp = new LinearLayout.LayoutParams(dp(72), dp(44));
         readingLp.leftMargin = dp(4);
         navigation.addView(reading, readingLp);
@@ -1353,7 +1397,7 @@ public class MainActivity extends Activity {
         reading.setOnClickListener(v -> {
             styleSettingsNavButton(general, false, text, surface, accent, accentContainer);
             styleSettingsNavButton(reading, true, text, surface, accent, accentContainer);
-            renderReadingSettings(book, surface, text, muted, accent, accentContainer);
+            renderReadingSettings(surface, text, muted, accent, accentContainer);
         });
 
         root.addView(navigation, new LinearLayout.LayoutParams(
@@ -1361,7 +1405,7 @@ public class MainActivity extends Activity {
 
         settingsContent = new LinearLayout(this);
         settingsContent.setOrientation(LinearLayout.VERTICAL);
-        settingsContent.setPadding(dp(4), dp(6), dp(4), dp(20));
+        settingsContent.setPadding(0, dp(4), 0, dp(16));
         settingsScroll = new ScrollView(this);
         settingsScroll.setFillViewport(true);
         settingsScroll.addView(settingsContent);
@@ -1372,7 +1416,7 @@ public class MainActivity extends Activity {
 
         setContentView(root);
         if (showGeneral) renderGeneralSettings(surface, text, muted, accent);
-        else renderReadingSettings(book, surface, text, muted, accent, accentContainer);
+        else renderReadingSettings(surface, text, muted, accent, accentContainer);
     }
 
     private Button makeSettingsNavButton(String label, int foreground, int background) {
@@ -1393,17 +1437,24 @@ public class MainActivity extends Activity {
     private void renderGeneralSettings(int surface, int text, int muted, int accent) {
         if (settingsContent == null) return;
         settingsContent.removeAllViews();
-        TextView title = new TextView(this);
-        title.setText("常规");
-        UiKit.styleTitle(title, text, 27);
-        settingsContent.addView(title);
+        LinearLayout theme = createSettingsSection("应用主题",
+                "应用内的书架、阅读、搜索和设置页面都会使用此主题。",
+                surface, text, muted);
+        addChoiceButtons(settingsControl(theme), new String[]{"跟随系统", "浅色", "深色"},
+                new int[]{THEME_SYSTEM, THEME_LIGHT, THEME_DARK}, appTheme(), value -> {
+                    setAppTheme(value);
+                    showSettingsPage(currentBook, SETTINGS_GENERAL);
+                }, text, accent,
+                isDarkTheme(appTheme()) ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER,
+                surface);
+        settingsContent.addView(theme, settingsSectionLayoutParams());
         LinearLayout toc = createSettingsSection("TXT 自动生成目录",
                 "开启后在后台识别卷、章、节并保存对应的精确字节位置。",
                 surface, text, muted);
         Switch tocSwitch = new Switch(this);
         tocSwitch.setChecked(isAutoTocEnabled());
         styleSettingsSwitch(tocSwitch, accent,
-                isSystemNight() ? Color.rgb(91, 96, 93) : Color.rgb(190, 198, 193));
+                isDarkTheme(appTheme()) ? Color.rgb(91, 96, 93) : Color.rgb(190, 198, 193));
         tocSwitch.setShowText(false);
         tocSwitch.setContentDescription("TXT 自动生成目录");
         tocSwitch.setOnCheckedChangeListener((button, checked) -> {
@@ -1413,102 +1464,85 @@ public class MainActivity extends Activity {
         LinearLayout switchRow = new LinearLayout(this);
         switchRow.setGravity(Gravity.END);
         switchRow.addView(tocSwitch, new LinearLayout.LayoutParams(dp(56), dp(40)));
-        toc.addView(switchRow, new LinearLayout.LayoutParams(
+        settingsControl(toc).addView(switchRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         settingsContent.addView(toc, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
 
-    private void renderReadingSettings(Book book, int surface, int text,
+    private void renderReadingSettings(int surface, int text,
                                        int muted, int accent, int accentContainer) {
         if (settingsContent == null || settingsScroll == null) return;
-        boolean dark = isDarkReaderTheme(book.theme);
+        boolean dark = isDarkTheme(appTheme());
         settingsContent.removeAllViews();
-        TextView pageTitle = new TextView(this);
-        pageTitle.setText("阅读设置");
-        UiKit.styleTitle(pageTitle, text, 27);
-        settingsContent.addView(pageTitle);
-        TextView subtitle = new TextView(this);
-        subtitle.setText(getString(R.string.settings_current_book, book.title));
-        subtitle.setTextColor(muted);
-        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        subtitle.setPadding(0, dp(6), 0, dp(8));
-        settingsContent.addView(subtitle);
-
         LinearLayout keepAwake = createSettingsSection("阅读时锁屏",
                 "开启后阻止系统在阅读期间自动锁屏，离开阅读页后恢复系统行为。", surface, text, muted);
         Switch keepSwitch = new Switch(this);
-        keepSwitch.setChecked(book.keepScreenOn);
+        keepSwitch.setChecked(readingKeepScreenOn());
         styleSettingsSwitch(keepSwitch, accent,
                 dark ? Color.rgb(91, 96, 93) : Color.rgb(190, 198, 193));
         keepSwitch.setShowText(false);
         keepSwitch.setContentDescription("阅读时锁屏");
         keepSwitch.setOnCheckedChangeListener((button, checked) -> {
-            book.keepScreenOn = checked;
-            saveBooks();
+            setReadingKeepScreenOn(checked);
         });
         LinearLayout switchRow = new LinearLayout(this);
         switchRow.setGravity(Gravity.END);
         switchRow.addView(keepSwitch, new LinearLayout.LayoutParams(dp(56), dp(40)));
-        keepAwake.addView(switchRow, new LinearLayout.LayoutParams(
+        settingsControl(keepAwake).addView(switchRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         settingsContent.addView(keepAwake, settingsSectionLayoutParams());
 
         LinearLayout autoPage = createSettingsSection("自动翻页",
                 "设置顶部自动翻页按钮开启后的翻页间隔；开启状态不会保存。", surface, text, muted);
         TextView autoPageValue = new TextView(this);
-        autoPageValue.setText(getString(R.string.seconds_value, book.autoPageIntervalSeconds));
-        addStepper(autoPage, "−", "+", autoPageValue,
+        autoPageValue.setText(getString(R.string.seconds_value, readingAutoPageInterval()));
+        addStepper(settingsControl(autoPage), "−", "+", autoPageValue,
                 () -> {
-                    book.autoPageIntervalSeconds = Math.max(10,
-                            book.autoPageIntervalSeconds - 5);
+                    int interval = Math.max(AutoPageOptions.MIN_SECONDS,
+                            readingAutoPageInterval() - 1);
+                    setReadingAutoPageInterval(interval);
                     autoPageValue.setText(getString(
-                            R.string.seconds_value, book.autoPageIntervalSeconds));
-                    saveBooks();
+                            R.string.seconds_value, interval));
                 }, () -> {
-                    book.autoPageIntervalSeconds = Math.min(20,
-                            book.autoPageIntervalSeconds + 5);
+                    int interval = Math.min(AutoPageOptions.MAX_SECONDS,
+                            readingAutoPageInterval() + 1);
+                    setReadingAutoPageInterval(interval);
                     autoPageValue.setText(getString(
-                            R.string.seconds_value, book.autoPageIntervalSeconds));
-                    saveBooks();
+                            R.string.seconds_value, interval));
                 }, text, accent, accentContainer, surface);
         settingsContent.addView(autoPage, settingsSectionLayoutParams());
 
         LinearLayout sensitivity = createSettingsSection("触摸灵敏度",
                 "调整点击区域和滑动翻页的触发阈值。", surface, text, muted);
-        addChoiceButtons(sensitivity, new String[]{"高", "中", "低"},
+        addChoiceButtons(settingsControl(sensitivity), new String[]{"高", "中", "低"},
                 new int[]{SENSITIVITY_HIGH, SENSITIVITY_STANDARD, SENSITIVITY_LOW},
-                book.sensitivity, value -> {
-                    book.sensitivity = value;
-                    saveBooks();
-                }, text, accent, accentContainer, surface);
+                readingSensitivity(), this::setReadingSensitivity,
+                text, accent, accentContainer, surface);
         settingsContent.addView(sensitivity, settingsSectionLayoutParams());
 
         LinearLayout font = createSettingsSection("字体",
                 "选择本机系统可用的正文视觉字体。", surface, text, muted);
-        addChoiceButtons(font, new String[]{"系统", "黑体", "宋体", "仿宋", "等宽"},
-                new int[]{0, 3, 1, 4, 2},
-                book.fontFamily, value -> {
-                    book.fontFamily = value;
-                    saveBooks();
-                }, text, accent, accentContainer, surface);
+        addChoiceDropdown(settingsControl(font), new String[]{"系统", "黑体", "宋体", "仿宋", "等宽"},
+                new int[]{0, 3, 1, 4, 2}, readingFontFamily(), this::setReadingFontFamily,
+                text, surface);
         settingsContent.addView(font, settingsSectionLayoutParams());
 
         LinearLayout fontSize = createSettingsSection("字号",
                 "与阅读页的 A− / A+ 使用相同的两级字号调整。", surface, text, muted);
         TextView fontSizeValue = new TextView(this);
-        fontSizeValue.setText(getString(R.string.font_size_value, Math.round(book.fontSize)));
-        addStepper(fontSize, "A−", "A+", fontSizeValue,
+        fontSizeValue.setText(getString(R.string.font_size_value, Math.round(readingFontSize())));
+        addStepper(settingsControl(fontSize), "A−", "A+", fontSizeValue,
                 () -> {
-                    book.fontSize = Math.max(14f, book.fontSize - 2f);
+                    float size = Math.max(14f, readingFontSize() - 2f);
+                    setReadingFontSize(size);
                     fontSizeValue.setText(getString(
-                            R.string.font_size_value, Math.round(book.fontSize)));
-                    saveBooks();
+                            R.string.font_size_value, Math.round(size)));
                 }, () -> {
-                    book.fontSize = Math.min(34f, book.fontSize + 2f);
+                    float size = Math.min(34f, readingFontSize() + 2f);
+                    setReadingFontSize(size);
                     fontSizeValue.setText(getString(
-                            R.string.font_size_value, Math.round(book.fontSize)));
-                    saveBooks();
+                            R.string.font_size_value, Math.round(size)));
                 }, text, accent, accentContainer, surface);
         settingsContent.addView(fontSize, settingsSectionLayoutParams());
 
@@ -1516,22 +1550,22 @@ public class MainActivity extends Activity {
                 "调整正文行与行之间的留白。", surface, text, muted);
         TextView spacingValue = new TextView(this);
         spacingValue.setText(getString(R.string.percent_value,
-                Math.round(book.lineSpacingRatio * 100f)));
+                Math.round(readingLineSpacingRatio() * 100f)));
         spacingValue.setTextColor(accent);
-        spacingValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        lineSpacing.addView(spacingValue);
+        spacingValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        settingsControl(lineSpacing).addView(spacingValue);
         SeekBar spacingSeek = new SeekBar(this);
         spacingSeek.setMax(30);
-        spacingSeek.setProgress(Math.round(book.lineSpacingRatio * 100f) - 10);
+        spacingSeek.setProgress(Math.round(readingLineSpacingRatio() * 100f) - 10);
         spacingSeek.setOnSeekBarChangeListener(new SimpleSeekListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (!fromUser) return;
-                book.lineSpacingRatio = (10 + progress) / 100f;
+                setReadingLineSpacingRatio((10 + progress) / 100f);
                 spacingValue.setText(getString(R.string.percent_value, 10 + progress));
             }
-            @Override public void onStopTrackingTouch(SeekBar seekBar) { saveBooks(); }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
         });
-        lineSpacing.addView(spacingSeek);
+        settingsControl(lineSpacing).addView(spacingSeek);
         settingsContent.addView(lineSpacing, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
@@ -1539,26 +1573,42 @@ public class MainActivity extends Activity {
     private LinearLayout createSettingsSection(String titleText, String description,
                                                int surface, int text, int muted) {
         LinearLayout section = new LinearLayout(this);
-        section.setOrientation(LinearLayout.VERTICAL);
-        section.setPadding(dp(16), dp(15), dp(16), dp(15));
+        section.setOrientation(LinearLayout.HORIZONTAL);
+        section.setGravity(Gravity.CENTER_VERTICAL);
+        section.setPadding(dp(8), dp(8), dp(8), dp(8));
         UiKit.styleCard(this, section, surface, 20, 1);
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText(titleText);
-        UiKit.styleTitle(title, text, 17);
-        section.addView(title);
+        UiKit.styleTitle(title, text, 13);
+        details.addView(title);
         TextView body = new TextView(this);
         body.setText(description);
         body.setTextColor(muted);
-        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        body.setPadding(0, dp(6), 0, dp(12));
-        section.addView(body);
+        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+        body.setPadding(0, dp(3), dp(6), 0);
+        details.addView(body);
+        section.addView(details, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        LinearLayout control = new LinearLayout(this);
+        control.setOrientation(LinearLayout.VERTICAL);
+        control.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        section.addView(control, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        section.setTag(control);
         return section;
+    }
+
+    private LinearLayout settingsControl(LinearLayout section) {
+        return (LinearLayout) section.getTag();
     }
 
     private LinearLayout.LayoutParams settingsSectionLayoutParams() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(12);
+        lp.topMargin = dp(8);
         return lp;
     }
 
@@ -1573,21 +1623,22 @@ public class MainActivity extends Activity {
             if (i % 3 == 0) {
                 row = new LinearLayout(this);
                 row.setGravity(Gravity.CENTER_VERTICAL);
-                row.setPadding(dp(4), dp(4), dp(4), dp(4));
+                row.setPadding(dp(2), dp(2), dp(2), dp(2));
                 row.setBackground(UiKit.rounded(this, surface, 18));
                 if (i > 0) {
                     LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(34));
                     rowLp.topMargin = dp(8);
                     group.addView(row, rowLp);
                 } else {
                     group.addView(row, new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(34)));
                 }
             }
             int value = values[i];
             boolean selected = value == selectedValue;
             Button button = makeButton(labels[i]);
+            button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
             UiKit.styleButton(this, button, selected ? accentContainer : Color.TRANSPARENT,
                     selected ? accent : text, 14);
             buttons.add(button);
@@ -1600,11 +1651,62 @@ public class MainActivity extends Activity {
                             active ? accent : text, 14);
                 }
             });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1);
-            if (i % 3 > 0) lp.leftMargin = dp(8);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1);
+            if (i % 3 > 0) lp.leftMargin = dp(3);
             row.addView(button, lp);
         }
         parent.addView(group);
+    }
+
+    private void addChoiceDropdown(LinearLayout parent, String[] labels, int[] values,
+                                   int selectedValue, ChoiceListener onSelected,
+                                   int text, int surface) {
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item, labels) {
+            @Override public View getView(int position, View convertView, ViewGroup parent) {
+                View view = super.getView(position, convertView, parent);
+                if (view instanceof TextView) {
+                    TextView item = (TextView) view;
+                    item.setTextColor(text);
+                    item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+                    item.setPadding(dp(8), 0, dp(8), 0);
+                }
+                return view;
+            }
+
+            @Override public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                View view = super.getDropDownView(position, convertView, parent);
+                if (view instanceof TextView) {
+                    TextView item = (TextView) view;
+                    item.setTextColor(text);
+                    item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+                    item.setPadding(dp(10), dp(6), dp(10), dp(6));
+                }
+                return view;
+            }
+        };
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        Spinner spinner = new Spinner(this);
+        spinner.setAdapter(adapter);
+        spinner.setBackground(UiKit.rounded(this, surface, 12));
+        int selectedIndex = 0;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == selectedValue) {
+                selectedIndex = i;
+                break;
+            }
+        }
+        spinner.setSelection(selectedIndex, false);
+        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent,
+                                                 View view, int position, long id) {
+                onSelected.accept(values[position]);
+            }
+
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { }
+        });
+        parent.addView(spinner, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
     }
 
     private void styleSettingsSwitch(Switch view, int checkedColor, int uncheckedColor) {
@@ -1616,7 +1718,7 @@ public class MainActivity extends Activity {
                 new int[]{checkedColor, uncheckedColor}));
         view.setThumbTintList(new ColorStateList(states,
                 new int[]{Color.WHITE, Color.WHITE}));
-        view.setMinWidth(dp(52));
+        view.setMinWidth(dp(44));
         view.setPadding(0, 0, 0, 0);
     }
 
@@ -1626,26 +1728,26 @@ public class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         Button minus = makeButton(minusLabel);
-        UiKit.styleButton(this, minus, surface, text, 14);
-        minus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        UiKit.styleButton(this, minus, surface, text, 10);
+        minus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         minus.setOnClickListener(v -> onMinus.run());
-        row.addView(minus, new LinearLayout.LayoutParams(dp(72), dp(44)));
+        row.addView(minus, new LinearLayout.LayoutParams(dp(36), dp(36)));
 
         valueView.setGravity(Gravity.CENTER);
         valueView.setTextColor(accent);
-        valueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        valueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         valueView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        LinearLayout.LayoutParams valueLp = new LinearLayout.LayoutParams(0, dp(44), 1);
-        valueLp.leftMargin = dp(8);
-        valueLp.rightMargin = dp(8);
+        LinearLayout.LayoutParams valueLp = new LinearLayout.LayoutParams(0, dp(36), 1);
+        valueLp.leftMargin = dp(3);
+        valueLp.rightMargin = dp(3);
         valueView.setBackground(UiKit.rounded(this, accentContainer, 14));
         row.addView(valueView, valueLp);
 
         Button plus = makeButton(plusLabel);
-        UiKit.styleButton(this, plus, surface, text, 14);
-        plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        UiKit.styleButton(this, plus, surface, text, 10);
+        plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         plus.setOnClickListener(v -> onPlus.run());
-        row.addView(plus, new LinearLayout.LayoutParams(dp(72), dp(44)));
+        row.addView(plus, new LinearLayout.LayoutParams(dp(36), dp(36)));
         parent.addView(row);
     }
 
@@ -1682,11 +1784,12 @@ public class MainActivity extends Activity {
         applyKeepScreenOn(false);
         if (currentBook == null) return;
         Book book = currentBook;
-        applyWindowColors(book.theme);
+        int theme = appTheme();
+        applyWindowColors(theme);
 
-        int bg = backgroundColor(book.theme);
-        int fg = textColor(book.theme);
-        boolean dark = isDarkReaderTheme(book.theme);
+        int bg = backgroundColor(theme);
+        int fg = textColor(theme);
+        boolean dark = isDarkTheme(theme);
         int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
         int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
         int surfaceVariant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
@@ -1905,14 +2008,14 @@ public class MainActivity extends Activity {
     }
 
     private View makeSearchResultRow(SearchResult result, Book book) {
-        boolean dark = isDarkReaderTheme(book.theme);
+        boolean dark = isDarkTheme(appTheme());
         int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
         int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
         TextView row = new TextView(this);
         String query = searchSession != null && searchSession.book == book ? searchSession.query : "";
-        row.setText(highlightSearchKeyword(result.snippet, query, book.theme));
+        row.setText(highlightSearchKeyword(result.snippet, query, appTheme()));
         row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        row.setTextColor(textColor(book.theme));
+        row.setTextColor(textColor(appTheme()));
         row.setLineSpacing(dp(4), 1f);
         row.setPadding(dp(16), dp(16), dp(16), dp(16));
         row.setBackground(UiKit.interactive(this, surface, 18, UiKit.withAlpha(accent, 26)));
@@ -1927,7 +2030,7 @@ public class MainActivity extends Activity {
 
     private CharSequence readerDisplayText(String text, Book book) {
         if (temporarySearchReading && searchSession != null && searchSession.book == book) {
-            return highlightSearchKeyword(text, searchSession.query, book.theme);
+            return highlightSearchKeyword(text, searchSession.query, appTheme());
         }
         return text;
     }
@@ -1935,7 +2038,7 @@ public class MainActivity extends Activity {
     private CharSequence highlightSearchKeyword(String text, String query, int theme) {
         if (TextUtils.isEmpty(text) || TextUtils.isEmpty(query)) return text;
         SpannableString highlighted = new SpannableString(text);
-        int color = isDarkReaderTheme(theme)
+        int color = isDarkTheme(theme)
                 ? Color.rgb(126, 92, 0) : Color.rgb(255, 224, 130);
         int start = 0;
         while (start < text.length()) {
@@ -2056,15 +2159,15 @@ public class MainActivity extends Activity {
 
     private int tapToleranceDp() {
         if (currentBook == null) return 16;
-        if (currentBook.sensitivity == SENSITIVITY_HIGH) return 20;
-        if (currentBook.sensitivity == SENSITIVITY_LOW) return 12;
+        if (readingSensitivity() == SENSITIVITY_HIGH) return 20;
+        if (readingSensitivity() == SENSITIVITY_LOW) return 12;
         return 16;
     }
 
     private int swipeThresholdDp() {
         if (currentBook == null) return 72;
-        if (currentBook.sensitivity == SENSITIVITY_HIGH) return 48;
-        if (currentBook.sensitivity == SENSITIVITY_LOW) return 96;
+        if (readingSensitivity() == SENSITIVITY_HIGH) return 48;
+        if (readingSensitivity() == SENSITIVITY_LOW) return 96;
         return 72;
     }
 
@@ -2474,7 +2577,7 @@ public class MainActivity extends Activity {
             Canvas canvas = new Canvas(bitmap);
             int pageColor = currentBook == null
                     ? Color.WHITE
-                    : backgroundColor(currentBook.theme);
+                    : backgroundColor(appTheme());
             canvas.drawColor(pageColor);
             canvas.save();
             canvas.clipRect(0, 0, readerScroll.getWidth(), readerScroll.getHeight());
@@ -2497,8 +2600,8 @@ public class MainActivity extends Activity {
         snapshotScrollY = readerScroll.getScrollY();
         snapshotWidth = readerScroll.getWidth();
         snapshotHeight = readerScroll.getHeight();
-        snapshotFontSize = currentBook.fontSize;
-        snapshotTheme = currentBook.theme;
+        snapshotFontSize = readingFontSize();
+        snapshotTheme = appTheme();
         snapshotGeneration = pageStateGeneration;
     }
 
@@ -2511,8 +2614,8 @@ public class MainActivity extends Activity {
                 && snapshotScrollY == readerScroll.getScrollY()
                 && snapshotWidth == readerScroll.getWidth()
                 && snapshotHeight == readerScroll.getHeight()
-                && Float.compare(snapshotFontSize, currentBook.fontSize) == 0
-                && snapshotTheme == currentBook.theme
+                && Float.compare(snapshotFontSize, readingFontSize()) == 0
+                && snapshotTheme == appTheme()
                 && snapshotGeneration == pageStateGeneration;
     }
 
@@ -2700,12 +2803,16 @@ public class MainActivity extends Activity {
 
     private void toggleSeekPanel() {
         if (seekPanel != null) {
-            seekPanel.setVisibility(seekPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+            boolean show = seekPanel.getVisibility() != View.VISIBLE;
+            seekPanel.setVisibility(show ? View.VISIBLE : View.GONE);
+            for (View stepButton : progressStepButtons) {
+                stepButton.setVisibility(show ? View.VISIBLE : View.GONE);
+            }
             alignMenusToReaderViewport();
         }
     }
 
-    private void configureRepeatingProgressStep(Button button, float delta) {
+    private void configureRepeatingProgressStep(View button, float delta) {
         final boolean[] repeated = {false};
         final Runnable[] repeat = new Runnable[1];
         repeat[0] = () -> {
@@ -2802,12 +2909,12 @@ public class MainActivity extends Activity {
     private void updateFontSize(float delta) {
         if (currentBook == null || readerText == null) return;
         saveCurrentProgress();
-        currentBook.fontSize = Math.max(14f, Math.min(34f, currentBook.fontSize + delta));
+        float fontSize = Math.max(14f, Math.min(34f, readingFontSize() + delta));
+        setReadingFontSize(fontSize);
         currentBook.updatedAt = System.currentTimeMillis();
         pageStateGeneration++;
-        readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentBook.fontSize);
+        readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSize);
         refreshReaderSpacing(true);
-        saveBooks();
         readerScroll.post(() -> {
             int y = Math.min(maxReaderScroll(), snapToLineTop(readerScroll.getScrollY()));
             readerScroll.scrollTo(0, y);
@@ -2834,7 +2941,7 @@ public class MainActivity extends Activity {
 
     private void refreshReaderSpacing(boolean updateViewportBounds) {
         if (currentBook == null) return;
-        float fontSize = currentBook.fontSize;
+        float fontSize = readingFontSize();
         boolean needsViewportFit = updateViewportBounds
                 || fittedReaderBottomInset < 0
                 || Float.compare(fittedReaderFontSize, fontSize) != 0;
@@ -2851,7 +2958,7 @@ public class MainActivity extends Activity {
 
     private void applyReaderLineSpacing(float fontSize) {
         if (readerText == null) return;
-        float ratio = currentBook == null ? 0.18f : currentBook.lineSpacingRatio;
+        float ratio = readingLineSpacingRatio();
         if (ratio <= 0f) ratio = 0.18f;
         int extra = (int) TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_SP,
@@ -3110,7 +3217,7 @@ public class MainActivity extends Activity {
     private void refreshAutoPageButton() {
         Book book = currentBook;
         if (autoPageButton == null || book == null) return;
-        boolean dark = isDarkReaderTheme(book.theme);
+        boolean dark = isDarkTheme(appTheme());
         boolean enabled = AutoPageOptions.normalize(autoPageSeconds) != AutoPageOptions.OFF;
         int foreground = enabled
                 ? (dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT)
@@ -3148,13 +3255,6 @@ public class MainActivity extends Activity {
         refreshAutoPageButton();
     }
 
-    private Button makeProgressStepButton(String text, int sp) {
-        Button button = makeButton(text);
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-        button.setPadding(0, 0, 0, 0);
-        return button;
-    }
-
     private ImageButton makeIconButton() {
         ImageButton button = new ImageButton(this);
         button.setBackgroundColor(Color.TRANSPARENT);
@@ -3169,7 +3269,70 @@ public class MainActivity extends Activity {
         return isSystemNight() ? UiKit.DARK_BACKGROUND : UiKit.LIGHT_BACKGROUND;
     }
 
-    private boolean isDarkReaderTheme(int theme) {
+    private int appTheme() {
+        return preferences == null ? THEME_SYSTEM
+                : preferences.getInt(KEY_APP_THEME, THEME_SYSTEM);
+    }
+
+    private void setAppTheme(int theme) {
+        preferences.edit().putInt(KEY_APP_THEME, theme).apply();
+    }
+
+    private boolean readingKeepScreenOn() {
+        return preferences.getBoolean(KEY_KEEP_SCREEN_ON, false);
+    }
+
+    private void setReadingKeepScreenOn(boolean enabled) {
+        preferences.edit().putBoolean(KEY_KEEP_SCREEN_ON, enabled).apply();
+    }
+
+    private int readingAutoPageInterval() {
+        return AutoPageOptions.normalize(preferences.getInt(KEY_AUTO_PAGE_INTERVAL,
+                AutoPageOptions.DEFAULT_SECONDS));
+    }
+
+    private void setReadingAutoPageInterval(int seconds) {
+        preferences.edit().putInt(KEY_AUTO_PAGE_INTERVAL,
+                AutoPageOptions.normalize(seconds)).apply();
+    }
+
+    private int readingSensitivity() {
+        return Math.max(SENSITIVITY_HIGH, Math.min(SENSITIVITY_LOW,
+                preferences.getInt(KEY_SENSITIVITY, SENSITIVITY_STANDARD)));
+    }
+
+    private void setReadingSensitivity(int sensitivity) {
+        preferences.edit().putInt(KEY_SENSITIVITY,
+                Math.max(SENSITIVITY_HIGH, Math.min(SENSITIVITY_LOW, sensitivity))).apply();
+    }
+
+    private int readingFontFamily() {
+        return Math.max(0, Math.min(4, preferences.getInt(KEY_FONT_FAMILY, 0)));
+    }
+
+    private void setReadingFontFamily(int family) {
+        preferences.edit().putInt(KEY_FONT_FAMILY, Math.max(0, Math.min(4, family))).apply();
+    }
+
+    private float readingFontSize() {
+        return Math.max(14f, Math.min(34f, preferences.getFloat(KEY_FONT_SIZE, 20f)));
+    }
+
+    private void setReadingFontSize(float size) {
+        preferences.edit().putFloat(KEY_FONT_SIZE, Math.max(14f, Math.min(34f, size))).apply();
+    }
+
+    private float readingLineSpacingRatio() {
+        return Math.max(0.10f, Math.min(0.40f,
+                preferences.getFloat(KEY_LINE_SPACING, 0.18f)));
+    }
+
+    private void setReadingLineSpacingRatio(float ratio) {
+        preferences.edit().putFloat(KEY_LINE_SPACING,
+                Math.max(0.10f, Math.min(0.40f, ratio))).apply();
+    }
+
+    private boolean isDarkTheme(int theme) {
         return theme == THEME_DARK || (theme == THEME_SYSTEM && isSystemNight());
     }
 

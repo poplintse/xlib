@@ -330,15 +330,6 @@ public class MainActivity extends Activity {
         add.setOnClickListener(v -> pickTxtFile());
         header.addView(add, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
-        ImageButton settings = makeIconButton();
-        settings.setImageResource(R.drawable.ic_settings);
-        settings.setContentDescription("常规设置");
-        UiKit.styleIconButton(this, settings, accent, accentContainer, 16);
-        settings.setOnClickListener(v -> openSettingsPage(SETTINGS_GENERAL));
-        LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(48), dp(48));
-        settingsLp.leftMargin = dp(8);
-        header.addView(settings, settingsLp);
-
         ImageButton manage = makeIconButton();
         manage.setImageResource(managingBooks ? R.drawable.ic_done : R.drawable.ic_manage_books);
         manage.setContentDescription(managingBooks ? "完成管理" : "管理书籍");
@@ -351,6 +342,15 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams manageLp = new LinearLayout.LayoutParams(dp(48), dp(48));
         manageLp.leftMargin = dp(8);
         header.addView(manage, manageLp);
+
+        ImageButton settings = makeIconButton();
+        settings.setImageResource(R.drawable.ic_settings);
+        settings.setContentDescription("常规设置");
+        UiKit.styleIconButton(this, settings, accent, accentContainer, 16);
+        settings.setOnClickListener(v -> openSettingsPage(SETTINGS_GENERAL));
+        LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        settingsLp.leftMargin = dp(8);
+        header.addView(settings, settingsLp);
         root.addView(header);
 
         if (books.isEmpty()) {
@@ -399,7 +399,7 @@ public class MainActivity extends Activity {
         } else {
             LinearLayout list = new LinearLayout(this);
             list.setOrientation(LinearLayout.VERTICAL);
-            list.setPadding(0, dp(18), 0, dp(8));
+            list.setPadding(dp(2), dp(18), dp(2), dp(8));
             for (Book book : books) {
                 list.addView(makeBookRow(book));
             }
@@ -547,6 +547,10 @@ public class MainActivity extends Activity {
     }
 
     private String defaultBookName(Book book) {
+        return originalTxtFileName(book);
+    }
+
+    private String originalTxtFileName(Book book) {
         if (!TextUtils.isEmpty(book.sourceName)) return book.sourceName;
         String storedName = new File(book.path).getName();
         int separator = storedName.indexOf('-');
@@ -561,7 +565,7 @@ public class MainActivity extends Activity {
     }
 
     private String editableBookAuthor(Book book) {
-        return TextUtils.isEmpty(book.author) ? defaultBookName(book) : book.author;
+        return TextUtils.isEmpty(book.author) ? originalTxtFileName(book) : book.author;
     }
 
     private String relativeReadTime(long timestamp) {
@@ -603,7 +607,7 @@ public class MainActivity extends Activity {
                     }
                     String author = authorInput.getText().toString().trim();
                     book.title = title;
-                    book.author = author.equals(defaultBookName(book)) ? "" : author;
+                    book.author = author.equals(originalTxtFileName(book)) ? "" : author;
                     saveBooks();
                     hideKeyboard(titleInput);
                     dialog.dismiss();
@@ -1399,7 +1403,8 @@ public class MainActivity extends Activity {
         readingLp.leftMargin = dp(4);
         tabs.addView(reading, readingLp);
         FrameLayout.LayoutParams tabsLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44), Gravity.CENTER);
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44),
+                Gravity.CENTER_VERTICAL | Gravity.END);
         navigation.addView(tabs, tabsLp);
         general.setOnClickListener(v -> {
             styleSettingsNavButton(general, true, text, surface, accent, accentContainer);
@@ -1505,23 +1510,21 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
         settingsContent.addView(keepAwake, settingsSectionLayoutParams());
 
-        LinearLayout autoPage = createSettingsSection("自动翻页",
+        LinearLayout autoPage = createSettingsSection("自动翻页（秒）",
                 "设置顶部自动翻页按钮开启后的翻页间隔；开启状态不会保存。", surface, text, muted);
         TextView autoPageValue = new TextView(this);
-        autoPageValue.setText(getString(R.string.seconds_value, readingAutoPageInterval()));
-        addStepper(settingsControl(autoPage), "−", "+", autoPageValue,
+        autoPageValue.setText(String.valueOf(readingAutoPageInterval()));
+        addStepper(settingsControl(autoPage), "−", "+", autoPageValue, false,
                 () -> {
                     int interval = Math.max(AutoPageOptions.MIN_SECONDS,
                             readingAutoPageInterval() - 1);
                     setReadingAutoPageInterval(interval);
-                    autoPageValue.setText(getString(
-                            R.string.seconds_value, interval));
+                    autoPageValue.setText(String.valueOf(interval));
                 }, () -> {
                     int interval = Math.min(AutoPageOptions.MAX_SECONDS,
                             readingAutoPageInterval() + 1);
                     setReadingAutoPageInterval(interval);
-                    autoPageValue.setText(getString(
-                            R.string.seconds_value, interval));
+                    autoPageValue.setText(String.valueOf(interval));
                 }, text, accent, accentContainer, surface);
         settingsContent.addView(autoPage, settingsSectionLayoutParams());
 
@@ -1544,7 +1547,7 @@ public class MainActivity extends Activity {
                 "与阅读页的 A− / A+ 使用相同的两级字号调整。", surface, text, muted);
         TextView fontSizeValue = new TextView(this);
         fontSizeValue.setText(getString(R.string.font_size_value, Math.round(readingFontSize())));
-        addStepper(settingsControl(fontSize), "A-", "A+", fontSizeValue,
+        addStepper(settingsControl(fontSize), "A⌄", "A^", fontSizeValue, true,
                 () -> {
                     float size = Math.max(14f, readingFontSize() - 2f);
                     setReadingFontSize(size);
@@ -1611,8 +1614,12 @@ public class MainActivity extends Activity {
         LinearLayout control = new LinearLayout(this);
         control.setOrientation(LinearLayout.VERTICAL);
         control.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        control.setPadding(dp(4), dp(4), dp(4), dp(4));
+        UiKit.styleCard(this, control,
+                isDarkTheme(appTheme()) ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT,
+                14, 0);
         section.addView(control, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                ViewGroup.LayoutParams.MATCH_PARENT, 1));
         section.setTag(control);
         return section;
     }
@@ -1682,10 +1689,10 @@ public class MainActivity extends Activity {
                 android.R.layout.simple_spinner_item, labels) {
             @Override public View getView(int position, View convertView, ViewGroup parent) {
                 TextView item = new TextView(MainActivity.this);
-                item.setText(labels[position] + "⌄");
+                item.setText(labels[position]);
                 item.setTextColor(text);
                 item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-                item.setGravity(Gravity.CENTER_VERTICAL);
+                item.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
                 item.setSingleLine(true);
                 item.setPadding(dp(8), 0, dp(8), 0);
                 return item;
@@ -1706,6 +1713,8 @@ public class MainActivity extends Activity {
         spinner.setBackground(UiKit.roundedStroke(this, surface,
                 UiKit.withAlpha(text, 64), 12, 1));
         spinner.setPopupBackgroundDrawable(UiKit.rounded(this, surface, 12));
+        spinner.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        spinner.setMinimumWidth(dp(64));
         int selectedIndex = 0;
         for (int i = 0; i < values.length; i++) {
             if (values[i] == selectedValue) {
@@ -1723,7 +1732,7 @@ public class MainActivity extends Activity {
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { }
         });
         parent.addView(spinner, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)));
     }
 
     private void styleSettingsSwitch(Switch view, int checkedColor, int uncheckedColor) {
@@ -1740,19 +1749,20 @@ public class MainActivity extends Activity {
     }
 
     private void addStepper(LinearLayout parent, String minusLabel, String plusLabel,
-                            TextView valueView, Runnable onMinus, Runnable onPlus,
+                            TextView valueView, boolean fontSizeControl,
+                            Runnable onMinus, Runnable onPlus,
                             int text, int accent, int accentContainer, int surface) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         Button minus = makeButton(minusLabel);
         UiKit.styleButton(this, minus, surface, text, 10);
-        minus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        minus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         minus.setOnClickListener(v -> onMinus.run());
         row.addView(minus, new LinearLayout.LayoutParams(dp(36), dp(36)));
 
         valueView.setGravity(Gravity.CENTER);
         valueView.setTextColor(accent);
-        valueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        valueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         valueView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         LinearLayout.LayoutParams valueLp = new LinearLayout.LayoutParams(0, dp(36), 1);
         valueLp.leftMargin = dp(3);
@@ -1762,7 +1772,7 @@ public class MainActivity extends Activity {
 
         Button plus = makeButton(plusLabel);
         UiKit.styleButton(this, plus, surface, text, 10);
-        plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeControl ? 17 : 10);
         plus.setOnClickListener(v -> onPlus.run());
         row.addView(plus, new LinearLayout.LayoutParams(dp(36), dp(36)));
         parent.addView(row, new LinearLayout.LayoutParams(

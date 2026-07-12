@@ -11,5 +11,5 @@
     <string name="settings_current_book">当前书籍 · %1$s</string>
     <string name="percent_value">%1$d%%</string>
     <string name="seconds_value">%1$d 秒</string>
-    <string name="font_size_value">%1$dsp</string>
+    <string name="font_size_value">%1$d</string>
 </resources>

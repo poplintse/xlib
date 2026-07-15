@@ -77,13 +77,14 @@ public class MainActivity extends Activity {
     private static final int SENSITIVITY_HIGH = 0;
     private static final int SENSITIVITY_STANDARD = 1;
     private static final int SENSITIVITY_LOW = 2;
-    private static final int CHUNK_BYTES = 128 * 1024;
-    private static final int WINDOW_BYTES = CHUNK_BYTES * 3;
+    // 128 KiB keeps local reads fast while leaving several rendered pages for prefetching.
+    private static final int CACHE_SEGMENT_BYTES = 128 * 1024;
+    private static final float CACHE_REFILL_RATIO = 0.10f;
     private static final int INDEX_STEP_BYTES = 64 * 1024;
-    private static final int CHUNK_CACHE_LIMIT = 6;
+    private static final int SEGMENT_CACHE_LIMIT = 6;
     // XLI2: cache text is guaranteed to end on a complete encoded character.
     private static final int READER_CACHE_MAGIC = 0x584C4932;
-    private static final int MAX_READER_CACHE_TEXT_BYTES = WINDOW_BYTES * 6;
+    private static final int MAX_READER_CACHE_TEXT_BYTES = CACHE_SEGMENT_BYTES * 8;
     private static final long READER_CACHE_WRITE_DELAY_MS = 800L;
     private static final int SEARCH_READ_BYTES = 64 * 1024;
     private static final int SEARCH_RESULT_LIMIT = 200;
@@ -104,13 +105,15 @@ public class MainActivity extends Activity {
     private final Set<Long> selectedBookIds = new HashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService indexExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService readerCacheExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService searchExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService tocExecutor = Executors.newSingleThreadExecutor();
-    private final Map<String, Chunk> chunkCache = new LinkedHashMap<String, Chunk>(8, 0.75f, true) {
+    private final Map<String, CacheSegment> segmentCache =
+            new LinkedHashMap<String, CacheSegment>(8, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(Map.Entry<String, Chunk> eldest) {
-            return size() > CHUNK_CACHE_LIMIT;
+        protected boolean removeEldestEntry(Map.Entry<String, CacheSegment> eldest) {
+            return size() > SEGMENT_CACHE_LIMIT;
         }
     };
     private BookStore bookStore;
@@ -120,7 +123,8 @@ public class MainActivity extends Activity {
     private Book currentBook;
     private boolean managingBooks;
     private boolean loadingChunk;
-    private boolean pendingWindowLoad;
+    private boolean loadingBackwardSegment;
+    private boolean loadingForwardSegment;
     private boolean pageAnimating;
     private boolean edgeBackCandidate;
     private boolean edgeBackTriggered;
@@ -145,9 +149,11 @@ public class MainActivity extends Activity {
     private float pendingSeekProgress;
     private volatile long loadRequestId;
     private volatile long searchRequestId;
+    private long cacheStackGeneration;
     private long currentChunkOffset;
     private int currentChunkBytes;
-    private Chunk currentChunk;
+    private CacheSegment currentChunk;
+    private CacheCombineStack currentCombineStack;
     private Bitmap currentPageSnapshot;
     private long snapshotChunkOffset = -1L;
     private int snapshotScrollY = -1;
@@ -177,7 +183,7 @@ public class MainActivity extends Activity {
 
     private final Runnable seekPreviewRunnable = () -> {
         if (seekTracking) {
-            loadChunkAtProgress(pendingSeekProgress);
+            loadCacheWindowAtProgress(pendingSeekProgress);
         }
     };
     private final Runnable readerCacheWriteRunnable = () -> {
@@ -235,6 +241,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
         ioExecutor.shutdownNow();
+        indexExecutor.shutdownNow();
         readerCacheExecutor.shutdownNow();
         searchExecutor.shutdownNow();
         tocExecutor.shutdownNow();
@@ -1028,7 +1035,7 @@ public class MainActivity extends Activity {
             pageStateGeneration++;
             saveCurrentProgress();
             updateProgressText();
-            maybeLoadAdjacentWindow();
+            maybeRefillCombineStack();
         });
         readerRoot.addView(readerScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -1091,7 +1098,7 @@ public class MainActivity extends Activity {
             @Override public void onStopTrackingTouch(SeekBar seekBar) {
                 seekTracking = false;
                 mainHandler.removeCallbacks(seekPreviewRunnable);
-                loadChunkAtProgress(seekBar.getProgress() / 1000f);
+                loadCacheWindowAtProgress(seekBar.getProgress() / 1000f);
             }
         });
         seekRow.addView(seekBar, new LinearLayout.LayoutParams(0, dp(44), 1));
@@ -1188,11 +1195,11 @@ public class MainActivity extends Activity {
         setContentView(frame);
         long requestedOffset = book.offset;
         suppressProgressSave = true;
-        CacheRestoreResult cacheResult = restoreReaderCache(book, requestedOffset);
+        restoreReaderCache(book, requestedOffset, false);
         frame.post(this::alignMenusToReaderViewport);
-        if (cacheResult != CacheRestoreResult.COVERS_OFFSET) {
-            loadChunkAtOffset(requestedOffset);
-        }
+        // Always rebuild the active moving window from two real cache segments. The
+        // persistent cache above is only an immediate preview while this initial load runs.
+        loadCacheWindowAtOffset(requestedOffset);
         if (readerMenusOpen) {
             frame.post(this::showReaderMenus);
         }
@@ -2343,7 +2350,7 @@ public class MainActivity extends Activity {
         long contextStart = alignSearchContextOffset(file,
                 Math.max(0L, matchOffset - SEARCH_CONTEXT_CHARS * 4L), encoding);
         int readLength = Math.max(2048, SEARCH_CONTEXT_CHARS * 8 + queryByteLength + 1024);
-        Chunk context = readChunk(file, contextStart, readLength, encoding);
+        CacheSegment context = readSegment(file, contextStart, readLength, encoding);
         int index = context.text.indexOf(query);
         if (index < 0) return query;
         int start = Math.max(0, index - SEARCH_CONTEXT_CHARS);
@@ -2409,45 +2416,49 @@ public class MainActivity extends Activity {
         return true;
     }
 
-    private void loadChunkAtProgress(float progress) {
+    private void loadCacheWindowAtProgress(float progress) {
         if (currentBook == null) return;
         long size = Math.max(1L, currentBook.fileSize);
-        loadChunkAtOffset((long) (Math.max(0f, Math.min(1f, progress)) * size));
+        loadCacheWindowAtOffset((long) (Math.max(0f, Math.min(1f, progress)) * size));
     }
 
-    private void loadChunkAtOffset(long targetOffset) {
+    private void loadCacheWindowAtOffset(long targetOffset) {
         if (currentBook == null) return;
-        pendingWindowLoad = false;
+        cacheStackGeneration++;
+        loadingBackwardSegment = false;
+        loadingForwardSegment = false;
         Book book = currentBook;
         long requestId = ++loadRequestId;
         loadingChunk = true;
+        // Rebinding the TextView briefly preserves the previous window's scrollY. Ignore
+        // that transient position until the new window has been laid out and positioned.
+        suppressProgressSave = true;
         ioExecutor.execute(() -> {
             if (requestId != loadRequestId) return;
-            ChunkLoad load = null;
+            CacheWindowLoad load = null;
             Exception error = null;
             try {
-                load = prepareChunkLoad(book, targetOffset);
+                load = prepareCacheWindowLoad(book, targetOffset);
             } catch (Exception e) {
                 error = e;
             }
             if (requestId != loadRequestId) return;
-            ChunkLoad finalLoad = load;
+            CacheWindowLoad finalLoad = load;
             Exception finalError = error;
             mainHandler.post(() -> {
                 if (requestId != loadRequestId || currentBook != book) return;
-                loadingChunk = false;
                 if (finalError != null) {
+                    loadingChunk = false;
                     suppressProgressSave = false;
                     Toast.makeText(this, "打开失败：" + finalError.getMessage(), Toast.LENGTH_LONG).show();
                     return;
                 }
-                applyChunkLoad(book, finalLoad);
-                preloadAdjacentWindows(book, finalLoad);
+                applyCacheWindowLoad(book, finalLoad);
             });
         });
     }
 
-    private ChunkLoad prepareChunkLoad(Book book, long targetOffset) throws Exception {
+    private CacheWindowLoad prepareCacheWindowLoad(Book book, long targetOffset) throws Exception {
         File file = new File(book.path);
         long fileSize = file.length();
         long clampedTarget = fileSize <= 0
@@ -2455,17 +2466,33 @@ public class MainActivity extends Activity {
                 : Math.max(0L, Math.min(targetOffset, fileSize - 1L));
         requestBookIndex(book);
         long windowStart = hasBookIndex(book, fileSize)
-                ? indexedReadableOffset(book, file, Math.max(0L, clampedTarget - CHUNK_BYTES))
-                : findReadableOffset(file, Math.max(0L, clampedTarget - CHUNK_BYTES),
+                ? indexedReadableOffset(book, file,
+                        Math.max(0L, clampedTarget - CACHE_SEGMENT_BYTES))
+                : findReadableOffset(file,
+                        Math.max(0L, clampedTarget - CACHE_SEGMENT_BYTES),
                         book.encoding);
-        Chunk chunk = readCachedChunk(file, windowStart, WINDOW_BYTES, book.encoding);
-        return new ChunkLoad(fileSize, clampedTarget, windowStart, chunk);
+        ArrayList<CacheSegment> initialSegments = new ArrayList<>(2);
+        CacheSegment first = readCachedSegment(
+                file, windowStart, CACHE_SEGMENT_BYTES, book.encoding);
+        if (first.bytesRead > 0) initialSegments.add(first);
+        long secondStart = first.endOffset();
+        if (secondStart < fileSize) {
+            CacheSegment second = readCachedSegment(
+                    file, secondStart, CACHE_SEGMENT_BYTES, book.encoding);
+            if (second.bytesRead > 0) initialSegments.add(second);
+        }
+        CacheCombineStack combineStack =
+                new CacheCombineStack(CACHE_SEGMENT_BYTES, CACHE_REFILL_RATIO);
+        combineStack.reset(initialSegments);
+        CacheSegment combined = combineStack.combine(charsetFor(book.encoding));
+        return new CacheWindowLoad(fileSize, clampedTarget, combineStack, combined);
     }
 
-    private void applyChunkLoad(Book book, ChunkLoad load) {
+    private void applyCacheWindowLoad(Book book, CacheWindowLoad load) {
         if (load == null || readerText == null || readerScroll == null) return;
         book.fileSize = load.fileSize;
-        currentChunkOffset = load.windowStart;
+        currentCombineStack = load.combineStack;
+        currentChunkOffset = load.chunk.offset;
         currentChunkBytes = load.chunk.bytesRead;
         currentChunk = load.chunk;
         book.offset = load.targetOffset;
@@ -2485,14 +2512,19 @@ public class MainActivity extends Activity {
         }
     }
 
-    private CacheRestoreResult restoreReaderCache(Book book, long requestedOffset) {
+    private CacheRestoreResult restoreReaderCache(Book book, long requestedOffset,
+                                                  boolean finishRestore) {
         ReaderCache cache = readReaderCache(book);
         if (cache == null || readerText == null || readerScroll == null) {
             return CacheRestoreResult.NOT_AVAILABLE;
         }
         Charset charset = charsetFor(book.encoding);
-        Chunk cachedChunk = new Chunk(cache.text, cache.bytesRead,
+        CacheSegment cachedChunk = new CacheSegment(cache.windowStart, cache.text, cache.bytesRead,
                 ByteOffsetMap.create(cache.text, charset));
+        CacheCombineStack combineStack =
+                new CacheCombineStack(CACHE_SEGMENT_BYTES, CACHE_REFILL_RATIO);
+        combineStack.reset(java.util.Collections.singletonList(cachedChunk));
+        currentCombineStack = combineStack;
         currentChunkOffset = cache.windowStart;
         currentChunkBytes = cache.bytesRead;
         currentChunk = cachedChunk;
@@ -2506,29 +2538,39 @@ public class MainActivity extends Activity {
         pageStateGeneration++;
         readerText.setText(readerDisplayText(cache.text, book));
         refreshReaderSpacing(false);
-        positionReaderAtOffset(book, cachedChunk, displayOffset, coversOffset);
+        positionReaderAtOffset(book, cachedChunk, displayOffset,
+                coversOffset && finishRestore);
         updateProgressText();
         if (seekBar != null) seekBar.setProgress((int) (book.progress * 1000f));
-        if (coversOffset) {
-            preloadAdjacentWindows(book,
-                    new ChunkLoad(cache.fileSize, requestedOffset, cache.windowStart, cachedChunk));
-        }
         return coversOffset
                 ? CacheRestoreResult.COVERS_OFFSET
                 : CacheRestoreResult.PREVIEW_ONLY;
     }
 
-    private void positionReaderAtOffset(Book book, Chunk chunk, long targetOffset,
+    private void positionReaderAtOffset(Book book, CacheSegment chunk, long targetOffset,
                                         boolean finishRestore) {
         AccessibleScrollView targetScroll = readerScroll;
         targetScroll.post(() -> {
             if (currentBook != book || readerScroll != targetScroll || currentChunk != chunk) return;
+            if (readerText == null || readerText.getLayout() == null) {
+                targetScroll.post(() -> positionReaderAtOffset(
+                        book, chunk, targetOffset, finishRestore));
+                return;
+            }
             scrollToOffsetWithinWindow(targetOffset);
-            targetScroll.post(() -> {
-                if (currentBook != book || readerScroll != targetScroll || currentChunk != chunk) return;
-                if (finishRestore) suppressProgressSave = false;
+            // Keep progress writes frozen through the next traversal, when Android emits
+            // the scroll callback caused by replacing and repositioning the text.
+            targetScroll.postOnAnimation(() -> targetScroll.postOnAnimation(() -> {
+                if (currentBook != book || readerScroll != targetScroll || currentChunk != chunk) {
+                    return;
+                }
+                if (finishRestore) {
+                    loadingChunk = false;
+                    suppressProgressSave = false;
+                }
                 cacheCurrentPageSnapshot();
-            });
+                maybeRefillCombineStack();
+            }));
         });
     }
 
@@ -2557,11 +2599,11 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void saveReaderCache(Book book, ChunkLoad load) {
+    private void saveReaderCache(Book book, CacheWindowLoad load) {
         if (book == null || load == null || load.chunk == null) return;
         final File source = new File(book.path);
         pendingReaderCache = new ReaderCacheWrite(book, load.fileSize, source.lastModified(),
-                load.windowStart, load.chunk.bytesRead, load.chunk.text);
+                load.chunk.offset, load.chunk.bytesRead, load.chunk.text);
         mainHandler.removeCallbacks(readerCacheWriteRunnable);
         mainHandler.postDelayed(readerCacheWriteRunnable, READER_CACHE_WRITE_DELAY_MS);
     }
@@ -2618,28 +2660,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void preloadAdjacentWindows(Book book, ChunkLoad loaded) {
-        if (book == null || loaded == null || loaded.fileSize <= 0) return;
-        ioExecutor.execute(() -> {
-            try {
-                File file = new File(book.path);
-                ensureBookIndex(book, file);
-                long prevTarget = Math.max(0L, loaded.windowStart - CHUNK_BYTES);
-                long nextTarget = Math.min(Math.max(0L, loaded.fileSize - 1L),
-                        loaded.windowStart + CHUNK_BYTES);
-                if (loaded.windowStart > 0) {
-                    long prevStart = indexedReadableOffset(book, file, prevTarget);
-                    readCachedChunk(file, prevStart, WINDOW_BYTES, book.encoding);
-                }
-                if (nextTarget < loaded.fileSize - 1L) {
-                    long nextStart = indexedReadableOffset(book, file, nextTarget);
-                    readCachedChunk(file, nextStart, WINDOW_BYTES, book.encoding);
-                }
-            } catch (Exception ignored) {
-            }
-        });
-    }
-
     private boolean hasBookIndex(Book book, long fileSize) {
         synchronized (book) {
             return book.indexOffsets != null && book.indexFileSize == fileSize;
@@ -2653,7 +2673,7 @@ public class MainActivity extends Activity {
             }
             book.indexBuilding = true;
         }
-        ioExecutor.execute(() -> {
+        indexExecutor.execute(() -> {
             try {
                 ensureBookIndex(book, new File(book.path));
             } catch (Exception ignored) {
@@ -2665,37 +2685,157 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void maybeLoadAdjacentWindow() {
-        if (suppressProgressSave || loadingChunk || pendingWindowLoad || currentBook == null
-                || readerScroll == null || readerText == null) return;
-        int maxScroll = maxReaderScroll();
-        if (maxScroll <= 0) return;
-        int y = readerScroll.getScrollY();
-        if (y <= dp(24) && currentChunkOffset > 0) {
-            long target = Math.max(0L, currentBook.offset);
-            pendingWindowLoad = true;
-            readerScroll.postDelayed(() -> loadChunkAtOffset(target), 120);
+    private void maybeRefillCombineStack() {
+        if (suppressProgressSave || loadingChunk || currentBook == null
+                || currentCombineStack == null || currentChunk == null) return;
+        long anchorOffset = currentBook.offset;
+        if (currentCombineStack.needsBackwardRefill(anchorOffset)) {
+            prefetchBackwardSegment(currentBook, currentCombineStack);
+        }
+        if (currentCombineStack.needsForwardRefill(anchorOffset, currentBook.fileSize)) {
+            prefetchForwardSegment(currentBook, currentCombineStack);
+        }
+    }
+
+    private void prefetchBackwardSegment(Book book, CacheCombineStack combineStack) {
+        if (loadingBackwardSegment || combineStack.startOffset() <= 0L) return;
+        loadingBackwardSegment = true;
+        long generation = cacheStackGeneration;
+        long requestId = loadRequestId;
+        long segmentEnd = combineStack.startOffset();
+        ioExecutor.execute(() -> {
+            CacheSegment segment = null;
+            try {
+                File file = new File(book.path);
+                long desiredStart = Math.max(0L, segmentEnd - CACHE_SEGMENT_BYTES);
+                long segmentStart = hasBookIndex(book, file.length())
+                        ? indexedReadableOffset(book, file, desiredStart)
+                        : findReadableOffset(file, desiredStart, book.encoding);
+                int bytes = (int) Math.min(Integer.MAX_VALUE,
+                        Math.max(0L, segmentEnd - segmentStart));
+                if (bytes > 0) {
+                    segment = readCachedSegment(file, segmentStart, bytes, book.encoding);
+                }
+            } catch (Exception ignored) {
+            }
+            CacheSegment loaded = segment;
+            mainHandler.post(() -> finishBackwardPrefetch(
+                    book, combineStack, generation, requestId, loaded));
+        });
+    }
+
+    private void finishBackwardPrefetch(Book book, CacheCombineStack combineStack,
+                                        long generation, long requestId,
+                                        CacheSegment loaded) {
+        if (generation != cacheStackGeneration || requestId != loadRequestId
+                || currentBook != book || currentCombineStack != combineStack) {
             return;
         }
-        if (y >= maxScroll - dp(24)) {
-            long loadedEnd = currentChunkOffset + Math.max(currentChunkBytes, 0);
-            if (loadedEnd < currentBook.fileSize) {
-                long target = Math.min(currentBook.fileSize - 1L, currentBook.offset);
-                pendingWindowLoad = true;
-                readerScroll.postDelayed(() -> loadChunkAtOffset(target), 120);
+        if (pageAnimating || loadingChunk || suppressProgressSave) {
+            mainHandler.postDelayed(() -> finishBackwardPrefetch(
+                    book, combineStack, generation, requestId, loaded), 32L);
+            return;
+        }
+        loadingBackwardSegment = false;
+        if (loaded == null || loaded.bytesRead <= 0
+                || loaded.endOffset() != combineStack.startOffset()
+                || !combineStack.needsBackwardRefill(book.offset)) {
+            return;
+        }
+        combineStack.appendBackward(loaded);
+        applyCombinedStack(book, combineStack, generation, requestId);
+    }
+
+    private void prefetchForwardSegment(Book book, CacheCombineStack combineStack) {
+        if (loadingForwardSegment || combineStack.endOffset() >= book.fileSize) return;
+        loadingForwardSegment = true;
+        long generation = cacheStackGeneration;
+        long requestId = loadRequestId;
+        long segmentStart = combineStack.endOffset();
+        ioExecutor.execute(() -> {
+            CacheSegment segment = null;
+            try {
+                segment = readCachedSegment(new File(book.path), segmentStart,
+                        CACHE_SEGMENT_BYTES, book.encoding);
+            } catch (Exception ignored) {
             }
+            CacheSegment loaded = segment;
+            mainHandler.post(() -> finishForwardPrefetch(
+                    book, combineStack, generation, requestId, loaded));
+        });
+    }
+
+    private void finishForwardPrefetch(Book book, CacheCombineStack combineStack,
+                                       long generation, long requestId,
+                                       CacheSegment loaded) {
+        if (generation != cacheStackGeneration || requestId != loadRequestId
+                || currentBook != book || currentCombineStack != combineStack) {
+            return;
+        }
+        if (pageAnimating || loadingChunk || suppressProgressSave) {
+            mainHandler.postDelayed(() -> finishForwardPrefetch(
+                    book, combineStack, generation, requestId, loaded), 32L);
+            return;
+        }
+        loadingForwardSegment = false;
+        if (loaded == null || loaded.bytesRead <= 0
+                || loaded.offset != combineStack.endOffset()
+                || !combineStack.needsForwardRefill(book.offset, book.fileSize)) {
+            return;
+        }
+        combineStack.appendForward(loaded);
+        applyCombinedStack(book, combineStack, generation, requestId);
+    }
+
+    private void applyCombinedStack(Book book, CacheCombineStack combineStack,
+                                    long generation, long requestId) {
+        if (generation != cacheStackGeneration || requestId != loadRequestId
+                || currentBook != book || currentCombineStack != combineStack) {
+            return;
+        }
+        if (pageAnimating || loadingChunk || suppressProgressSave) {
+            mainHandler.postDelayed(() -> applyCombinedStack(
+                    book, combineStack, generation, requestId), 32L);
+            return;
+        }
+        long targetOffset = book.offset;
+        CacheSegment combined = combineStack.combine(charsetFor(book.encoding));
+        if (combined.bytesRead <= 0) return;
+        loadingChunk = true;
+        suppressProgressSave = true;
+        currentChunkOffset = combined.offset;
+        currentChunkBytes = combined.bytesRead;
+        currentChunk = combined;
+        pageStateGeneration++;
+        readerText.setText(readerDisplayText(combined.text, book));
+        refreshReaderSpacing(false);
+        positionReaderAtOffset(book, combined, targetOffset, true);
+        if (!temporarySearchReading) {
+            saveReaderCache(book,
+                    new CacheWindowLoad(book.fileSize, targetOffset, combineStack, combined));
         }
     }
 
     private void pageBackward() {
         if (!autoPageDispatching) scheduleAutoPage();
-        if (pageAnimating) return;
+        if (pageAnimating || loadingChunk || suppressProgressSave) return;
+        if (readerScroll != null && readerScroll.getScrollY() <= 0
+                && currentCombineStack != null && currentCombineStack.startOffset() > 0L) {
+            maybeRefillCombineStack();
+            return;
+        }
         animatePageTurn(-1, this::performPageBackward);
     }
 
     private void pageForward() {
         if (!autoPageDispatching) scheduleAutoPage();
-        if (pageAnimating) return;
+        if (pageAnimating || loadingChunk || suppressProgressSave) return;
+        if (readerScroll != null && readerScroll.getScrollY() >= maxReaderScroll()
+                && currentCombineStack != null
+                && currentCombineStack.endOffset() < currentBook.fileSize) {
+            maybeRefillCombineStack();
+            return;
+        }
         animatePageTurn(1, this::performPageForward);
     }
 
@@ -2711,7 +2851,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (currentBook.offset > 0) {
-            loadChunkAtOffset(Math.max(0L, currentBook.offset));
+            maybeRefillCombineStack();
         }
     }
 
@@ -2728,7 +2868,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (currentBook.offset < currentBook.fileSize - 1L) {
-            loadChunkAtOffset(Math.min(currentBook.fileSize - 1L, currentBook.offset));
+            maybeRefillCombineStack();
         }
     }
 
@@ -2880,19 +3020,25 @@ public class MainActivity extends Activity {
         readerScroll.scrollTo(0, Math.min(maxReaderScroll(), layout.getLineTop(line)));
     }
 
-    private Chunk readChunk(File file, long offset, int maxBytes, String encoding) throws Exception {
+    private CacheSegment readSegment(File file, long offset, int maxBytes,
+                                     String encoding) throws Exception {
         try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            raf.seek(Math.max(0L, Math.min(offset, file.length())));
+            long safeOffset = Math.max(0L, Math.min(offset, file.length()));
+            raf.seek(safeOffset);
             int length = (int) Math.min(maxBytes, Math.max(0L, file.length() - raf.getFilePointer()));
             byte[] bytes = new byte[length];
             int read = raf.read(bytes);
             Charset charset = charsetFor(encoding);
-            if (read <= 0) return new Chunk("", 0, ByteOffsetMap.create("", charset));
-            return decodeCompleteChunk(bytes, read, charset);
+            if (read <= 0) {
+                return new CacheSegment(safeOffset, "", 0,
+                        ByteOffsetMap.create("", charset));
+            }
+            return decodeCompleteSegment(safeOffset, bytes, read, charset);
         }
     }
 
-    private Chunk decodeCompleteChunk(byte[] bytes, int read, Charset charset) {
+    private CacheSegment decodeCompleteSegment(long offset, byte[] bytes, int read,
+                                               Charset charset) {
         int minimumLength = Math.max(0, read - 4);
         for (int validLength = read; validLength >= minimumLength; validLength--) {
             CharsetDecoder decoder = charset.newDecoder()
@@ -2902,30 +3048,32 @@ public class MainActivity extends Activity {
                 String text = decoder.decode(ByteBuffer.wrap(bytes, 0, validLength)).toString();
                 ByteOffsetMap map = ByteOffsetMap.create(text, charset);
                 if (map.totalBytes() == validLength) {
-                    return new Chunk(text, validLength, map);
+                    return new CacheSegment(offset, text, validLength, map);
                 }
             } catch (CharacterCodingException ignored) {
                 // A chunk may end halfway through a multi-byte character; trim only that suffix.
             }
         }
         String text = new String(bytes, 0, read, charset);
-        return new Chunk(text, read, ByteOffsetMap.create(text, charset));
+        return new CacheSegment(offset, text, read, ByteOffsetMap.create(text, charset));
     }
 
     private Charset charsetFor(String encoding) {
         return Charset.forName(encoding == null ? "UTF-8" : encoding);
     }
 
-    private Chunk readCachedChunk(File file, long offset, int maxBytes, String encoding) throws Exception {
+    private CacheSegment readCachedSegment(File file, long offset, int maxBytes,
+                                           String encoding) throws Exception {
         long safeOffset = Math.max(0L, Math.min(offset, Math.max(0L, file.length() - 1L)));
-        String key = file.getAbsolutePath() + ":" + file.length() + ":" + encoding + ":" + safeOffset;
-        synchronized (chunkCache) {
-            Chunk cached = chunkCache.get(key);
+        String key = file.getAbsolutePath() + ":" + file.length() + ":" + encoding
+                + ":" + safeOffset + ":" + maxBytes;
+        synchronized (segmentCache) {
+            CacheSegment cached = segmentCache.get(key);
             if (cached != null) return cached;
         }
-        Chunk chunk = readChunk(file, safeOffset, maxBytes, encoding);
-        synchronized (chunkCache) {
-            chunkCache.put(key, chunk);
+        CacheSegment chunk = readSegment(file, safeOffset, maxBytes, encoding);
+        synchronized (segmentCache) {
+            segmentCache.put(key, chunk);
         }
         return chunk;
     }
@@ -3144,7 +3292,7 @@ public class MainActivity extends Activity {
         currentBook.progress = next;
         updateProgressText(next);
         if (seekBar != null) seekBar.setProgress(Math.round(next * 1000f));
-        loadChunkAtProgress(next);
+        loadCacheWindowAtProgress(next);
     }
 
     private void updateFontSize(float delta) {
@@ -3645,18 +3793,6 @@ public class MainActivity extends Activity {
         bookStore.save(books, preservedBook, preservedOffset, preservedProgress);
     }
 
-    private static class Chunk {
-        final String text;
-        final int bytesRead;
-        final ByteOffsetMap offsetMap;
-
-        Chunk(String text, int bytesRead, ByteOffsetMap offsetMap) {
-            this.text = text;
-            this.bytesRead = bytesRead;
-            this.offsetMap = offsetMap;
-        }
-    }
-
     private enum CacheRestoreResult {
         NOT_AVAILABLE,
         COVERS_OFFSET,
@@ -3745,16 +3881,17 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static class ChunkLoad {
+    private static class CacheWindowLoad {
         final long fileSize;
         final long targetOffset;
-        final long windowStart;
-        final Chunk chunk;
+        final CacheCombineStack combineStack;
+        final CacheSegment chunk;
 
-        ChunkLoad(long fileSize, long targetOffset, long windowStart, Chunk chunk) {
+        CacheWindowLoad(long fileSize, long targetOffset, CacheCombineStack combineStack,
+                        CacheSegment chunk) {
             this.fileSize = fileSize;
             this.targetOffset = targetOffset;
-            this.windowStart = windowStart;
+            this.combineStack = combineStack;
             this.chunk = chunk;
         }
     }

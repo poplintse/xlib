@@ -14,4 +14,9 @@ final class AutoPageOptions {
         return seconds >= MIN_SECONDS && seconds <= MAX_SECONDS ? seconds : OFF;
     }
 
+    static int normalizePreference(int seconds) {
+        int normalized = normalize(seconds);
+        return normalized == OFF ? DEFAULT_SECONDS : normalized;
+    }
+
 }

@@ -17,4 +17,20 @@ public class AutoPageOptionsTest {
         assertEquals(0, AutoPageOptions.normalize(31));
     }
 
+    @Test
+    public void acceptsEveryOneSecondStepInConfiguredRange() {
+        for (int seconds = 10; seconds <= 30; seconds++) {
+            assertEquals(seconds, AutoPageOptions.normalize(seconds));
+        }
+    }
+
+    @Test
+    public void invalidPersistedIntervalsFallBackToDefault() {
+        assertEquals(15, AutoPageOptions.normalizePreference(0));
+        assertEquals(15, AutoPageOptions.normalizePreference(9));
+        assertEquals(10, AutoPageOptions.normalizePreference(10));
+        assertEquals(30, AutoPageOptions.normalizePreference(30));
+        assertEquals(15, AutoPageOptions.normalizePreference(31));
+    }
+
 }

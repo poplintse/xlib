@@ -2,6 +2,8 @@ package com.xlib.txtreader;
 
 import java.nio.charset.Charset;
 import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 
@@ -33,6 +35,30 @@ final class CacheCombineStack {
             previous = segment;
         }
         while (this.segments.size() > WINDOW_SEGMENT_COUNT) this.segments.removeFirst();
+    }
+
+    void resetFromCombined(CacheSegment combined, Charset charset) {
+        if (combined == null || combined.bytesRead <= segmentBytes
+                || combined.offsetMap == null) {
+            reset(combined == null
+                    ? Collections.emptyList()
+                    : Collections.singletonList(combined));
+            return;
+        }
+        int splitChar = combined.offsetMap.charIndexForByteOffset(segmentBytes);
+        int splitBytes = combined.offsetMap.byteOffsetForCharIndex(splitChar);
+        if (splitChar <= 0 || splitChar >= combined.text.length()
+                || splitBytes <= 0 || splitBytes >= combined.bytesRead) {
+            reset(Collections.singletonList(combined));
+            return;
+        }
+        String firstText = combined.text.substring(0, splitChar);
+        String secondText = combined.text.substring(splitChar);
+        CacheSegment first = new CacheSegment(combined.offset, firstText, splitBytes,
+                ByteOffsetMap.create(firstText, charset));
+        CacheSegment second = new CacheSegment(combined.offset + splitBytes, secondText,
+                combined.bytesRead - splitBytes, ByteOffsetMap.create(secondText, charset));
+        reset(Arrays.asList(first, second));
     }
 
     boolean needsBackwardRefill(long anchorOffset) {

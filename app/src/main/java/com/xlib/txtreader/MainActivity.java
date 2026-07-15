@@ -1195,11 +1195,11 @@ public class MainActivity extends Activity {
         setContentView(frame);
         long requestedOffset = book.offset;
         suppressProgressSave = true;
-        restoreReaderCache(book, requestedOffset, false);
+        CacheRestoreResult cacheResult = restoreReaderCache(book, requestedOffset);
         frame.post(this::alignMenusToReaderViewport);
-        // Always rebuild the active moving window from two real cache segments. The
-        // persistent cache above is only an immediate preview while this initial load runs.
-        loadCacheWindowAtOffset(requestedOffset);
+        if (cacheResult != CacheRestoreResult.COVERS_OFFSET) {
+            loadCacheWindowAtOffset(requestedOffset);
+        }
         if (readerMenusOpen) {
             frame.post(this::showReaderMenus);
         }
@@ -2512,8 +2512,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private CacheRestoreResult restoreReaderCache(Book book, long requestedOffset,
-                                                  boolean finishRestore) {
+    private CacheRestoreResult restoreReaderCache(Book book, long requestedOffset) {
         ReaderCache cache = readReaderCache(book);
         if (cache == null || readerText == null || readerScroll == null) {
             return CacheRestoreResult.NOT_AVAILABLE;
@@ -2523,28 +2522,30 @@ public class MainActivity extends Activity {
                 ByteOffsetMap.create(cache.text, charset));
         CacheCombineStack combineStack =
                 new CacheCombineStack(CACHE_SEGMENT_BYTES, CACHE_REFILL_RATIO);
-        combineStack.reset(java.util.Collections.singletonList(cachedChunk));
+        combineStack.resetFromCombined(cachedChunk, charset);
+        CacheSegment restoredWindow = combineStack.combine(charset);
+        boolean completeFile = restoredWindow.offset == 0L
+                && restoredWindow.endOffset() >= cache.fileSize;
+        if (combineStack.segmentCount() < 2 && !completeFile) {
+            return CacheRestoreResult.NOT_AVAILABLE;
+        }
+        boolean coversOffset = ReaderPosition.cacheCoversOffset(cache.fileSize,
+                restoredWindow.offset, restoredWindow.bytesRead, requestedOffset);
+        if (!coversOffset) return CacheRestoreResult.NOT_AVAILABLE;
         currentCombineStack = combineStack;
-        currentChunkOffset = cache.windowStart;
-        currentChunkBytes = cache.bytesRead;
-        currentChunk = cachedChunk;
+        currentChunkOffset = restoredWindow.offset;
+        currentChunkBytes = restoredWindow.bytesRead;
+        currentChunk = restoredWindow;
         book.fileSize = cache.fileSize;
         book.offset = Math.max(0L, Math.min(requestedOffset, cache.fileSize));
         book.progress = cache.fileSize <= 0 ? 0f : book.offset / (float) cache.fileSize;
-        boolean coversOffset = ReaderPosition.cacheCoversOffset(cache.fileSize,
-                cache.windowStart, cache.bytesRead, requestedOffset);
-        long displayOffset = ReaderPosition.previewOffset(cache.fileSize,
-                cache.windowStart, cache.bytesRead, requestedOffset);
         pageStateGeneration++;
-        readerText.setText(readerDisplayText(cache.text, book));
+        readerText.setText(readerDisplayText(restoredWindow.text, book));
         refreshReaderSpacing(false);
-        positionReaderAtOffset(book, cachedChunk, displayOffset,
-                coversOffset && finishRestore);
+        positionReaderAtOffset(book, restoredWindow, requestedOffset, true);
         updateProgressText();
         if (seekBar != null) seekBar.setProgress((int) (book.progress * 1000f));
-        return coversOffset
-                ? CacheRestoreResult.COVERS_OFFSET
-                : CacheRestoreResult.PREVIEW_ONLY;
+        return CacheRestoreResult.COVERS_OFFSET;
     }
 
     private void positionReaderAtOffset(Book book, CacheSegment chunk, long targetOffset,
@@ -3795,8 +3796,7 @@ public class MainActivity extends Activity {
 
     private enum CacheRestoreResult {
         NOT_AVAILABLE,
-        COVERS_OFFSET,
-        PREVIEW_ONLY
+        COVERS_OFFSET
     }
 
     private static class ReaderCache {

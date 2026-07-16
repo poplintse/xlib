@@ -1,64 +1,44 @@
 package com.xlib.txtreader;
 
 import java.nio.charset.Charset;
-import java.util.ArrayDeque;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Deque;
 import java.util.List;
 
 /**
- * A fixed-size, double-ended moving reader window. Disk I/O is deliberately kept outside
- * this class: callers prepend/append a ready segment, and the opposite edge is discarded.
+ * A continuous, double-ended moving reader cache. Disk segments are only refill inputs:
+ * once accepted they are merged into one cache with one byte map, so consumers never see
+ * segment boundaries.
  */
 final class CacheCombineStack {
     private static final int WINDOW_SEGMENT_COUNT = 2;
 
     private final int segmentBytes;
     private final float refillRatio;
-    private final Deque<CacheSegment> segments = new ArrayDeque<>();
+    private final Charset charset;
+    private CombinedCacheSnapshot cache;
 
-    CacheCombineStack(int segmentBytes, float refillRatio) {
+    CacheCombineStack(int segmentBytes, float refillRatio, Charset charset) {
         this.segmentBytes = Math.max(1, segmentBytes);
         this.refillRatio = Math.max(0f, Math.min(1f, refillRatio));
+        this.charset = charset;
     }
 
     void reset(List<CacheSegment> segments) {
-        this.segments.clear();
+        cache = null;
         CacheSegment previous = null;
         for (CacheSegment segment : segments) {
             if (segment == null || segment.bytesRead <= 0) continue;
             if (previous != null && previous.endOffset() != segment.offset) {
                 throw new IllegalArgumentException("Cache segments must be contiguous");
             }
-            this.segments.addLast(segment);
+            cache = cache == null ? fromSegment(segment) : merge(cache, segment);
             previous = segment;
         }
-        while (this.segments.size() > WINDOW_SEGMENT_COUNT) this.segments.removeFirst();
+        trimStartToWindow();
     }
 
-    void resetFromCombined(CacheSegment combined, Charset charset) {
-        if (combined == null || combined.bytesRead <= segmentBytes
-                || combined.offsetMap == null) {
-            reset(combined == null
-                    ? Collections.emptyList()
-                    : Collections.singletonList(combined));
-            return;
-        }
-        int splitChar = combined.offsetMap.charIndexForByteOffset(segmentBytes);
-        int splitBytes = combined.offsetMap.byteOffsetForCharIndex(splitChar);
-        if (splitChar <= 0 || splitChar >= combined.text.length()
-                || splitBytes <= 0 || splitBytes >= combined.bytesRead) {
-            reset(Collections.singletonList(combined));
-            return;
-        }
-        String firstText = combined.text.substring(0, splitChar);
-        String secondText = combined.text.substring(splitChar);
-        CacheSegment first = new CacheSegment(combined.offset, firstText, splitBytes,
-                ByteOffsetMap.create(firstText, charset));
-        CacheSegment second = new CacheSegment(combined.offset + splitBytes, secondText,
-                combined.bytesRead - splitBytes, ByteOffsetMap.create(secondText, charset));
-        reset(Arrays.asList(first, second));
+    void resetFromCombined(CombinedCacheSnapshot combined) {
+        cache = combined == null || combined.bytesRead <= 0 ? null : combined;
+        trimStartToWindow();
     }
 
     boolean needsBackwardRefill(long anchorOffset) {
@@ -76,8 +56,7 @@ final class CacheCombineStack {
         if (!isEmpty() && segment.endOffset() != startOffset()) {
             throw new IllegalArgumentException("Backward cache segment is not contiguous");
         }
-        segments.addFirst(segment);
-        while (segments.size() > WINDOW_SEGMENT_COUNT) segments.removeLast();
+        cache = isEmpty() ? fromSegment(segment) : appendBackwardAndTrim(segment, cache);
     }
 
     void appendForward(CacheSegment segment) {
@@ -85,34 +64,34 @@ final class CacheCombineStack {
         if (!isEmpty() && segment.offset != endOffset()) {
             throw new IllegalArgumentException("Forward cache segment is not contiguous");
         }
-        segments.addLast(segment);
-        while (segments.size() > WINDOW_SEGMENT_COUNT) segments.removeFirst();
+        cache = isEmpty() ? fromSegment(segment) : appendForwardAndTrim(cache, segment);
     }
 
-    CacheSegment combine(Charset charset) {
-        if (isEmpty()) return new CacheSegment(0L, "", 0,
+    CombinedCacheSnapshot snapshot() {
+        if (isEmpty()) return new CombinedCacheSnapshot(0L, "", 0,
                 ByteOffsetMap.create("", charset));
-        StringBuilder text = new StringBuilder();
-        int bytes = 0;
-        for (CacheSegment segment : segments) {
-            text.append(segment.text);
-            bytes += segment.bytesRead;
-        }
-        String combined = text.toString();
-        return new CacheSegment(startOffset(), combined, bytes,
-                ByteOffsetMap.create(combined, charset));
+        return cache;
+    }
+
+    CacheCombineStack copy() {
+        CacheCombineStack copy = new CacheCombineStack(segmentBytes, refillRatio, charset);
+        copy.cache = isEmpty() ? null : cache;
+        return copy;
     }
 
     long startOffset() {
-        return segments.isEmpty() ? 0L : segments.peekFirst().offset;
+        return isEmpty() ? 0L : cache.offset;
     }
 
     long endOffset() {
-        return segments.isEmpty() ? 0L : segments.peekLast().endOffset();
+        return isEmpty() ? 0L : cache.endOffset();
     }
 
     int segmentCount() {
-        return segments.size();
+        if (isEmpty()) return 0;
+        return Math.min(WINDOW_SEGMENT_COUNT,
+                Math.max(1, (int) (((long) cache.bytesRead + segmentBytes - 1L)
+                        / segmentBytes)));
     }
 
     private long refillThresholdBytes() {
@@ -121,6 +100,116 @@ final class CacheCombineStack {
     }
 
     private boolean isEmpty() {
-        return segments.isEmpty();
+        return cache == null || cache.bytesRead <= 0;
+    }
+
+    private CombinedCacheSnapshot merge(CombinedCacheSnapshot first, CacheSegment second) {
+        if (first.endOffset() != second.offset) {
+            throw new IllegalArgumentException("Cache segments must be contiguous");
+        }
+        String text = first.text + second.text;
+        int bytes = first.bytesRead + second.bytesRead;
+        return new CombinedCacheSnapshot(first.offset, text, bytes,
+                ByteOffsetMap.create(text, charset));
+    }
+
+    private CombinedCacheSnapshot fromSegment(CacheSegment source) {
+        return new CombinedCacheSnapshot(source.offset, source.text, source.bytesRead,
+                source.offsetMap);
+    }
+
+    private CombinedCacheSnapshot appendForwardAndTrim(
+            CombinedCacheSnapshot first, CacheSegment second) {
+        String combinedText = first.text + second.text;
+        int combinedBytes = first.bytesRead + second.bytesRead;
+        if (combinedBytes <= maxWindowBytes()) {
+            return snapshot(first.offset, combinedText, combinedBytes);
+        }
+        int excessBytes = combinedBytes - maxWindowBytes();
+        int startChar = combinedCharIndexForByteOffset(
+                first.text, first.offsetMap, first.bytesRead,
+                second.offsetMap, excessBytes);
+        int newline = combinedText.indexOf('\n', startChar);
+        if (newline >= 0) {
+            int newlineBytes = combinedByteOffsetForCharIndex(
+                    first.text, first.offsetMap, first.bytesRead,
+                    second.offsetMap, newline + 1);
+            int maxLookAhead = Math.max(4096, segmentBytes / 4);
+            if (newlineBytes - excessBytes <= maxLookAhead) startChar = newline + 1;
+        }
+        int removedBytes = combinedByteOffsetForCharIndex(
+                first.text, first.offsetMap, first.bytesRead,
+                second.offsetMap, startChar);
+        if (removedBytes <= 0 || removedBytes >= combinedBytes) {
+            return snapshot(first.offset, combinedText, combinedBytes);
+        }
+        String text = combinedText.substring(startChar);
+        return snapshot(first.offset + removedBytes, text, combinedBytes - removedBytes);
+    }
+
+    private CombinedCacheSnapshot appendBackwardAndTrim(
+            CacheSegment first, CombinedCacheSnapshot second) {
+        String combinedText = first.text + second.text;
+        int combinedBytes = first.bytesRead + second.bytesRead;
+        if (combinedBytes <= maxWindowBytes()) {
+            return snapshot(first.offset, combinedText, combinedBytes);
+        }
+        int endChar = combinedCharIndexForByteOffset(
+                first.text, first.offsetMap, first.bytesRead,
+                second.offsetMap, maxWindowBytes());
+        int keptBytes = combinedByteOffsetForCharIndex(
+                first.text, first.offsetMap, first.bytesRead,
+                second.offsetMap, endChar);
+        if (keptBytes <= 0 || keptBytes >= combinedBytes) {
+            return snapshot(first.offset, combinedText, combinedBytes);
+        }
+        return snapshot(first.offset, combinedText.substring(0, endChar), keptBytes);
+    }
+
+    private CombinedCacheSnapshot snapshot(long offset, String text, int bytes) {
+        return new CombinedCacheSnapshot(
+                offset, text, bytes, ByteOffsetMap.create(text, charset));
+    }
+
+    private static int combinedCharIndexForByteOffset(
+            String firstText, ByteOffsetMap firstMap, int firstBytes,
+            ByteOffsetMap secondMap, long byteOffset) {
+        if (byteOffset <= firstBytes) {
+            return firstMap.charIndexForByteOffset(byteOffset);
+        }
+        return firstText.length()
+                + secondMap.charIndexForByteOffset(byteOffset - firstBytes);
+    }
+
+    private static int combinedByteOffsetForCharIndex(
+            String firstText, ByteOffsetMap firstMap, int firstBytes,
+            ByteOffsetMap secondMap, int charIndex) {
+        if (charIndex <= firstText.length()) {
+            return firstMap.byteOffsetForCharIndex(charIndex);
+        }
+        return firstBytes
+                + secondMap.byteOffsetForCharIndex(charIndex - firstText.length());
+    }
+
+    private void trimStartToWindow() {
+        if (isEmpty() || cache.bytesRead <= maxWindowBytes()) return;
+        int excessBytes = cache.bytesRead - maxWindowBytes();
+        int startChar = cache.offsetMap.charIndexForByteOffset(excessBytes);
+        int newline = cache.text.indexOf('\n', startChar);
+        if (newline >= 0) {
+            int newlineBytes = cache.offsetMap.byteOffsetForCharIndex(newline + 1);
+            int maxLookAhead = Math.max(4096, segmentBytes / 4);
+            if (newlineBytes - excessBytes <= maxLookAhead) startChar = newline + 1;
+        }
+        int removedBytes = cache.offsetMap.byteOffsetForCharIndex(startChar);
+        if (removedBytes <= 0 || removedBytes >= cache.bytesRead) return;
+        String text = cache.text.substring(startChar);
+        cache = new CombinedCacheSnapshot(cache.offset + removedBytes, text,
+                cache.bytesRead - removedBytes, ByteOffsetMap.create(text, charset));
+    }
+
+    private int maxWindowBytes() {
+        return (int) Math.min(Integer.MAX_VALUE,
+                (long) segmentBytes * WINDOW_SEGMENT_COUNT);
     }
 }

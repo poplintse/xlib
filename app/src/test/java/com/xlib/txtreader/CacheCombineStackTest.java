@@ -2,6 +2,7 @@ package com.xlib.txtreader;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -13,22 +14,24 @@ public class CacheCombineStackTest {
     private static final int SEGMENT_BYTES = 100;
 
     @Test
-    public void combinesTwoInitialSegmentsAroundAnchor() {
-        CacheCombineStack stack = new CacheCombineStack(SEGMENT_BYTES, 0.10f);
-        stack.reset(Arrays.asList(segment(0, "前", 100), segment(100, "后", 100)));
+    public void mergesInitialSegmentsIntoOneContinuousCache() {
+        CacheSegment first = actualSegment(0, "第一段🙂");
+        CacheSegment second = actualSegment(first.endOffset(), "第二段");
+        CacheCombineStack stack = newStack();
 
-        CacheSegment combined = stack.combine(StandardCharsets.UTF_8);
+        stack.reset(Arrays.asList(first, second));
+        CombinedCacheSnapshot combined = stack.snapshot();
 
         assertEquals(0, combined.offset);
-        assertEquals(200, combined.bytesRead);
-        assertEquals("前后", combined.text);
-        assertEquals(2, stack.segmentCount());
+        assertEquals("第一段🙂第二段", combined.text);
+        assertEquals(combined.bytesRead, combined.offsetMap.totalBytes());
+        assertEquals(1, stack.segmentCount());
     }
 
     @Test
-    public void requestsRefillOnlyInsideTenPercentBoundary() {
-        CacheCombineStack stack = new CacheCombineStack(SEGMENT_BYTES, 0.10f);
-        stack.reset(Arrays.asList(segment(100, "A", 100), segment(200, "B", 100)));
+    public void requestsRefillOnlyInsideTenPercentOfTwoSegmentWindow() {
+        CacheCombineStack stack = newStack();
+        stack.reset(Arrays.asList(asciiSegment(100, 'A'), asciiSegment(200, 'B')));
 
         assertFalse(stack.needsBackwardRefill(121));
         assertTrue(stack.needsBackwardRefill(120));
@@ -37,35 +40,72 @@ public class CacheCombineStackTest {
     }
 
     @Test
-    public void slidesForwardAndDiscardsOppositeEdge() {
-        CacheCombineStack stack = new CacheCombineStack(SEGMENT_BYTES, 0.10f);
-        stack.reset(Arrays.asList(segment(0, "A", 100), segment(100, "B", 100)));
+    public void mergesForwardRefillBeforeDiscardingFarEdge() {
+        CacheCombineStack stack = newStack();
+        stack.reset(Arrays.asList(asciiSegment(0, 'A'), asciiSegment(100, 'B')));
 
-        stack.appendForward(segment(200, "C", 100));
+        stack.appendForward(asciiSegment(200, 'C'));
+        CombinedCacheSnapshot combined = stack.snapshot();
 
-        CacheSegment combined = stack.combine(StandardCharsets.UTF_8);
         assertEquals(100, combined.offset);
-        assertEquals("BC", combined.text);
+        assertEquals("B".repeat(100) + "C".repeat(100), combined.text);
+        assertEquals(200, combined.bytesRead);
+        assertEquals(combined.bytesRead, combined.offsetMap.totalBytes());
         assertEquals(2, stack.segmentCount());
     }
 
     @Test
-    public void slidesBackwardAndDiscardsOppositeEdge() {
-        CacheCombineStack stack = new CacheCombineStack(SEGMENT_BYTES, 0.10f);
-        stack.reset(Arrays.asList(segment(100, "B", 100), segment(200, "C", 100)));
+    public void mergesBackwardRefillBeforeDiscardingFarEdge() {
+        CacheCombineStack stack = newStack();
+        stack.reset(Arrays.asList(asciiSegment(100, 'B'), asciiSegment(200, 'C')));
 
-        stack.appendBackward(segment(0, "A", 100));
+        stack.appendBackward(asciiSegment(0, 'A'));
+        CombinedCacheSnapshot combined = stack.snapshot();
 
-        CacheSegment combined = stack.combine(StandardCharsets.UTF_8);
         assertEquals(0, combined.offset);
+        assertEquals("A".repeat(100) + "B".repeat(100), combined.text);
         assertEquals(200, combined.bytesRead);
-        assertEquals("AB", combined.text);
+        assertEquals(combined.bytesRead, combined.offsetMap.totalBytes());
+    }
+
+    @Test
+    public void forwardTrimCanMoveToNearbyParagraphBoundaryWithoutCreatingASeam() {
+        CacheCombineStack stack = new CacheCombineStack(
+                20, 0.10f, StandardCharsets.UTF_8);
+        CacheSegment first = actualSegment(0, "a".repeat(20));
+        CacheSegment second = actualSegment(first.endOffset(), "bbbb\n" + "b".repeat(15));
+        CacheSegment third = actualSegment(second.endOffset(), "c".repeat(20));
+        stack.reset(Arrays.asList(first, second));
+
+        stack.appendForward(third);
+        CombinedCacheSnapshot combined = stack.snapshot();
+
+        assertEquals(25, combined.offset);
+        assertEquals("b".repeat(15) + "c".repeat(20), combined.text);
+        assertEquals(combined.bytesRead, combined.offsetMap.totalBytes());
+    }
+
+    @Test
+    public void backendCopyCanSlideWithoutMutatingPublishedCache() {
+        CacheCombineStack published = newStack();
+        published.reset(Arrays.asList(asciiSegment(0, 'A'), asciiSegment(100, 'B')));
+        CacheCombineStack prepared = published.copy();
+
+        assertSame(published.snapshot(), prepared.snapshot());
+        assertSame(published.snapshot().offsetMap, prepared.snapshot().offsetMap);
+
+        prepared.appendForward(asciiSegment(200, 'C'));
+
+        assertEquals(0, published.startOffset());
+        assertEquals("A".repeat(100) + "B".repeat(100), published.snapshot().text);
+        assertEquals(100, prepared.startOffset());
+        assertEquals("B".repeat(100) + "C".repeat(100), prepared.snapshot().text);
     }
 
     @Test
     public void doesNotRefillPastFileEdges() {
-        CacheCombineStack stack = new CacheCombineStack(SEGMENT_BYTES, 0.10f);
-        stack.reset(Arrays.asList(segment(0, "A", 100), segment(100, "B", 100)));
+        CacheCombineStack stack = newStack();
+        stack.reset(Arrays.asList(asciiSegment(0, 'A'), asciiSegment(100, 'B')));
 
         assertFalse(stack.needsBackwardRefill(0));
         assertFalse(stack.needsForwardRefill(200, 200));
@@ -73,46 +113,44 @@ public class CacheCombineStackTest {
 
     @Test(expected = IllegalArgumentException.class)
     public void rejectsNonContiguousSegments() {
-        CacheCombineStack stack = new CacheCombineStack(SEGMENT_BYTES, 0.10f);
-        stack.reset(Arrays.asList(segment(0, "A", 100), segment(101, "B", 100)));
+        CacheCombineStack stack = newStack();
+        stack.reset(Arrays.asList(asciiSegment(0, 'A'), asciiSegment(101, 'B')));
     }
 
     @Test
-    public void rebuildsByteMapForCombinedUtf8Text() {
-        CacheCombineStack stack = new CacheCombineStack(SEGMENT_BYTES, 0.10f);
-        CacheSegment first = actualSegment(0, "第一段🙂");
-        CacheSegment second = actualSegment(first.endOffset(), "第二段");
-        stack.reset(Arrays.asList(first, second));
+    public void restoresAlreadyCombinedCacheWithoutReintroducingSegments() {
+        CacheCombineStack stack = newStack();
+        CombinedCacheSnapshot cached = combinedCache(500, "中".repeat(60));
 
-        CacheSegment combined = stack.combine(StandardCharsets.UTF_8);
+        stack.resetFromCombined(cached);
+        CombinedCacheSnapshot restored = stack.snapshot();
 
-        assertEquals(combined.bytesRead, combined.offsetMap.totalBytes());
-        assertEquals("第一段🙂第二段", combined.text);
-    }
-
-    @Test
-    public void restoresCombinedCacheAsTwoCharacterAlignedSegments() {
-        CacheCombineStack stack = new CacheCombineStack(SEGMENT_BYTES, 0.10f);
-        CacheSegment cached = actualSegment(500, "中".repeat(80));
-
-        stack.resetFromCombined(cached, StandardCharsets.UTF_8);
-        CacheSegment restored = stack.combine(StandardCharsets.UTF_8);
-
-        assertEquals(2, stack.segmentCount());
         assertEquals(cached.offset, restored.offset);
         assertEquals(cached.bytesRead, restored.bytesRead);
         assertEquals(cached.text, restored.text);
+        assertSame(cached, restored);
+        assertSame(cached.offsetMap, restored.offsetMap);
         assertEquals(restored.bytesRead, restored.offsetMap.totalBytes());
+        assertEquals(2, stack.segmentCount());
     }
 
-    private CacheSegment segment(long offset, String text, int bytes) {
-        return new CacheSegment(offset, text, bytes,
-                ByteOffsetMap.create(text, StandardCharsets.UTF_8));
+    private CacheCombineStack newStack() {
+        return new CacheCombineStack(SEGMENT_BYTES, 0.10f, StandardCharsets.UTF_8);
+    }
+
+    private CacheSegment asciiSegment(long offset, char value) {
+        return actualSegment(offset, String.valueOf(value).repeat(SEGMENT_BYTES));
     }
 
     private CacheSegment actualSegment(long offset, String text) {
         int bytes = text.getBytes(StandardCharsets.UTF_8).length;
         return new CacheSegment(offset, text, bytes,
+                ByteOffsetMap.create(text, StandardCharsets.UTF_8));
+    }
+
+    private CombinedCacheSnapshot combinedCache(long offset, String text) {
+        int bytes = text.getBytes(StandardCharsets.UTF_8).length;
+        return new CombinedCacheSnapshot(offset, text, bytes,
                 ByteOffsetMap.create(text, StandardCharsets.UTF_8));
     }
 }

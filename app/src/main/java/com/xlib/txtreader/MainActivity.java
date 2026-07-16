@@ -21,6 +21,7 @@ import android.text.InputFilter;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.TextPaint;
 import android.text.style.BackgroundColorSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -85,9 +86,16 @@ public class MainActivity extends Activity {
     private static final int READER_CACHE_MAGIC = 0x584C4932;
     private static final int MAX_READER_CACHE_TEXT_BYTES = CACHE_SEGMENT_BYTES * 8;
     private static final long READER_CACHE_WRITE_DELAY_MS = 800L;
+    private static final long BOOK_PROGRESS_SAVE_DELAY_MS = 600L;
     private static final int SEARCH_READ_BYTES = 64 * 1024;
     private static final int SEARCH_RESULT_LIMIT = 200;
     private static final int SEARCH_CONTEXT_CHARS = 45;
+    private static final int PAGE_WINDOW_MAX_PAGES = 17;
+    private static final int PAGE_WINDOW_PREFETCH_EACH_SIDE =
+            ReaderPageRefillPolicy.TARGET_READY_PAGES;
+    private static final int PAGE_DIRECTION_BACKWARD = ReaderPageRefillPolicy.BACKWARD;
+    private static final int PAGE_DIRECTION_NONE = ReaderPageRefillPolicy.NONE;
+    private static final int PAGE_DIRECTION_FORWARD = ReaderPageRefillPolicy.FORWARD;
     private static final long SEEK_PREVIEW_DELAY_MS = 220L;
     private static final String KEY_AUTO_TOC = "auto_toc";
     private static final String KEY_APP_THEME = "app_theme";
@@ -104,10 +112,12 @@ public class MainActivity extends Activity {
     private final Set<Long> selectedBookIds = new HashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService pageExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService indexExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService readerCacheExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService searchExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService tocExecutor = Executors.newSingleThreadExecutor();
+    private final ReaderPagePaginator readerPagePaginator = new ReaderPagePaginator();
     private final Map<String, CacheSegment> segmentCache =
             new LinkedHashMap<String, CacheSegment>(8, 0.75f, true) {
         @Override
@@ -140,6 +150,7 @@ public class MainActivity extends Activity {
     private boolean suppressProgressSave;
     private boolean activityResumed;
     private boolean autoPageDispatching;
+    private boolean booksSavePending;
     private int autoPageSeconds = AutoPageOptions.OFF;
     private ReaderCacheWrite pendingReaderCache;
     private SearchSession searchSession;
@@ -149,12 +160,17 @@ public class MainActivity extends Activity {
     private volatile long loadRequestId;
     private volatile long searchRequestId;
     private long cacheStackGeneration;
-    private long currentChunkOffset;
-    private int currentChunkBytes;
-    private CacheSegment currentChunk;
+    private volatile long pageBuildRequestId;
+    private long pageLayoutGeneration;
+    private CombinedCacheSnapshot currentCache;
     private CacheCombineStack currentCombineStack;
+    private final ReaderPageWindow readerPageWindow =
+            new ReaderPageWindow(PAGE_WINDOW_MAX_PAGES);
+    private boolean loadingReaderPages;
+    private boolean resettingReaderPages;
+    private int preferredPageRefillDirection = PAGE_DIRECTION_NONE;
     private Bitmap currentPageSnapshot;
-    private long snapshotChunkOffset = -1L;
+    private long snapshotPageOffset = -1L;
     private int snapshotScrollY = -1;
     private int snapshotWidth = -1;
     private int snapshotHeight = -1;
@@ -166,10 +182,11 @@ public class MainActivity extends Activity {
     private float fittedReaderFontSize = -1f;
     private int fittedReaderVisibleHeight = -1;
     private int readerContainerHeight = -1;
+    private int readerContainerWidth = -1;
     private FrameLayout readerFrame;
     private LinearLayout readerRoot;
     private AccessibleScrollView readerScroll;
-    private TextView readerText;
+    private ReaderPageTextView readerText;
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
     private Button progressButton;
@@ -189,6 +206,10 @@ public class MainActivity extends Activity {
         ReaderCacheWrite cache = pendingReaderCache;
         pendingReaderCache = null;
         if (cache != null) writeReaderCache(cache);
+    };
+    private final Runnable booksSaveRunnable = () -> {
+        booksSavePending = false;
+        saveBooks();
     };
     private final Runnable autoPageRunnable = () -> {
         Book book = currentBook;
@@ -245,8 +266,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        flushScheduledBooksSave();
         mainHandler.removeCallbacksAndMessages(null);
         ioExecutor.shutdownNow();
+        pageExecutor.shutdownNow();
         indexExecutor.shutdownNow();
         readerCacheExecutor.shutdownNow();
         searchExecutor.shutdownNow();
@@ -829,10 +852,22 @@ public class MainActivity extends Activity {
     private void showReader(Book book, boolean animateMenus) {
         settingsOpen = false;
         catalogOpen = false;
+        cacheStackGeneration++;
+        pageLayoutGeneration++;
+        loadingBackwardSegment = false;
+        loadingForwardSegment = false;
+        currentCombineStack = null;
+        currentCache = null;
+        pageBuildRequestId++;
+        loadingReaderPages = false;
+        resettingReaderPages = false;
+        preferredPageRefillDirection = PAGE_DIRECTION_NONE;
+        readerPageWindow.clear();
         releasePageSnapshot();
         fittedReaderBottomInset = -1;
         fittedReaderFontSize = -1f;
         fittedReaderVisibleHeight = -1;
+        readerContainerWidth = -1;
         progressStepButtons.clear();
         int readerTheme = appTheme();
         applyWindowColors(readerTheme);
@@ -940,7 +975,7 @@ public class MainActivity extends Activity {
         readerScroll.setClipChildren(true);
         applyReaderSafePadding(readingFontSize());
 
-        readerText = new TextView(this);
+        readerText = new ReaderPageTextView(this);
         readerText.setTextColor(fg);
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, readingFontSize());
         readerText.setTypeface(readerTypeface(readingFontFamily()));
@@ -1043,12 +1078,6 @@ public class MainActivity extends Activity {
         });
         readerScroll.addView(readerText, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        readerScroll.getViewTreeObserver().addOnScrollChangedListener(() -> {
-            pageStateGeneration++;
-            saveCurrentProgress();
-            updateProgressText();
-            maybeRefillCombineStack();
-        });
         readerRoot.addView(readerScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -1061,10 +1090,18 @@ public class MainActivity extends Activity {
         readerRoot.addOnLayoutChangeListener((v, left, top, right, bottom,
                                               oldLeft, oldTop, oldRight, oldBottom) -> {
             int height = bottom - top;
-            if (height > 0 && height != readerContainerHeight) {
+            int width = right - left;
+            boolean widthChanged = width > 0 && width != readerContainerWidth;
+            if (height > 0 && (height != readerContainerHeight || widthChanged)) {
                 readerContainerHeight = height;
+                readerContainerWidth = width;
+                if (widthChanged) pageLayoutGeneration++;
                 if (readerText != null && currentBook != null) {
                     readerText.post(() -> fitReaderViewportToWholeLines(readingFontSize()));
+                    if (widthChanged && !readerPageWindow.isEmpty() && !loadingChunk) {
+                        readerText.post(() -> readerText.postOnAnimation(
+                                this::rebuildReaderPageWindow));
+                    }
                 }
             }
         });
@@ -1206,12 +1243,8 @@ public class MainActivity extends Activity {
 
         setContentView(frame);
         long requestedOffset = book.offset;
-        suppressProgressSave = true;
-        CacheRestoreResult cacheResult = restoreReaderCache(book, requestedOffset);
         frame.post(this::alignMenusToReaderViewport);
-        if (cacheResult != CacheRestoreResult.COVERS_OFFSET) {
-            loadCacheWindowAtOffset(requestedOffset);
-        }
+        loadCacheWindowAtOffset(requestedOffset, true);
         if (readerMenusOpen) {
             if (animateMenus) frame.post(this::showReaderMenus);
             else showReaderMenusImmediately();
@@ -2442,22 +2475,33 @@ public class MainActivity extends Activity {
     }
 
     private void loadCacheWindowAtOffset(long targetOffset) {
+        loadCacheWindowAtOffset(targetOffset, false);
+    }
+
+    private void loadCacheWindowAtOffset(long targetOffset, boolean tryPersistentCache) {
         if (currentBook == null) return;
         cacheStackGeneration++;
         loadingBackwardSegment = false;
         loadingForwardSegment = false;
+        pageBuildRequestId++;
+        loadingReaderPages = false;
+        resettingReaderPages = false;
+        preferredPageRefillDirection = PAGE_DIRECTION_NONE;
+        readerPageWindow.clear();
         Book book = currentBook;
         long requestId = ++loadRequestId;
         loadingChunk = true;
-        // Rebinding the TextView briefly preserves the previous window's scrollY. Ignore
-        // that transient position until the new window has been laid out and positioned.
+        // Freeze progress only for an explicit seek/open until its initial page window is ready.
         suppressProgressSave = true;
         ioExecutor.execute(() -> {
             if (requestId != loadRequestId) return;
             CacheWindowLoad load = null;
             Exception error = null;
             try {
-                load = prepareCacheWindowLoad(book, targetOffset);
+                if (tryPersistentCache) {
+                    load = prepareReaderCacheRestore(book, targetOffset);
+                }
+                if (load == null) load = prepareCacheWindowLoad(book, targetOffset);
             } catch (Exception e) {
                 error = e;
             }
@@ -2501,9 +2545,10 @@ public class MainActivity extends Activity {
             if (second.bytesRead > 0) initialSegments.add(second);
         }
         CacheCombineStack combineStack =
-                new CacheCombineStack(CACHE_SEGMENT_BYTES, CACHE_REFILL_RATIO);
+                new CacheCombineStack(CACHE_SEGMENT_BYTES, CACHE_REFILL_RATIO,
+                        charsetFor(book.encoding));
         combineStack.reset(initialSegments);
-        CacheSegment combined = combineStack.combine(charsetFor(book.encoding));
+        CombinedCacheSnapshot combined = combineStack.snapshot();
         return new CacheWindowLoad(fileSize, clampedTarget, combineStack, combined);
     }
 
@@ -2511,16 +2556,12 @@ public class MainActivity extends Activity {
         if (load == null || readerText == null || readerScroll == null) return;
         book.fileSize = load.fileSize;
         currentCombineStack = load.combineStack;
-        currentChunkOffset = load.chunk.offset;
-        currentChunkBytes = load.chunk.bytesRead;
-        currentChunk = load.chunk;
+        currentCache = load.cache;
         book.offset = load.targetOffset;
         book.progress = load.fileSize <= 0 ? 0f : load.targetOffset / (float) load.fileSize;
         book.updatedAt = System.currentTimeMillis();
         pageStateGeneration++;
-        readerText.setText(readerDisplayText(load.chunk.text, book));
-        refreshReaderSpacing(false);
-        positionReaderAtOffset(book, load.chunk, load.targetOffset, true);
+        requestReaderPageWindow(book, load.cache, load.targetOffset);
         saveBooks();
         if (!temporarySearchReading) {
             saveReaderCache(book, load);
@@ -2531,67 +2572,107 @@ public class MainActivity extends Activity {
         }
     }
 
-    private CacheRestoreResult restoreReaderCache(Book book, long requestedOffset) {
+    private CacheWindowLoad prepareReaderCacheRestore(Book book, long requestedOffset) {
         ReaderCache cache = readReaderCache(book);
-        if (cache == null || readerText == null || readerScroll == null) {
-            return CacheRestoreResult.NOT_AVAILABLE;
-        }
+        if (cache == null) return null;
         Charset charset = charsetFor(book.encoding);
-        CacheSegment cachedChunk = new CacheSegment(cache.windowStart, cache.text, cache.bytesRead,
+        CombinedCacheSnapshot cachedWindow = new CombinedCacheSnapshot(
+                cache.windowStart, cache.text, cache.bytesRead,
                 ByteOffsetMap.create(cache.text, charset));
         CacheCombineStack combineStack =
-                new CacheCombineStack(CACHE_SEGMENT_BYTES, CACHE_REFILL_RATIO);
-        combineStack.resetFromCombined(cachedChunk, charset);
-        CacheSegment restoredWindow = combineStack.combine(charset);
+                new CacheCombineStack(CACHE_SEGMENT_BYTES, CACHE_REFILL_RATIO, charset);
+        combineStack.resetFromCombined(cachedWindow);
+        CombinedCacheSnapshot restoredWindow = combineStack.snapshot();
         boolean completeFile = restoredWindow.offset == 0L
                 && restoredWindow.endOffset() >= cache.fileSize;
         if (combineStack.segmentCount() < 2 && !completeFile) {
-            return CacheRestoreResult.NOT_AVAILABLE;
+            return null;
         }
         boolean coversOffset = ReaderPosition.cacheCoversOffset(cache.fileSize,
                 restoredWindow.offset, restoredWindow.bytesRead, requestedOffset);
-        if (!coversOffset) return CacheRestoreResult.NOT_AVAILABLE;
-        currentCombineStack = combineStack;
-        currentChunkOffset = restoredWindow.offset;
-        currentChunkBytes = restoredWindow.bytesRead;
-        currentChunk = restoredWindow;
-        book.fileSize = cache.fileSize;
-        book.offset = Math.max(0L, Math.min(requestedOffset, cache.fileSize));
-        book.progress = cache.fileSize <= 0 ? 0f : book.offset / (float) cache.fileSize;
-        pageStateGeneration++;
-        readerText.setText(readerDisplayText(restoredWindow.text, book));
-        refreshReaderSpacing(false);
-        positionReaderAtOffset(book, restoredWindow, requestedOffset, true);
-        updateProgressText();
-        if (seekBar != null) seekBar.setProgress((int) (book.progress * 1000f));
-        return CacheRestoreResult.COVERS_OFFSET;
+        if (!coversOffset) return null;
+        long clampedTarget = cache.fileSize <= 0L ? 0L
+                : Math.max(0L, Math.min(requestedOffset, cache.fileSize - 1L));
+        return new CacheWindowLoad(
+                cache.fileSize, clampedTarget, combineStack, restoredWindow);
     }
 
-    private void positionReaderAtOffset(Book book, CacheSegment chunk, long targetOffset,
-                                        boolean finishRestore) {
-        AccessibleScrollView targetScroll = readerScroll;
-        targetScroll.post(() -> {
-            if (currentBook != book || readerScroll != targetScroll || currentChunk != chunk) return;
-            if (readerText == null || readerText.getLayout() == null) {
-                targetScroll.post(() -> positionReaderAtOffset(
-                        book, chunk, targetOffset, finishRestore));
+    private void requestReaderPageWindow(Book book, CombinedCacheSnapshot cache,
+                                         long anchorOffset) {
+        if (book == null || cache == null || readerText == null || readerScroll == null) return;
+        readerScroll.post(() -> {
+            if (currentBook != book || currentCache != cache) return;
+            ReaderPagePaginator.LayoutSpec spec = currentPageLayoutSpec();
+            if (spec == null) {
+                readerScroll.post(() -> requestReaderPageWindow(
+                        book, cache, anchorOffset));
                 return;
             }
-            scrollToOffsetWithinWindow(targetOffset);
-            // Keep progress writes frozen through the next traversal, when Android emits
-            // the scroll callback caused by replacing and repositioning the text.
-            targetScroll.postOnAnimation(() -> targetScroll.postOnAnimation(() -> {
-                if (currentBook != book || readerScroll != targetScroll || currentChunk != chunk) {
-                    return;
-                }
-                if (finishRestore) {
-                    loadingChunk = false;
-                    suppressProgressSave = false;
-                }
-                cacheCurrentPageSnapshot();
-                maybeRefillCombineStack();
-            }));
+            long requestId = ++pageBuildRequestId;
+            loadingReaderPages = true;
+            resettingReaderPages = true;
+            loadingChunk = true;
+            suppressProgressSave = true;
+            pageExecutor.execute(() -> {
+                List<ReaderPage> pages = readerPagePaginator.paginateAround(
+                        cache, anchorOffset, spec, PAGE_WINDOW_PREFETCH_EACH_SIDE);
+                mainHandler.post(() -> finishReaderPageWindow(
+                        book, cache, spec.key, anchorOffset, requestId, pages));
+            });
         });
+    }
+
+    private ReaderPagePaginator.LayoutSpec currentPageLayoutSpec() {
+        if (readerText == null || readerScroll == null) return null;
+        int width = readerText.getWidth()
+                - readerText.getPaddingLeft() - readerText.getPaddingRight();
+        int height = fittedReaderVisibleHeight
+                - readerText.getPaddingTop() - readerText.getPaddingBottom();
+        if (width <= 0 || height <= 0) return null;
+        TextPaint paint = new TextPaint(readerText.getPaint());
+        String highlightQuery = temporarySearchReading && searchSession != null
+                && searchSession.book == currentBook ? searchSession.query : null;
+        int highlightColor = isDarkTheme(appTheme())
+                ? Color.rgb(126, 92, 0) : Color.rgb(255, 224, 130);
+        return new ReaderPagePaginator.LayoutSpec(
+                paint, pageLayoutGeneration, width, height,
+                readerText.getLineSpacingExtra(), readerText.getLineSpacingMultiplier(),
+                readerText.getBreakStrategy(), readerText.getHyphenationFrequency(),
+                highlightQuery, highlightColor);
+    }
+
+    private void finishReaderPageWindow(Book book, CombinedCacheSnapshot sourceCache,
+                                        long layoutKey, long anchorOffset, long requestId,
+                                        List<ReaderPage> pages) {
+        if (requestId != pageBuildRequestId || currentBook != book) return;
+        loadingReaderPages = false;
+        resettingReaderPages = false;
+        if (currentCache != sourceCache || pageLayoutGeneration != layoutKey) {
+            requestReaderPageWindow(book, currentCache, book.offset);
+            return;
+        }
+        if (pages == null || pages.isEmpty()) {
+            loadingChunk = false;
+            suppressProgressSave = false;
+            return;
+        }
+        if (!readerPageWindow.reset(pages, anchorOffset, book.fileSize)) {
+            loadingChunk = false;
+            suppressProgressSave = false;
+            return;
+        }
+        ReaderPage currentPage = readerPageWindow.current();
+        if (currentPage == null) {
+            loadingChunk = false;
+            suppressProgressSave = false;
+            return;
+        }
+        showCurrentReaderPage();
+        loadingChunk = false;
+        suppressProgressSave = false;
+        readerText.post(this::cacheCurrentPageSnapshot);
+        maybeRefillCombineStack();
+        maybeRefillReaderPageWindow();
     }
 
     private ReaderCache readReaderCache(Book book) {
@@ -2620,10 +2701,10 @@ public class MainActivity extends Activity {
     }
 
     private void saveReaderCache(Book book, CacheWindowLoad load) {
-        if (book == null || load == null || load.chunk == null) return;
+        if (book == null || load == null || load.cache == null) return;
         final File source = new File(book.path);
         pendingReaderCache = new ReaderCacheWrite(book, load.fileSize, source.lastModified(),
-                load.chunk.offset, load.chunk.bytesRead, load.chunk.text);
+                load.cache.offset, load.cache.bytesRead, load.cache.text);
         mainHandler.removeCallbacks(readerCacheWriteRunnable);
         mainHandler.postDelayed(readerCacheWriteRunnable, READER_CACHE_WRITE_DELAY_MS);
     }
@@ -2707,7 +2788,7 @@ public class MainActivity extends Activity {
 
     private void maybeRefillCombineStack() {
         if (suppressProgressSave || loadingChunk || currentBook == null
-                || currentCombineStack == null || currentChunk == null) return;
+                || currentCombineStack == null || currentCache == null) return;
         long anchorOffset = currentBook.offset;
         if (currentCombineStack.needsBackwardRefill(anchorOffset)) {
             prefetchBackwardSegment(currentBook, currentCombineStack);
@@ -2725,6 +2806,8 @@ public class MainActivity extends Activity {
         long segmentEnd = combineStack.startOffset();
         ioExecutor.execute(() -> {
             CacheSegment segment = null;
+            CacheCombineStack preparedStack = null;
+            CombinedCacheSnapshot preparedCache = null;
             try {
                 File file = new File(book.path);
                 long desiredStart = Math.max(0L, segmentEnd - CACHE_SEGMENT_BYTES);
@@ -2736,34 +2819,39 @@ public class MainActivity extends Activity {
                 if (bytes > 0) {
                     segment = readCachedSegment(file, segmentStart, bytes, book.encoding);
                 }
+                if (segment != null && segment.bytesRead > 0) {
+                    preparedStack = combineStack.copy();
+                    preparedStack.appendBackward(segment);
+                    preparedCache = preparedStack.snapshot();
+                }
             } catch (Exception ignored) {
             }
             CacheSegment loaded = segment;
+            CacheCombineStack readyStack = preparedStack;
+            CombinedCacheSnapshot readyCache = preparedCache;
             mainHandler.post(() -> finishBackwardPrefetch(
-                    book, combineStack, generation, requestId, loaded));
+                    book, combineStack, generation, requestId,
+                    loaded, readyStack, readyCache));
         });
     }
 
     private void finishBackwardPrefetch(Book book, CacheCombineStack combineStack,
                                         long generation, long requestId,
-                                        CacheSegment loaded) {
+                                        CacheSegment loaded,
+                                        CacheCombineStack preparedStack,
+                                        CombinedCacheSnapshot preparedCache) {
         if (generation != cacheStackGeneration || requestId != loadRequestId
                 || currentBook != book || currentCombineStack != combineStack) {
             return;
         }
-        if (pageAnimating || loadingChunk || suppressProgressSave) {
-            mainHandler.postDelayed(() -> finishBackwardPrefetch(
-                    book, combineStack, generation, requestId, loaded), 32L);
-            return;
-        }
         loadingBackwardSegment = false;
         if (loaded == null || loaded.bytesRead <= 0
+                || preparedStack == null || preparedCache == null
                 || loaded.endOffset() != combineStack.startOffset()
                 || !combineStack.needsBackwardRefill(book.offset)) {
             return;
         }
-        combineStack.appendBackward(loaded);
-        applyCombinedStack(book, combineStack, generation, requestId);
+        publishPreparedCombinedStack(combineStack, preparedStack, preparedCache);
     }
 
     private void prefetchForwardSegment(Book book, CacheCombineStack combineStack) {
@@ -2774,74 +2862,79 @@ public class MainActivity extends Activity {
         long segmentStart = combineStack.endOffset();
         ioExecutor.execute(() -> {
             CacheSegment segment = null;
+            CacheCombineStack preparedStack = null;
+            CombinedCacheSnapshot preparedCache = null;
             try {
                 segment = readCachedSegment(new File(book.path), segmentStart,
                         CACHE_SEGMENT_BYTES, book.encoding);
+                if (segment != null && segment.bytesRead > 0) {
+                    preparedStack = combineStack.copy();
+                    preparedStack.appendForward(segment);
+                    preparedCache = preparedStack.snapshot();
+                }
             } catch (Exception ignored) {
             }
             CacheSegment loaded = segment;
+            CacheCombineStack readyStack = preparedStack;
+            CombinedCacheSnapshot readyCache = preparedCache;
             mainHandler.post(() -> finishForwardPrefetch(
-                    book, combineStack, generation, requestId, loaded));
+                    book, combineStack, generation, requestId,
+                    loaded, readyStack, readyCache));
         });
     }
 
     private void finishForwardPrefetch(Book book, CacheCombineStack combineStack,
                                        long generation, long requestId,
-                                       CacheSegment loaded) {
+                                       CacheSegment loaded,
+                                       CacheCombineStack preparedStack,
+                                       CombinedCacheSnapshot preparedCache) {
         if (generation != cacheStackGeneration || requestId != loadRequestId
                 || currentBook != book || currentCombineStack != combineStack) {
-            return;
-        }
-        if (pageAnimating || loadingChunk || suppressProgressSave) {
-            mainHandler.postDelayed(() -> finishForwardPrefetch(
-                    book, combineStack, generation, requestId, loaded), 32L);
             return;
         }
         loadingForwardSegment = false;
         if (loaded == null || loaded.bytesRead <= 0
+                || preparedStack == null || preparedCache == null
                 || loaded.offset != combineStack.endOffset()
                 || !combineStack.needsForwardRefill(book.offset, book.fileSize)) {
             return;
         }
-        combineStack.appendForward(loaded);
-        applyCombinedStack(book, combineStack, generation, requestId);
+        publishPreparedCombinedStack(combineStack, preparedStack, preparedCache);
     }
 
-    private void applyCombinedStack(Book book, CacheCombineStack combineStack,
-                                    long generation, long requestId) {
-        if (generation != cacheStackGeneration || requestId != loadRequestId
-                || currentBook != book || currentCombineStack != combineStack) {
-            return;
+    private void publishPreparedCombinedStack(CacheCombineStack previousStack,
+                                              CacheCombineStack preparedStack,
+                                              CombinedCacheSnapshot preparedCache) {
+        if (currentCombineStack != previousStack || preparedCache.bytesRead <= 0) return;
+        cacheStackGeneration++;
+        loadingBackwardSegment = false;
+        loadingForwardSegment = false;
+        currentCombineStack = preparedStack;
+        currentCache = preparedCache;
+        boolean restartReset = loadingReaderPages && resettingReaderPages;
+        if (loadingReaderPages) {
+            pageBuildRequestId++;
+            loadingReaderPages = false;
+            resettingReaderPages = false;
         }
-        if (pageAnimating || loadingChunk || suppressProgressSave) {
-            mainHandler.postDelayed(() -> applyCombinedStack(
-                    book, combineStack, generation, requestId), 32L);
-            return;
+        if (!temporarySearchReading && currentBook != null) {
+            saveReaderCache(currentBook, new CacheWindowLoad(currentBook.fileSize,
+                    currentBook.offset, preparedStack, preparedCache));
         }
-        long targetOffset = book.offset;
-        CacheSegment combined = combineStack.combine(charsetFor(book.encoding));
-        if (combined.bytesRead <= 0) return;
-        loadingChunk = true;
-        suppressProgressSave = true;
-        currentChunkOffset = combined.offset;
-        currentChunkBytes = combined.bytesRead;
-        currentChunk = combined;
-        pageStateGeneration++;
-        readerText.setText(readerDisplayText(combined.text, book));
-        refreshReaderSpacing(false);
-        positionReaderAtOffset(book, combined, targetOffset, true);
-        if (!temporarySearchReading) {
-            saveReaderCache(book,
-                    new CacheWindowLoad(book.fileSize, targetOffset, combineStack, combined));
+        if (restartReset && currentBook != null) {
+            ReaderPage page = readerPageWindow.current();
+            long anchorOffset = page == null ? currentBook.offset : page.startOffset;
+            requestReaderPageWindow(currentBook, preparedCache, anchorOffset);
+        } else {
+            maybeRefillReaderPageWindow();
         }
     }
 
     private void pageBackward() {
         if (!autoPageDispatching) scheduleAutoPage();
         if (pageAnimating || loadingChunk || suppressProgressSave) return;
-        if (readerScroll != null && readerScroll.getScrollY() <= 0
-                && currentCombineStack != null && currentCombineStack.startOffset() > 0L) {
-            maybeRefillCombineStack();
+        if (readerPageWindow.pagesBefore() <= 0) {
+            maybeRefillReaderPageWindow();
             return;
         }
         animatePageTurn(-1, this::performPageBackward);
@@ -2850,46 +2943,112 @@ public class MainActivity extends Activity {
     private void pageForward() {
         if (!autoPageDispatching) scheduleAutoPage();
         if (pageAnimating || loadingChunk || suppressProgressSave) return;
-        if (readerScroll != null && readerScroll.getScrollY() >= maxReaderScroll()
-                && currentCombineStack != null
-                && currentCombineStack.endOffset() < currentBook.fileSize) {
-            maybeRefillCombineStack();
+        if (readerPageWindow.pagesAfter() <= 0) {
+            maybeRefillReaderPageWindow();
             return;
         }
         animatePageTurn(1, this::performPageForward);
     }
 
     private void performPageBackward() {
-        if (currentBook == null || readerScroll == null || readerText == null) return;
-        saveCurrentProgress();
-        int y = readerScroll.getScrollY();
-        if (y > 0) {
-            pageStateGeneration++;
-            readerScroll.scrollTo(0, pageBackTargetY(y));
-            saveCurrentProgress();
-            updateProgressText();
-            return;
-        }
-        if (currentBook.offset > 0) {
-            maybeRefillCombineStack();
-        }
+        if (currentBook == null || !readerPageWindow.moveBackward()) return;
+        preferredPageRefillDirection = PAGE_DIRECTION_BACKWARD;
+        showCurrentReaderPage();
+        maybeRefillCombineStack();
+        maybeRefillReaderPageWindow();
     }
 
     private void performPageForward() {
-        if (currentBook == null || readerScroll == null || readerText == null) return;
-        saveCurrentProgress();
-        int maxScroll = maxReaderScroll();
-        int y = readerScroll.getScrollY();
-        if (y < maxScroll) {
-            pageStateGeneration++;
-            readerScroll.scrollTo(0, pageForwardTargetY(y, maxScroll));
-            saveCurrentProgress();
-            updateProgressText();
+        if (currentBook == null || !readerPageWindow.moveForward()) return;
+        preferredPageRefillDirection = PAGE_DIRECTION_FORWARD;
+        showCurrentReaderPage();
+        maybeRefillCombineStack();
+        maybeRefillReaderPageWindow();
+    }
+
+    private void showCurrentReaderPage() {
+        ReaderPage page = readerPageWindow.current();
+        if (page == null || currentBook == null || readerText == null || readerScroll == null) return;
+        pageStateGeneration++;
+        releasePageSnapshot();
+        readerText.setReaderPage(page, readerDisplayText(page.text, currentBook));
+        readerScroll.scrollTo(0, 0);
+        currentBook.offset = Math.min(page.startOffset, currentBook.fileSize);
+        currentBook.progress = currentBook.fileSize <= 0
+                ? 0f : currentBook.offset / (float) currentBook.fileSize;
+        currentBook.updatedAt = System.currentTimeMillis();
+        scheduleBooksSave();
+        updateProgressText();
+        if (seekBar != null && !seekTracking) {
+            seekBar.setProgress((int) (currentBook.progress * 1000f));
+        }
+    }
+
+    private void maybeRefillReaderPageWindow() {
+        if (loadingReaderPages || loadingChunk || currentBook == null
+                || currentCache == null || readerPageWindow.isEmpty()) return;
+        ReaderPageRefillPolicy.Decision decision = ReaderPageRefillPolicy.choose(
+                readerPageWindow.pagesBefore(), readerPageWindow.pagesAfter(),
+                readerPageWindow.firstStartOffset() > currentCache.offset,
+                readerPageWindow.lastEndOffset() < currentCache.endOffset(),
+                preferredPageRefillDirection);
+        if (decision != null) requestReaderPages(decision.direction, decision.pageCount);
+    }
+
+    private void requestReaderPages(int direction, int requestedPages) {
+        if (currentBook == null || currentCache == null || readerText == null
+                || readerScroll == null || loadingReaderPages) return;
+        ReaderPagePaginator.LayoutSpec spec = currentPageLayoutSpec();
+        if (spec == null) {
+            readerScroll.post(() -> requestReaderPages(direction, requestedPages));
             return;
         }
-        if (currentBook.offset < currentBook.fileSize - 1L) {
-            maybeRefillCombineStack();
+        Book book = currentBook;
+        CombinedCacheSnapshot cache = currentCache;
+        long boundaryOffset = direction == PAGE_DIRECTION_FORWARD
+                ? readerPageWindow.lastEndOffset() : readerPageWindow.firstStartOffset();
+        long requestId = ++pageBuildRequestId;
+        loadingReaderPages = true;
+        resettingReaderPages = false;
+        int batchSize = Math.max(1, requestedPages);
+        pageExecutor.execute(() -> {
+            List<ReaderPage> pages = direction == PAGE_DIRECTION_FORWARD
+                    ? readerPagePaginator.paginateForward(
+                            cache, boundaryOffset, spec, batchSize)
+                    : readerPagePaginator.paginateBackward(
+                            cache, boundaryOffset, spec, batchSize);
+            mainHandler.post(() -> finishReaderPageBatch(
+                    book, cache, spec.key, requestId, direction, boundaryOffset, pages));
+        });
+    }
+
+    private void finishReaderPageBatch(Book book, CombinedCacheSnapshot sourceCache,
+                                       long layoutKey, long requestId, int direction,
+                                       long expectedBoundary, List<ReaderPage> pages) {
+        if (requestId != pageBuildRequestId || currentBook != book) return;
+        loadingReaderPages = false;
+        resettingReaderPages = false;
+        boolean sourceIsCurrent = currentCache == sourceCache
+                && pageLayoutGeneration == layoutKey;
+        boolean appended = false;
+        if (sourceIsCurrent && pages != null && !pages.isEmpty()) {
+            ReaderPage currentPage = readerPageWindow.current();
+            long anchorOffset = currentPage == null ? book.offset : currentPage.startOffset;
+            appended = direction == PAGE_DIRECTION_FORWARD
+                    ? readerPageWindow.appendForwardPages(
+                            pages, expectedBoundary, anchorOffset, book.fileSize)
+                    : readerPageWindow.prependBackwardPages(
+                            pages, expectedBoundary, anchorOffset, book.fileSize);
         }
+        if (!sourceIsCurrent || (!appended && pages != null && !pages.isEmpty())) {
+            maybeRefillReaderPageWindow();
+            return;
+        }
+        if (preferredPageRefillDirection == PAGE_DIRECTION_NONE) {
+            preferredPageRefillDirection = direction;
+        }
+        maybeRefillCombineStack();
+        maybeRefillReaderPageWindow();
     }
 
     private void animatePageTurn(int direction, Runnable turnAction) {
@@ -2915,20 +3074,8 @@ public class MainActivity extends Activity {
         }
         final Bitmap animationBitmap = pageBitmap;
 
-        ImageView turningPage = new ImageView(this);
-        turningPage.setImageBitmap(animationBitmap);
-        turningPage.setScaleType(ImageView.ScaleType.FIT_XY);
-        turningPage.setCameraDistance(getResources().getDisplayMetrics().density * 12000f);
-        turningPage.setPivotX(direction > 0 ? 0f : readerScroll.getWidth());
-        turningPage.setPivotY(readerScroll.getHeight() / 2f);
-        turningPage.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-
-        FrameLayout.LayoutParams pageLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                readerScroll.getHeight(),
-                Gravity.TOP);
-        pageLp.topMargin = readerRoot.getTop() + readerScroll.getTop();
-        readerFrame.addView(turningPage, pageLp);
+        ImageView turningPage = createPageOverlay(animationBitmap, direction);
+        readerFrame.addView(turningPage, pageOverlayLayoutParams());
 
         // The validated page 0 stays on top; the destination (+1/-1) is placed underneath.
         turnAction.run();
@@ -2937,13 +3084,43 @@ public class MainActivity extends Activity {
                 .setInterpolator(new AccelerateDecelerateInterpolator())
                 .setDuration(300)
                 .withEndAction(() -> {
-                    readerFrame.removeView(turningPage);
-                    turningPage.setImageDrawable(null);
-                    animationBitmap.recycle();
+                    removePageOverlay(turningPage, animationBitmap);
                     pageAnimating = false;
-                    readerScroll.post(this::cacheCurrentPageSnapshot);
+                    readerScroll.post(() -> {
+                        cacheCurrentPageSnapshot();
+                        maybeRefillCombineStack();
+                        maybeRefillReaderPageWindow();
+                    });
                 })
                 .start();
+    }
+
+    private ImageView createPageOverlay(Bitmap bitmap, int direction) {
+        ImageView page = new ImageView(this);
+        page.setImageBitmap(bitmap);
+        page.setScaleType(ImageView.ScaleType.FIT_XY);
+        page.setCameraDistance(getResources().getDisplayMetrics().density * 12000f);
+        page.setPivotX(direction >= 0 ? 0f : readerScroll.getWidth());
+        page.setPivotY(readerScroll.getHeight() / 2f);
+        page.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        return page;
+    }
+
+    private FrameLayout.LayoutParams pageOverlayLayoutParams() {
+        FrameLayout.LayoutParams pageLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                readerScroll.getHeight(),
+                Gravity.TOP);
+        pageLp.topMargin = readerRoot.getTop() + readerScroll.getTop();
+        return pageLp;
+    }
+
+    private void removePageOverlay(ImageView page, Bitmap bitmap) {
+        ViewGroup parent = page.getParent() instanceof ViewGroup
+                ? (ViewGroup) page.getParent() : null;
+        if (parent != null) parent.removeView(page);
+        page.setImageDrawable(null);
+        if (!bitmap.isRecycled()) bitmap.recycle();
     }
 
     private Bitmap captureCurrentPage() {
@@ -2978,7 +3155,8 @@ public class MainActivity extends Activity {
         if (snapshot == null) return;
         releasePageSnapshot();
         currentPageSnapshot = snapshot;
-        snapshotChunkOffset = currentChunkOffset;
+        ReaderPage page = readerPageWindow.current();
+        snapshotPageOffset = page == null ? -1L : page.startOffset;
         snapshotScrollY = readerScroll.getScrollY();
         snapshotWidth = readerScroll.getWidth();
         snapshotHeight = readerScroll.getHeight();
@@ -2992,7 +3170,8 @@ public class MainActivity extends Activity {
                 && !currentPageSnapshot.isRecycled()
                 && currentBook != null
                 && readerScroll != null
-                && snapshotChunkOffset == currentChunkOffset
+                && readerPageWindow.current() != null
+                && snapshotPageOffset == readerPageWindow.current().startOffset
                 && snapshotScrollY == readerScroll.getScrollY()
                 && snapshotWidth == readerScroll.getWidth()
                 && snapshotHeight == readerScroll.getHeight()
@@ -3010,34 +3189,13 @@ public class MainActivity extends Activity {
     }
 
     private void clearSnapshotMetadata() {
-        snapshotChunkOffset = -1L;
+        snapshotPageOffset = -1L;
         snapshotScrollY = -1;
         snapshotWidth = -1;
         snapshotHeight = -1;
         snapshotFontSize = -1f;
         snapshotTheme = -1;
         snapshotGeneration = -1L;
-    }
-
-    private void scrollToOffsetWithinWindow(long targetOffset) {
-        if (readerScroll == null || readerText == null || currentChunk == null) return;
-        if (readerText.getLayout() == null) {
-            readerText.post(() -> scrollToOffsetWithinWindow(targetOffset));
-            return;
-        }
-        Layout layout = readerText.getLayout();
-        if (layout.getLineCount() <= 0 || currentChunkBytes <= 0) {
-            pageStateGeneration++;
-            readerScroll.scrollTo(0, 0);
-            return;
-        }
-        long relativeByteOffset = Math.max(0L,
-                Math.min(targetOffset - currentChunkOffset, currentChunkBytes));
-        int charIndex = currentChunk.offsetMap.charIndexForByteOffset(relativeByteOffset);
-        int line = Math.max(0, Math.min(layout.getLineCount() - 1,
-                layout.getLineForOffset(Math.min(charIndex, readerText.length()))));
-        pageStateGeneration++;
-        readerScroll.scrollTo(0, Math.min(maxReaderScroll(), layout.getLineTop(line)));
     }
 
     private CacheSegment readSegment(File file, long offset, int maxBytes,
@@ -3336,28 +3494,22 @@ public class MainActivity extends Activity {
         saveCurrentProgress();
         float fontSize = ReaderSettingsOptions.normalizeFontSize(readingFontSize() + delta);
         setReadingFontSize(fontSize);
+        pageLayoutGeneration++;
         currentBook.updatedAt = System.currentTimeMillis();
         pageStateGeneration++;
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSize);
         refreshReaderSpacing(true);
-        readerScroll.post(() -> {
-            int y = Math.min(maxReaderScroll(), snapToLineTop(readerScroll.getScrollY()));
-            readerScroll.scrollTo(0, y);
-            saveCurrentProgress();
-            updateProgressText();
-            readerScroll.post(this::cacheCurrentPageSnapshot);
-        });
+        readerScroll.post(() -> readerScroll.postOnAnimation(this::rebuildReaderPageWindow));
     }
 
-    private void refreshReaderSpacingAndPosition() {
-        refreshReaderSpacing(true);
-        if (readerScroll == null || currentBook == null) return;
-        readerScroll.post(() -> {
-            refreshReaderSpacing(true);
-            scrollToOffsetWithinWindow(currentBook.offset);
-            updateProgressText();
-            readerScroll.post(this::cacheCurrentPageSnapshot);
-        });
+    private void rebuildReaderPageWindow() {
+        if (currentBook == null || currentCache == null) return;
+        ReaderPage page = readerPageWindow.current();
+        long anchorOffset = page == null ? currentBook.offset : page.startOffset;
+        pageBuildRequestId++;
+        loadingReaderPages = false;
+        resettingReaderPages = false;
+        requestReaderPageWindow(currentBook, currentCache, anchorOffset);
     }
 
     private void refreshReaderSpacing() {
@@ -3466,12 +3618,17 @@ public class MainActivity extends Activity {
         boolean heightChanged = applyReaderContentFrameHeight(fittedVisible);
         if (fittedReaderVisibleHeight != fittedVisible || heightChanged) {
             pageStateGeneration++;
+            pageLayoutGeneration++;
             fittedReaderBottomInset = readerBottomInset(fontSize);
             fittedReaderFontSize = fontSize;
             fittedReaderVisibleHeight = fittedVisible;
             readerRoot.post(() -> {
                 alignMenusToReaderViewport();
-                readerScroll.post(this::cacheCurrentPageSnapshot);
+                if (!readerPageWindow.isEmpty() && !loadingChunk) {
+                    readerScroll.post(this::rebuildReaderPageWindow);
+                } else {
+                    readerScroll.post(this::cacheCurrentPageSnapshot);
+                }
             });
         } else {
             fittedReaderBottomInset = readerBottomInset(fontSize);
@@ -3535,85 +3692,14 @@ public class MainActivity extends Activity {
     }
 
     private void saveCurrentProgress() {
-        if (suppressProgressSave || currentBook == null || readerScroll == null
-                || readerText == null || currentChunk == null) return;
-        Layout layout = readerText.getLayout();
-        if (layout == null || layout.getLineCount() <= 0) return;
-        int topLine = Math.max(0, Math.min(layout.getLineCount() - 1,
-                layout.getLineForVertical(Math.max(0, readerScroll.getScrollY()))));
-        int topCharIndex = layout.getLineStart(topLine);
-        long relativeByteOffset = currentChunk.offsetMap.byteOffsetForCharIndex(topCharIndex);
-        long visibleOffset = currentChunkOffset + relativeByteOffset;
-        currentBook.offset = Math.min(Math.max(0L, visibleOffset), Math.max(0L, currentBook.fileSize));
+        if (suppressProgressSave || currentBook == null) return;
+        ReaderPage page = readerPageWindow.current();
+        if (page == null) return;
+        currentBook.offset = Math.min(page.startOffset, Math.max(0L, currentBook.fileSize));
         currentBook.progress = currentBook.fileSize <= 0 ? 0f : currentBook.offset / (float) currentBook.fileSize;
         currentBook.updatedAt = System.currentTimeMillis();
         saveBooks();
         if (seekBar != null) seekBar.setProgress((int) (currentBook.progress * 1000f));
-    }
-
-    private int readerVisibleHeight() {
-        if (readerScroll == null) return 0;
-        return Math.max(0, readerScroll.getHeight());
-    }
-
-    private int maxReaderScroll() {
-        if (readerScroll == null || readerText == null) return 0;
-        return Math.max(0, readerText.getHeight() - readerVisibleHeight());
-    }
-
-    private int pageForwardTargetY(int currentY, int maxScroll) {
-        Layout layout = readerText == null ? null : readerText.getLayout();
-        int visible = readerVisibleHeight();
-        if (layout == null || visible <= 0) {
-            return Math.min(maxScroll, currentY + Math.max(dp(120), visible));
-        }
-        int boundary = currentY + visible;
-        int boundaryLine = Math.min(
-                layout.getLineCount() - 1,
-                layout.getLineForVertical(Math.max(currentY, boundary - 1)));
-        int line = boundaryLine;
-        if (layout.getLineBottom(boundaryLine) <= boundary
-                && boundaryLine + 1 < layout.getLineCount()) {
-            line = boundaryLine + 1;
-        }
-        int lineTop = layout.getLineTop(line);
-        if (lineTop <= currentY && line + 1 < layout.getLineCount()) {
-            lineTop = layout.getLineTop(line + 1);
-        }
-        if (lineTop <= currentY) {
-            lineTop = currentY + Math.max(1, averageLineHeight(layout));
-        }
-        return Math.max(0, Math.min(maxScroll, lineTop));
-    }
-
-    private int pageBackTargetY(int currentY) {
-        Layout layout = readerText == null ? null : readerText.getLayout();
-        int visible = readerVisibleHeight();
-        if (layout == null || visible <= 0) {
-            return Math.max(0, currentY - Math.max(dp(120), visible));
-        }
-        int target = Math.max(0, currentY - visible);
-        int line = Math.max(0, layout.getLineForVertical(target));
-        if (layout.getLineTop(line) < target && line + 1 < layout.getLineCount()) {
-            line++;
-        }
-        int lineTop = layout.getLineTop(line);
-        if (lineTop >= currentY) {
-            lineTop = currentY - Math.max(1, averageLineHeight(layout));
-        }
-        return Math.max(0, lineTop);
-    }
-
-    private int snapToLineTop(int targetY) {
-        Layout layout = readerText == null ? null : readerText.getLayout();
-        if (layout == null) return targetY;
-        int line = Math.max(0, Math.min(layout.getLineCount() - 1, layout.getLineForVertical(targetY)));
-        return Math.max(0, layout.getLineTop(line));
-    }
-
-    private int averageLineHeight(Layout layout) {
-        if (layout == null || layout.getLineCount() <= 0) return dp(24);
-        return Math.max(1, layout.getHeight() / layout.getLineCount());
     }
 
     private void updateProgressText() {
@@ -3835,15 +3921,25 @@ public class MainActivity extends Activity {
     }
 
     private void saveBooks() {
+        booksSavePending = false;
+        mainHandler.removeCallbacks(booksSaveRunnable);
         Book preservedBook = temporarySearchReading && searchSession != null ? currentBook : null;
         long preservedOffset = preservedBook == null ? 0L : searchSession.returnOffset;
         float preservedProgress = preservedBook == null ? 0f : searchSession.returnProgress;
         bookStore.save(books, preservedBook, preservedOffset, preservedProgress);
     }
 
-    private enum CacheRestoreResult {
-        NOT_AVAILABLE,
-        COVERS_OFFSET
+    private void scheduleBooksSave() {
+        booksSavePending = true;
+        mainHandler.removeCallbacks(booksSaveRunnable);
+        mainHandler.postDelayed(booksSaveRunnable, BOOK_PROGRESS_SAVE_DELAY_MS);
+    }
+
+    private void flushScheduledBooksSave() {
+        if (!booksSavePending) return;
+        mainHandler.removeCallbacks(booksSaveRunnable);
+        booksSavePending = false;
+        saveBooks();
     }
 
     private static class ReaderCache {
@@ -3932,14 +4028,14 @@ public class MainActivity extends Activity {
         final long fileSize;
         final long targetOffset;
         final CacheCombineStack combineStack;
-        final CacheSegment chunk;
+        final CombinedCacheSnapshot cache;
 
         CacheWindowLoad(long fileSize, long targetOffset, CacheCombineStack combineStack,
-                        CacheSegment chunk) {
+                        CombinedCacheSnapshot cache) {
             this.fileSize = fileSize;
             this.targetOffset = targetOffset;
             this.combineStack = combineStack;
-            this.chunk = chunk;
+            this.cache = cache;
         }
     }
 

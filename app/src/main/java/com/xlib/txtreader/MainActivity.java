@@ -298,7 +298,7 @@ public class MainActivity extends Activity {
         if (settingsOpen) {
             settingsOpen = false;
             if (settingsOpenedFromLibrary || currentBook == null) showLibrary();
-            else showReader(currentBook, false);
+            else showReader(currentBook);
             return;
         }
         if (currentBook != null) {
@@ -847,10 +847,6 @@ public class MainActivity extends Activity {
     }
 
     private void showReader(Book book) {
-        showReader(book, true);
-    }
-
-    private void showReader(Book book, boolean animateMenus) {
         settingsOpen = false;
         catalogOpen = false;
         cacheStackGeneration++;
@@ -1261,8 +1257,7 @@ public class MainActivity extends Activity {
         frame.post(this::alignMenusToReaderViewport);
         loadCacheWindowAtOffset(requestedOffset, true);
         if (readerMenusOpen) {
-            if (animateMenus) frame.post(this::showReaderMenus);
-            else showReaderMenusImmediately();
+            showReaderMenusImmediately();
         }
         scheduleAutoPage();
     }
@@ -1514,7 +1509,6 @@ public class MainActivity extends Activity {
         book.updatedAt = System.currentTimeMillis();
         saveBooks();
         catalogOpen = false;
-        readerMenusOpen = false;
         showReader(book);
     }
 

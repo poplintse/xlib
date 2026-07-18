@@ -191,6 +191,7 @@ public class MainActivity extends Activity {
     private LinearLayout readerBottomBar;
     private Button progressButton;
     private final List<View> progressStepButtons = new ArrayList<>();
+    private ImageButton keepScreenOnButton;
     private ImageButton autoPageButton;
     private LinearLayout seekPanel;
     private SeekBar seekBar;
@@ -943,6 +944,20 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(42), dp(42));
         themeLp.leftMargin = dp(4);
         readerTopBar.addView(theme, themeLp);
+
+        keepScreenOnButton = makeIconButton();
+        keepScreenOnButton.setImageResource(R.drawable.ic_screen_lock);
+        keepScreenOnButton.setOnClickListener(v -> {
+            boolean enabled = !readingKeepScreenOn();
+            setReadingKeepScreenOn(enabled);
+            applyKeepScreenOn(enabled);
+            refreshKeepScreenOnButton();
+        });
+        refreshKeepScreenOnButton();
+        LinearLayout.LayoutParams keepScreenOnLp =
+                new LinearLayout.LayoutParams(dp(42), dp(42));
+        keepScreenOnLp.leftMargin = dp(4);
+        readerTopBar.addView(keepScreenOnButton, keepScreenOnLp);
 
         autoPageButton = makeIconButton();
         autoPageButton.setImageResource(R.drawable.ic_auto_page);
@@ -3736,6 +3751,22 @@ public class MainActivity extends Activity {
                 : (dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT);
         UiKit.styleIconButton(this, autoPageButton, foreground, background, 14);
         autoPageButton.setContentDescription(autoPageDescription(autoPageSeconds));
+    }
+
+    private void refreshKeepScreenOnButton() {
+        if (keepScreenOnButton == null) return;
+        boolean dark = isDarkTheme(appTheme());
+        boolean enabled = readingKeepScreenOn();
+        int foreground = enabled
+                ? (dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT)
+                : (dark ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT);
+        int background = enabled
+                ? (dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER)
+                : (dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT);
+        UiKit.styleIconButton(this, keepScreenOnButton, foreground, background, 14);
+        keepScreenOnButton.setSelected(enabled);
+        keepScreenOnButton.setContentDescription(
+                enabled ? "阅读时锁屏已开启" : "阅读时锁屏已关闭");
     }
 
     private String autoPageDescription(int seconds) {

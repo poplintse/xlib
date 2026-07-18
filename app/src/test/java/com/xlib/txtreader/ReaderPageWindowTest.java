@@ -84,6 +84,20 @@ public class ReaderPageWindowTest {
         assertEquals(1, window.pagesAfter());
     }
 
+    @Test
+    public void resetRejectsPagesThatDoNotCoverAnchorAndKeepsPublishedWindow() {
+        ReaderPageWindow window = new ReaderPageWindow(7);
+        assertTrue(window.reset(Arrays.asList(page(100), page(200), page(300)),
+                200, 1_000));
+
+        assertFalse(window.reset(Arrays.asList(page(500), page(600)),
+                250, 1_000));
+
+        assertEquals(200, window.current().startOffset);
+        assertEquals(1, window.pagesBefore());
+        assertEquals(1, window.pagesAfter());
+    }
+
     private ReaderPage page(long offset) {
         return new ReaderPage(offset, offset + 100, "p" + offset);
     }

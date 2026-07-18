@@ -17,4 +17,8 @@ final class CacheSegment {
     long endOffset() {
         return offset + bytesRead;
     }
+
+    boolean hasConsistentByteMap() {
+        return offsetMap != null && offsetMap.totalBytes() == bytesRead;
+    }
 }

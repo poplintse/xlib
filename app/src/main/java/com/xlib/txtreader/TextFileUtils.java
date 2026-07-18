@@ -3,8 +3,10 @@ package com.xlib.txtreader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
+import java.nio.CharBuffer;
+import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CodingErrorAction;
+import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
@@ -19,18 +21,23 @@ final class TextFileUtils {
             if (hasPrefix(bytes, read, 0xEF, 0xBB, 0xBF)) return "UTF-8";
             if (hasPrefix(bytes, read, 0xFF, 0xFE)) return "UTF-16LE";
             if (hasPrefix(bytes, read, 0xFE, 0xFF)) return "UTF-16BE";
-            try {
-                StandardCharsets.UTF_8.newDecoder()
-                        .onMalformedInput(CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(CodingErrorAction.REPORT)
-                        .decode(ByteBuffer.wrap(bytes, 0, Math.max(0, read)));
-                return "UTF-8";
-            } catch (CharacterCodingException ignored) {
-                return "GB18030";
-            }
+            boolean sampleStopsBeforeEof = read == bytes.length && input.read() != -1;
+            return isValidUtf8Sample(bytes, Math.max(0, read), sampleStopsBeforeEof)
+                    ? "UTF-8" : "GB18030";
         } catch (Exception ignored) {
             return "GB18030";
         }
+    }
+
+    private static boolean isValidUtf8Sample(byte[] bytes, int length,
+                                             boolean sampleStopsBeforeEof) {
+        CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        ByteBuffer encoded = ByteBuffer.wrap(bytes, 0, length);
+        CharBuffer decoded = CharBuffer.allocate(length);
+        CoderResult result = decoder.decode(encoded, decoded, !sampleStopsBeforeEof);
+        return result.isUnderflow();
     }
 
     static String formatFileSize(long bytes) {

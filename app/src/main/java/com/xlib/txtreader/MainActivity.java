@@ -52,12 +52,8 @@ import java.io.FileOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.InputStream;
-import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
+import java.io.IOException;
 import java.nio.charset.Charset;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -90,6 +86,7 @@ public class MainActivity extends Activity {
     private static final int SEARCH_READ_BYTES = 64 * 1024;
     private static final int SEARCH_RESULT_LIMIT = 200;
     private static final int SEARCH_CONTEXT_CHARS = 45;
+    private static final int SEARCH_SNIPPET_MAX_READ_BYTES = 64 * 1024;
     private static final int PAGE_WINDOW_MAX_PAGES = 17;
     private static final int PAGE_WINDOW_PREFETCH_EACH_SIDE =
             ReaderPageRefillPolicy.TARGET_READY_PAGES;
@@ -112,6 +109,7 @@ public class MainActivity extends Activity {
     private final Set<Long> selectedBookIds = new HashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService libraryExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService pageExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService indexExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService readerCacheExecutor = Executors.newSingleThreadExecutor();
@@ -149,6 +147,7 @@ public class MainActivity extends Activity {
     private boolean temporarySearchReading;
     private boolean suppressProgressSave;
     private boolean activityResumed;
+    private volatile boolean activityDestroyed;
     private boolean autoPageDispatching;
     private boolean booksSavePending;
     private int autoPageSeconds = AutoPageOptions.OFF;
@@ -267,9 +266,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        activityDestroyed = true;
         flushScheduledBooksSave();
         mainHandler.removeCallbacksAndMessages(null);
         ioExecutor.shutdownNow();
+        libraryExecutor.shutdownNow();
         pageExecutor.shutdownNow();
         indexExecutor.shutdownNow();
         readerCacheExecutor.shutdownNow();
@@ -302,8 +303,8 @@ public class MainActivity extends Activity {
             return;
         }
         if (currentBook != null) {
-            loadRequestId++;
             saveCurrentProgress();
+            cancelReaderPipelineWork();
             releasePageSnapshot();
             currentBook = null;
             readerMenusOpen = false;
@@ -796,47 +797,96 @@ public class MainActivity extends Activity {
 
     private void addBookFromUri(Uri uri) {
         if (uri == null) return;
+        Toast.makeText(this, "正在导入 TXT…", Toast.LENGTH_SHORT).show();
+        libraryExecutor.execute(() -> {
+            Book imported = null;
+            Exception error = null;
+            try {
+                imported = prepareBookImport(uri);
+            } catch (Exception exception) {
+                error = exception;
+            }
+            Book readyBook = imported;
+            Exception finalError = error;
+            if (activityDestroyed) {
+                discardPreparedBook(readyBook);
+                return;
+            }
+            mainHandler.post(() -> {
+                if (activityDestroyed) {
+                    discardPreparedBook(readyBook);
+                    return;
+                }
+                finishBookImport(readyBook, finalError);
+            });
+        });
+    }
+
+    private void discardPreparedBook(Book book) {
+        if (book == null || book.path == null) return;
+        boolean ignored = new File(book.path).delete();
+    }
+
+    private Book prepareBookImport(Uri uri) throws Exception {
+        String title = queryDisplayName(uri);
+        if (title == null || title.trim().isEmpty()) {
+            title = "book-" + System.currentTimeMillis() + ".txt";
+        }
+        long id = System.currentTimeMillis();
+        File directory = new File(getFilesDir(), "books");
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IllegalStateException("Cannot create book directory");
+        }
+        String safeName = title.replaceAll("[^A-Za-z0-9._-]", "_");
+        File target = new File(directory, id + "-" + safeName);
+        File temporary = new File(directory, target.getName() + ".tmp");
         try {
-            String title = queryDisplayName(uri);
-            if (title == null || title.trim().isEmpty()) {
-                title = "book-" + System.currentTimeMillis() + ".txt";
-            }
-            File dir = new File(getFilesDir(), "books");
-            if (!dir.exists() && !dir.mkdirs()) {
-                throw new IllegalStateException("Cannot create book directory");
-            }
-            String fileName = System.currentTimeMillis() + "-" + title.replaceAll("[^A-Za-z0-9._-]", "_");
-            File target = new File(dir, fileName);
             try (InputStream input = getContentResolver().openInputStream(uri);
-                 FileOutputStream output = new FileOutputStream(target)) {
+                 FileOutputStream output = new FileOutputStream(temporary)) {
                 if (input == null) throw new IllegalStateException("Cannot open selected file");
                 byte[] buffer = new byte[64 * 1024];
                 int read;
                 while ((read = input.read(buffer)) != -1) {
                     output.write(buffer, 0, read);
                 }
+                output.flush();
             }
-
-            Book book = new Book();
-            book.id = System.currentTimeMillis();
-            book.title = title;
-            book.sourceName = title;
-            book.author = "";
-            book.path = target.getAbsolutePath();
-            book.fileSize = target.length();
-            book.encoding = detectEncoding(target);
-            book.offset = 0L;
-            book.progress = 0f;
-            book.pageMode = true;
-            book.updatedAt = System.currentTimeMillis();
-            books.add(0, book);
-            saveBooks();
-            if (isAutoTocEnabled()) generateTocInBackground(book, false);
-            showLibrary();
-            Toast.makeText(this, "已添加：" + title, Toast.LENGTH_SHORT).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "添加失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+            if (!temporary.renameTo(target)) {
+                throw new IOException("Cannot publish imported TXT file");
+            }
+        } catch (Exception error) {
+            boolean ignored = temporary.delete();
+            throw error;
         }
+
+        Book book = new Book();
+        book.id = id;
+        book.title = title;
+        book.sourceName = title;
+        book.author = "";
+        book.path = target.getAbsolutePath();
+        book.fileSize = target.length();
+        book.encoding = detectEncoding(target);
+        book.offset = 0L;
+        book.progress = 0f;
+        book.pageMode = true;
+        book.updatedAt = System.currentTimeMillis();
+        return book;
+    }
+
+    private void finishBookImport(Book book, Exception error) {
+        if (error != null || book == null) {
+            String message = error == null ? "未知错误" : error.getMessage();
+            Toast.makeText(this, "添加失败：" + message, Toast.LENGTH_LONG).show();
+            return;
+        }
+        books.add(0, book);
+        saveBooks();
+        if (isAutoTocEnabled()) generateTocInBackground(book, false);
+        if (currentBook == null && !settingsOpen && !searchOpen && !catalogOpen) {
+            showLibrary();
+        }
+        Toast.makeText(this, "已添加：" + book.title, Toast.LENGTH_SHORT).show();
     }
 
     private void openBook(Book book) {
@@ -849,15 +899,10 @@ public class MainActivity extends Activity {
     private void showReader(Book book) {
         settingsOpen = false;
         catalogOpen = false;
-        cacheStackGeneration++;
+        cancelReaderPipelineWork();
         pageLayoutGeneration++;
-        loadingBackwardSegment = false;
-        loadingForwardSegment = false;
         currentCombineStack = null;
         currentCache = null;
-        pageBuildRequestId++;
-        loadingReaderPages = false;
-        resettingReaderPages = false;
         preferredPageRefillDirection = PAGE_DIRECTION_NONE;
         readerPageWindow.clear();
         releasePageSnapshot();
@@ -1266,7 +1311,7 @@ public class MainActivity extends Activity {
         if (currentBook == null) return;
         saveCurrentProgress();
         flushReaderCacheWrite();
-        loadRequestId++;
+        cancelReaderPipelineWork();
         releasePageSnapshot();
         searchOpen = true;
         temporarySearchReading = false;
@@ -1320,7 +1365,7 @@ public class MainActivity extends Activity {
         TocDocument document = tocStore.read(currentBook);
         saveCurrentProgress();
         disableAutoPage();
-        loadRequestId++;
+        cancelReaderPipelineWork();
         releasePageSnapshot();
         catalogOpen = true;
         showCatalogPage(currentBook, document);
@@ -1516,7 +1561,7 @@ public class MainActivity extends Activity {
         settingsOpenedFromLibrary = currentBook == null;
         if (currentBook != null) saveCurrentProgress();
         disableAutoPage();
-        loadRequestId++;
+        cancelReaderPipelineWork();
         releasePageSnapshot();
         settingsOpen = true;
         applyKeepScreenOn(false);
@@ -2057,7 +2102,7 @@ public class MainActivity extends Activity {
         if (currentBook == null || searchSession == null) return;
         saveCurrentProgress();
         flushReaderCacheWrite();
-        loadRequestId++;
+        cancelReaderPipelineWork();
         releasePageSnapshot();
         restorePrimaryReadingPosition();
         temporarySearchReading = false;
@@ -2359,84 +2404,35 @@ public class MainActivity extends Activity {
     private SearchBatch searchBookBatch(Book book, String query, long startOffset, long endOffset)
             throws Exception {
         File file = new File(book.path);
-        byte[] needle = query.getBytes(Charset.forName(book.encoding == null ? "UTF-8" : book.encoding));
+        Charset charset = charsetFor(book.encoding);
+        ReaderTextSearch.Batch batch = ReaderTextSearch.find(
+                file, book.encoding, query, startOffset, endOffset,
+                SEARCH_READ_BYTES, SEARCH_RESULT_LIMIT);
+        int queryByteLength = query.getBytes(charset).length;
         List<SearchResult> results = new ArrayList<>();
-        long boundary = Math.max(0L, Math.min(endOffset, file.length()));
-        long position = Math.max(0L, Math.min(startOffset, boundary));
-        if (needle.length == 0 || !file.exists() || position >= boundary) {
-            return new SearchBatch(results, position, true);
+        for (long offset : batch.offsets) {
+            results.add(new SearchResult(offset, makeSearchSnippet(
+                    file, offset, query, book.encoding, queryByteLength)));
         }
-        int[] prefix = buildSearchPrefix(needle);
-        byte[] buffer = new byte[SEARCH_READ_BYTES];
-        int matched = 0;
-        boolean reachedBoundary = false;
-        try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
-            input.seek(position);
-            int read = 0;
-            while (position < boundary && results.size() < SEARCH_RESULT_LIMIT
-                    && (read = input.read(buffer, 0,
-                    (int) Math.min(buffer.length, boundary - position))) != -1) {
-                for (int i = 0; i < read; i++, position++) {
-                    byte value = buffer[i];
-                    while (matched > 0 && value != needle[matched]) {
-                        matched = prefix[matched - 1];
-                    }
-                    if (value == needle[matched]) matched++;
-                    if (matched == needle.length) {
-                        long offset = position - needle.length + 1L;
-                        results.add(new SearchResult(offset,
-                                makeSearchSnippet(file, offset, query, book.encoding, needle.length)));
-                        matched = prefix[matched - 1];
-                        if (results.size() >= SEARCH_RESULT_LIMIT) {
-                            return new SearchBatch(results, offset + 1L, false);
-                        }
-                    }
-                }
-            }
-            reachedBoundary = position >= boundary || read == -1;
-        }
-        return new SearchBatch(results, position, reachedBoundary);
-    }
-
-    private int[] buildSearchPrefix(byte[] needle) {
-        int[] prefix = new int[needle.length];
-        for (int i = 1, matched = 0; i < needle.length; i++) {
-            while (matched > 0 && needle[i] != needle[matched]) {
-                matched = prefix[matched - 1];
-            }
-            if (needle[i] == needle[matched]) matched++;
-            prefix[i] = matched;
-        }
-        return prefix;
+        return new SearchBatch(
+                results, batch.nextOffset, batch.reachedBoundary);
     }
 
     private String makeSearchSnippet(File file, long matchOffset, String query, String encoding,
                                      int queryByteLength) throws Exception {
-        long contextStart = alignSearchContextOffset(file,
-                Math.max(0L, matchOffset - SEARCH_CONTEXT_CHARS * 4L), encoding);
-        int readLength = Math.max(2048, SEARCH_CONTEXT_CHARS * 8 + queryByteLength + 1024);
+        long desiredStart = Math.max(0L, matchOffset - SEARCH_CONTEXT_CHARS * 4L);
+        long contextStart = findReadableOffset(file, desiredStart, encoding);
+        long prefixBytes = Math.max(0L, matchOffset - contextStart);
+        if (prefixBytes > SEARCH_SNIPPET_MAX_READ_BYTES / 2L) return query;
+        int readLength = (int) Math.min(SEARCH_SNIPPET_MAX_READ_BYTES,
+                Math.max(2048L, prefixBytes
+                        + SEARCH_CONTEXT_CHARS * 4L + queryByteLength + 1024L));
         CacheSegment context = readSegment(file, contextStart, readLength, encoding);
         int index = context.text.indexOf(query);
         if (index < 0) return query;
         int start = Math.max(0, index - SEARCH_CONTEXT_CHARS);
         int end = Math.min(context.text.length(), index + query.length() + SEARCH_CONTEXT_CHARS);
         return context.text.substring(start, end).replace('\n', ' ').replace('\r', ' ');
-    }
-
-    private long alignSearchContextOffset(File file, long offset, String encoding) throws Exception {
-        String normalized = encoding == null ? "UTF-8" : encoding.toUpperCase(Locale.ROOT);
-        if (normalized.startsWith("UTF-16")) return offset - (offset % 2L);
-        if (!normalized.startsWith("UTF-8")) return offset;
-        try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
-            long aligned = Math.min(offset, Math.max(0L, file.length() - 1L));
-            while (aligned < file.length()) {
-                input.seek(aligned);
-                int value = input.read();
-                if (value < 0 || (value & 0xC0) != 0x80) return aligned;
-                aligned++;
-            }
-            return offset;
-        }
     }
 
     private boolean handlePageSwipe(float dx, float dy) {
@@ -2489,16 +2485,10 @@ public class MainActivity extends Activity {
 
     private void loadCacheWindowAtOffset(long targetOffset, boolean tryPersistentCache) {
         if (currentBook == null) return;
-        cacheStackGeneration++;
-        loadingBackwardSegment = false;
-        loadingForwardSegment = false;
-        pageBuildRequestId++;
-        loadingReaderPages = false;
-        resettingReaderPages = false;
+        long requestId = cancelReaderPipelineWork();
         preferredPageRefillDirection = PAGE_DIRECTION_NONE;
         readerPageWindow.clear();
         Book book = currentBook;
-        long requestId = ++loadRequestId;
         loadingChunk = true;
         // Freeze progress only for an explicit seek/open until its initial page window is ready.
         suppressProgressSave = true;
@@ -2530,13 +2520,27 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Invalidates both asynchronous reader pipelines as one lifecycle operation. */
+    private long cancelReaderPipelineWork() {
+        long requestId = ++loadRequestId;
+        cacheStackGeneration++;
+        pageBuildRequestId++;
+        loadingBackwardSegment = false;
+        loadingForwardSegment = false;
+        loadingReaderPages = false;
+        resettingReaderPages = false;
+        loadingChunk = false;
+        suppressProgressSave = false;
+        return requestId;
+    }
+
     private CacheWindowLoad prepareCacheWindowLoad(Book book, long targetOffset) throws Exception {
         File file = new File(book.path);
         long fileSize = file.length();
         long clampedTarget = fileSize <= 0
                 ? 0L
                 : Math.max(0L, Math.min(targetOffset, fileSize - 1L));
-        requestBookIndex(book);
+        requestBookIndex(book, fileSize);
         long windowStart = hasBookIndex(book, fileSize)
                 ? indexedReadableOffset(book, file,
                         Math.max(0L, clampedTarget - CACHE_SEGMENT_BYTES))
@@ -2558,6 +2562,11 @@ public class MainActivity extends Activity {
                         charsetFor(book.encoding));
         combineStack.reset(initialSegments);
         CombinedCacheSnapshot combined = combineStack.snapshot();
+        if (!combined.isWithinFile(fileSize)
+                || (fileSize > 0L && !ReaderPosition.cacheCoversOffset(
+                        fileSize, combined.offset, combined.bytesRead, clampedTarget))) {
+            throw new IOException("读取窗口未覆盖目标位置或字节映射不一致");
+        }
         return new CacheWindowLoad(fileSize, clampedTarget, combineStack, combined);
     }
 
@@ -2588,6 +2597,7 @@ public class MainActivity extends Activity {
         CombinedCacheSnapshot cachedWindow = new CombinedCacheSnapshot(
                 cache.windowStart, cache.text, cache.bytesRead,
                 ByteOffsetMap.create(cache.text, charset));
+        if (!cachedWindow.isWithinFile(cache.fileSize)) return null;
         CacheCombineStack combineStack =
                 new CacheCombineStack(CACHE_SEGMENT_BYTES, CACHE_REFILL_RATIO, charset);
         combineStack.resetFromCombined(cachedWindow);
@@ -2668,6 +2678,7 @@ public class MainActivity extends Activity {
         if (!readerPageWindow.reset(pages, anchorOffset, book.fileSize)) {
             loadingChunk = false;
             suppressProgressSave = false;
+            Toast.makeText(this, "分页结果未覆盖目标位置", Toast.LENGTH_LONG).show();
             return;
         }
         ReaderPage currentPage = readerPageWindow.current();
@@ -2696,7 +2707,8 @@ public class MainActivity extends Activity {
             int bytesRead = input.readInt();
             int textLength = input.readInt();
             if (fileSize != source.length() || modifiedAt != source.lastModified()
-                    || windowStart < 0 || bytesRead < 0
+                    || windowStart < 0 || windowStart > fileSize || bytesRead < 0
+                    || bytesRead > fileSize - windowStart
                     || textLength < 0 || textLength > MAX_READER_CACHE_TEXT_BYTES) {
                 return null;
             }
@@ -2776,9 +2788,10 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void requestBookIndex(Book book) {
+    private void requestBookIndex(Book book, long sourceFileSize) {
         synchronized (book) {
-            if (book.indexBuilding || (book.indexOffsets != null && book.indexFileSize == book.fileSize)) {
+            if (book.indexBuilding
+                    || (book.indexOffsets != null && book.indexFileSize == sourceFileSize)) {
                 return;
             }
             book.indexBuilding = true;
@@ -3049,8 +3062,12 @@ public class MainActivity extends Activity {
                     : readerPageWindow.prependBackwardPages(
                             pages, expectedBoundary, anchorOffset, book.fileSize);
         }
-        if (!sourceIsCurrent || (!appended && pages != null && !pages.isEmpty())) {
+        if (!sourceIsCurrent) {
             maybeRefillReaderPageWindow();
+            return;
+        }
+        if (!appended && pages != null && !pages.isEmpty()) {
+            rebuildReaderPageWindow();
             return;
         }
         if (preferredPageRefillDirection == PAGE_DIRECTION_NONE) {
@@ -3209,40 +3226,7 @@ public class MainActivity extends Activity {
 
     private CacheSegment readSegment(File file, long offset, int maxBytes,
                                      String encoding) throws Exception {
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            long safeOffset = Math.max(0L, Math.min(offset, file.length()));
-            raf.seek(safeOffset);
-            int length = (int) Math.min(maxBytes, Math.max(0L, file.length() - raf.getFilePointer()));
-            byte[] bytes = new byte[length];
-            int read = raf.read(bytes);
-            Charset charset = charsetFor(encoding);
-            if (read <= 0) {
-                return new CacheSegment(safeOffset, "", 0,
-                        ByteOffsetMap.create("", charset));
-            }
-            return decodeCompleteSegment(safeOffset, bytes, read, charset);
-        }
-    }
-
-    private CacheSegment decodeCompleteSegment(long offset, byte[] bytes, int read,
-                                               Charset charset) {
-        int minimumLength = Math.max(0, read - 4);
-        for (int validLength = read; validLength >= minimumLength; validLength--) {
-            CharsetDecoder decoder = charset.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT);
-            try {
-                String text = decoder.decode(ByteBuffer.wrap(bytes, 0, validLength)).toString();
-                ByteOffsetMap map = ByteOffsetMap.create(text, charset);
-                if (map.totalBytes() == validLength) {
-                    return new CacheSegment(offset, text, validLength, map);
-                }
-            } catch (CharacterCodingException ignored) {
-                // A chunk may end halfway through a multi-byte character; trim only that suffix.
-            }
-        }
-        String text = new String(bytes, 0, read, charset);
-        return new CacheSegment(offset, text, read, ByteOffsetMap.create(text, charset));
+        return ReaderSegmentSource.read(file, offset, maxBytes, charsetFor(encoding));
     }
 
     private Charset charsetFor(String encoding) {
@@ -3252,7 +3236,8 @@ public class MainActivity extends Activity {
     private CacheSegment readCachedSegment(File file, long offset, int maxBytes,
                                            String encoding) throws Exception {
         long safeOffset = Math.max(0L, Math.min(offset, Math.max(0L, file.length() - 1L)));
-        String key = file.getAbsolutePath() + ":" + file.length() + ":" + encoding
+        String key = file.getAbsolutePath() + ":" + file.length() + ":"
+                + file.lastModified() + ":" + encoding
                 + ":" + safeOffset + ":" + maxBytes;
         synchronized (segmentCache) {
             CacheSegment cached = segmentCache.get(key);
@@ -3270,16 +3255,8 @@ public class MainActivity extends Activity {
         synchronized (book) {
             if (book.indexOffsets != null && book.indexFileSize == size) return;
         }
-        ArrayList<Long> offsets = new ArrayList<>();
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            offsets.add(0L);
-            for (long target = INDEX_STEP_BYTES; target < size; target += INDEX_STEP_BYTES) {
-                long offset = findReadableOffset(raf, size, target, book.encoding);
-                if (offsets.isEmpty() || offsets.get(offsets.size() - 1) < offset) {
-                    offsets.add(offset);
-                }
-            }
-        }
+        ArrayList<Long> offsets = new ArrayList<>(ReaderSegmentSource.buildReadableIndex(
+                file, book.encoding, INDEX_STEP_BYTES));
         synchronized (book) {
             book.indexOffsets = offsets;
             book.indexFileSize = size;
@@ -3314,48 +3291,7 @@ public class MainActivity extends Activity {
     }
 
     private long findReadableOffset(File file, long targetOffset, String encoding) throws Exception {
-        long size = file.length();
-        if (targetOffset <= 0 || size <= 0) return 0L;
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            return findReadableOffset(raf, size, targetOffset, encoding);
-        }
-    }
-
-    private long findReadableOffset(RandomAccessFile raf, long size, long targetOffset,
-                                    String encoding) throws Exception {
-        if (targetOffset <= 0 || size <= 0) return 0L;
-        long offset = Math.min(targetOffset, Math.max(0L, size - 1));
-        long start = Math.max(0L, offset - INDEX_STEP_BYTES);
-        String normalized = encoding == null ? "UTF-8" : encoding.toUpperCase(Locale.ROOT);
-        if (normalized.startsWith("UTF-16")) {
-            long position = offset - (offset % 2L);
-            boolean littleEndian = normalized.endsWith("LE");
-            for (long cursor = position - 2L; cursor >= start; cursor -= 2L) {
-                raf.seek(cursor);
-                int first = raf.read();
-                int second = raf.read();
-                boolean newline = littleEndian
-                        ? first == 0x0A && second == 0x00
-                        : first == 0x00 && second == 0x0A;
-                if (newline) return Math.min(size, cursor + 2L);
-            }
-            return position;
-        }
-        for (long cursor = offset - 1L; cursor >= start; cursor--) {
-            raf.seek(cursor);
-            if (raf.read() == 0x0A) return Math.min(size, cursor + 1L);
-        }
-        if (normalized.startsWith("UTF-8")) {
-            long aligned = offset;
-            while (aligned < size) {
-                raf.seek(aligned);
-                int value = raf.read();
-                if (value < 0 || (value & 0xC0) != 0x80) break;
-                aligned++;
-            }
-            return aligned;
-        }
-        return offset;
+        return ReaderSegmentSource.findReadableOffset(file, targetOffset, encoding);
     }
 
     private void toggleSeekPanel() {

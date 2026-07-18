@@ -27,6 +27,7 @@ final class CacheCombineStack {
         CacheSegment previous = null;
         for (CacheSegment segment : segments) {
             if (segment == null || segment.bytesRead <= 0) continue;
+            requireConsistent(segment);
             if (previous != null && previous.endOffset() != segment.offset) {
                 throw new IllegalArgumentException("Cache segments must be contiguous");
             }
@@ -37,6 +38,10 @@ final class CacheCombineStack {
     }
 
     void resetFromCombined(CombinedCacheSnapshot combined) {
+        if (combined != null && combined.bytesRead > 0
+                && !combined.hasConsistentByteMap()) {
+            throw new IllegalArgumentException("Combined cache byte map is inconsistent");
+        }
         cache = combined == null || combined.bytesRead <= 0 ? null : combined;
         trimStartToWindow();
     }
@@ -53,6 +58,7 @@ final class CacheCombineStack {
 
     void appendBackward(CacheSegment segment) {
         if (segment == null || segment.bytesRead <= 0) return;
+        requireConsistent(segment);
         if (!isEmpty() && segment.endOffset() != startOffset()) {
             throw new IllegalArgumentException("Backward cache segment is not contiguous");
         }
@@ -61,6 +67,7 @@ final class CacheCombineStack {
 
     void appendForward(CacheSegment segment) {
         if (segment == null || segment.bytesRead <= 0) return;
+        requireConsistent(segment);
         if (!isEmpty() && segment.offset != endOffset()) {
             throw new IllegalArgumentException("Forward cache segment is not contiguous");
         }
@@ -101,6 +108,12 @@ final class CacheCombineStack {
 
     private boolean isEmpty() {
         return cache == null || cache.bytesRead <= 0;
+    }
+
+    private static void requireConsistent(CacheSegment segment) {
+        if (!segment.hasConsistentByteMap()) {
+            throw new IllegalArgumentException("Cache segment byte map is inconsistent");
+        }
     }
 
     private CombinedCacheSnapshot merge(CombinedCacheSnapshot first, CacheSegment second) {

@@ -64,15 +64,26 @@ final class ReaderPagePaginator {
         int startChar = cache.offsetMap.charIndexForByteOffset(startOffset - cache.offset);
         int startLine = Math.max(0, Math.min(readyLayout.getLineCount() - 1,
                 readyLayout.getLineForOffset(startChar)));
-        while (startLine + 1 < readyLayout.getLineCount()
-                && readyLayout.getLineStart(startLine) < startChar) {
-            startLine++;
+        if (readyLayout.getLineStart(startLine) != startChar) {
+            String suffix = cache.text.substring(startChar);
+            StaticLayout boundaryLayout = buildLayout(
+                    highlightedText(suffix, spec.highlightQuery, spec.highlightColor), spec);
+            return paginateForwardLines(
+                    cache, boundaryLayout, startChar, 0, pageCount, spec.height);
         }
+        return paginateForwardLines(
+                cache, readyLayout, 0, startLine, pageCount, spec.height);
+    }
+
+    private List<ReaderPage> paginateForwardLines(
+            CombinedCacheSnapshot cache, StaticLayout readyLayout, int baseChar,
+            int startLine, int pageCount, int pageHeight) {
         ArrayList<ReaderPage> pages = new ArrayList<>(Math.max(1, pageCount));
         for (int i = 0; i < Math.max(1, pageCount)
                 && startLine < readyLayout.getLineCount(); i++) {
-            int endLine = forwardEndLine(readyLayout, startLine, spec.height);
-            ReaderPage page = pageForLines(cache, readyLayout, startLine, endLine);
+            int endLine = forwardEndLine(readyLayout, startLine, pageHeight);
+            ReaderPage page = pageForLines(
+                    cache, readyLayout, baseChar, startLine, endLine);
             if (page.endOffset > page.startOffset) pages.add(page);
             startLine = endLine;
         }
@@ -91,12 +102,25 @@ final class ReaderPagePaginator {
             endLine = readyLayout.getLineCount();
         } else {
             endLine = readyLayout.getLineForOffset(endChar);
-            if (readyLayout.getLineStart(endLine) < endChar) endLine++;
+            if (readyLayout.getLineStart(endLine) != endChar) {
+                String prefix = cache.text.substring(0, endChar);
+                StaticLayout boundaryLayout = buildLayout(
+                        highlightedText(prefix, spec.highlightQuery, spec.highlightColor), spec);
+                return paginateBackwardLines(
+                        cache, boundaryLayout, boundaryLayout.getLineCount(),
+                        pageCount, spec.height);
+            }
         }
+        return paginateBackwardLines(cache, readyLayout, endLine, pageCount, spec.height);
+    }
+
+    private List<ReaderPage> paginateBackwardLines(
+            CombinedCacheSnapshot cache, StaticLayout readyLayout, int endLine,
+            int pageCount, int pageHeight) {
         if (endLine <= 0) return Collections.emptyList();
         ArrayList<ReaderPage> pages = new ArrayList<>(Math.max(1, pageCount));
         for (int i = 0; i < Math.max(1, pageCount) && endLine > 0; i++) {
-            int startLine = backwardStartLine(readyLayout, endLine, spec.height);
+            int startLine = backwardStartLine(readyLayout, endLine, pageHeight);
             ReaderPage page = pageForLines(cache, readyLayout, startLine, endLine);
             if (page.endOffset > page.startOffset) pages.add(page);
             endLine = startLine;
@@ -114,7 +138,14 @@ final class ReaderPagePaginator {
         if (layout != null && laidOutCache == cache && layoutKey == spec.key) return layout;
         CharSequence displayText = highlightedText(
                 cache.text, spec.highlightQuery, spec.highlightColor);
-        layout = StaticLayout.Builder.obtain(
+        layout = buildLayout(displayText, spec);
+        laidOutCache = cache;
+        layoutKey = spec.key;
+        return layout;
+    }
+
+    private static StaticLayout buildLayout(CharSequence displayText, LayoutSpec spec) {
+        return StaticLayout.Builder.obtain(
                         displayText, 0, displayText.length(), spec.paint, spec.width)
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL)
                 .setIncludePad(false)
@@ -122,9 +153,6 @@ final class ReaderPagePaginator {
                 .setBreakStrategy(spec.breakStrategy)
                 .setHyphenationFrequency(spec.hyphenationFrequency)
                 .build();
-        laidOutCache = cache;
-        layoutKey = spec.key;
-        return layout;
     }
 
     private static int forwardEndLine(StaticLayout layout, int startLine, int height) {
@@ -146,8 +174,13 @@ final class ReaderPagePaginator {
 
     private static ReaderPage pageForLines(CombinedCacheSnapshot cache, StaticLayout layout,
                                            int startLine, int endLine) {
-        int startChar = layout.getLineStart(startLine);
-        int endChar = layout.getLineEnd(Math.max(startLine, endLine - 1));
+        return pageForLines(cache, layout, 0, startLine, endLine);
+    }
+
+    private static ReaderPage pageForLines(CombinedCacheSnapshot cache, StaticLayout layout,
+                                           int baseChar, int startLine, int endLine) {
+        int startChar = baseChar + layout.getLineStart(startLine);
+        int endChar = baseChar + layout.getLineEnd(Math.max(startLine, endLine - 1));
         int startBytes = cache.offsetMap.byteOffsetForCharIndex(startChar);
         int endBytes = cache.offsetMap.byteOffsetForCharIndex(endChar);
         return new ReaderPage(cache.offset + startBytes, cache.offset + endBytes,

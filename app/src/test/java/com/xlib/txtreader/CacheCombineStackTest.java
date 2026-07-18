@@ -117,6 +117,14 @@ public class CacheCombineStackTest {
         stack.reset(Arrays.asList(asciiSegment(0, 'A'), asciiSegment(101, 'B')));
     }
 
+    @Test(expected = IllegalArgumentException.class)
+    public void rejectsSegmentWithInconsistentByteMap() {
+        CacheCombineStack stack = newStack();
+        ByteOffsetMap map = ByteOffsetMap.create("abc", StandardCharsets.UTF_8);
+
+        stack.reset(Arrays.asList(new CacheSegment(0L, "abc", 2, map)));
+    }
+
     @Test
     public void restoresAlreadyCombinedCacheWithoutReintroducingSegments() {
         CacheCombineStack stack = newStack();

@@ -17,4 +17,15 @@ final class CombinedCacheSnapshot {
     long endOffset() {
         return offset + bytesRead;
     }
+
+    boolean hasConsistentByteMap() {
+        return offsetMap != null && offsetMap.totalBytes() == bytesRead;
+    }
+
+    boolean isWithinFile(long fileSize) {
+        long safeFileSize = Math.max(0L, fileSize);
+        return offset <= safeFileSize
+                && bytesRead <= safeFileSize - offset
+                && hasConsistentByteMap();
+    }
 }

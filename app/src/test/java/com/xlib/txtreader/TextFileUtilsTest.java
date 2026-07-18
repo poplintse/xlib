@@ -35,6 +35,19 @@ public class TextFileUtilsTest {
     }
 
     @Test
+    public void detectsUtf8WhenSampleEndsInsideMultibyteCharacter() throws Exception {
+        byte[] prefix = "a".repeat(4095).getBytes(StandardCharsets.UTF_8);
+        byte[] suffix = "中b".getBytes(StandardCharsets.UTF_8);
+        byte[] content = new byte[prefix.length + suffix.length];
+        System.arraycopy(prefix, 0, content, 0, prefix.length);
+        System.arraycopy(suffix, 0, content, prefix.length, suffix.length);
+
+        File file = write("utf8-boundary.txt", content);
+
+        assertEquals("UTF-8", TextFileUtils.detectEncoding(file));
+    }
+
+    @Test
     public void formatsFileSizesAtUnitBoundaries() {
         assertEquals("0 Byte", TextFileUtils.formatFileSize(-1));
         assertEquals("1.0 KB", TextFileUtils.formatFileSize(1024));

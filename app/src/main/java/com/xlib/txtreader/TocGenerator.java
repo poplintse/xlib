@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 final class TocGenerator {
@@ -23,7 +24,8 @@ final class TocGenerator {
 
     static TocDocument generate(File file, String encoding) throws Exception {
         List<RawEntry> raw = new ArrayList<>();
-        String normalized = encoding == null ? "UTF-8" : encoding.toUpperCase();
+        String normalized = encoding == null
+                ? "UTF-8" : encoding.toUpperCase(Locale.ROOT);
         boolean utf16Le = normalized.startsWith("UTF-16LE");
         boolean utf16Be = normalized.startsWith("UTF-16BE");
         Charset charset = Charset.forName(encoding == null || encoding.isEmpty() ? "UTF-8" : encoding);

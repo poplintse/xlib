@@ -20,17 +20,15 @@ final class ReaderPageWindow {
     }
 
     boolean reset(List<ReaderPage> readyPages, long anchorOffset, long fileSize) {
-        ArrayList<ReaderPage> validated = new ArrayList<>();
-        if (readyPages != null) validated.addAll(readyPages);
-        Collections.sort(validated, (first, second) ->
+        ArrayList<ReaderPage> candidate = new ArrayList<>();
+        if (readyPages != null) candidate.addAll(readyPages);
+        Collections.sort(candidate, (first, second) ->
                 Long.compare(first.startOffset, second.startOffset));
-        if (!isContiguous(validated)) return false;
-        pages.clear();
-        pages.addAll(validated);
-        currentIndex = findPageIndex(anchorOffset, fileSize);
-        if (currentIndex < 0 && !pages.isEmpty()) currentIndex = 0;
-        trimAroundCurrent();
-        return currentIndex >= 0;
+        if (!isContiguous(candidate)) return false;
+        int candidateIndex = findPageIndex(candidate, anchorOffset, fileSize);
+        if (candidateIndex < 0) return false;
+        commit(trimmed(candidate, candidateIndex));
+        return true;
     }
 
     boolean appendForwardPages(List<ReaderPage> readyPages, long expectedBoundary,
@@ -56,13 +54,14 @@ final class ReaderPageWindow {
     private boolean appendValidatedPages(List<ReaderPage> readyPages, long anchorOffset,
                                          long fileSize, boolean prepend) {
         ReaderPage current = current();
-        if (prepend) pages.addAll(0, readyPages);
-        else pages.addAll(readyPages);
+        ArrayList<ReaderPage> candidate = new ArrayList<>(pages.size() + readyPages.size());
+        if (prepend) candidate.addAll(readyPages);
+        candidate.addAll(pages);
+        if (!prepend) candidate.addAll(readyPages);
         long currentOffset = current == null ? anchorOffset : current.startOffset;
-        currentIndex = findPageIndex(currentOffset, fileSize);
-        if (currentIndex < 0) currentIndex = findPageIndex(anchorOffset, fileSize);
-        if (currentIndex < 0) return false;
-        trimAroundCurrent();
+        int candidateIndex = findPageIndex(candidate, currentOffset, fileSize);
+        if (candidateIndex < 0) return false;
+        commit(trimmed(candidate, candidateIndex));
         return true;
     }
 
@@ -104,8 +103,13 @@ final class ReaderPageWindow {
     }
 
     private int findPageIndex(long offset, long fileSize) {
-        for (int i = 0; i < pages.size(); i++) {
-            if (pages.get(i).contains(offset, fileSize)) return i;
+        return findPageIndex(pages, offset, fileSize);
+    }
+
+    private static int findPageIndex(List<ReaderPage> candidates,
+                                     long offset, long fileSize) {
+        for (int i = 0; i < candidates.size(); i++) {
+            if (candidates.get(i).contains(offset, fileSize)) return i;
         }
         return -1;
     }
@@ -123,15 +127,31 @@ final class ReaderPageWindow {
         return true;
     }
 
-    private void trimAroundCurrent() {
-        if (currentIndex < 0 || pages.size() <= maxPages) return;
+    private WindowState trimmed(ArrayList<ReaderPage> candidate, int candidateIndex) {
+        if (candidate.size() <= maxPages) {
+            return new WindowState(candidate, candidateIndex);
+        }
         int half = maxPages / 2;
-        int start = Math.max(0, currentIndex - half);
-        int end = Math.min(pages.size(), start + maxPages);
+        int start = Math.max(0, candidateIndex - half);
+        int end = Math.min(candidate.size(), start + maxPages);
         start = Math.max(0, end - maxPages);
-        ArrayList<ReaderPage> kept = new ArrayList<>(pages.subList(start, end));
-        currentIndex -= start;
+        return new WindowState(
+                new ArrayList<>(candidate.subList(start, end)), candidateIndex - start);
+    }
+
+    private void commit(WindowState state) {
         pages.clear();
-        pages.addAll(kept);
+        pages.addAll(state.pages);
+        currentIndex = state.currentIndex;
+    }
+
+    private static final class WindowState {
+        final ArrayList<ReaderPage> pages;
+        final int currentIndex;
+
+        WindowState(ArrayList<ReaderPage> pages, int currentIndex) {
+            this.pages = pages;
+            this.currentIndex = currentIndex;
+        }
     }
 }

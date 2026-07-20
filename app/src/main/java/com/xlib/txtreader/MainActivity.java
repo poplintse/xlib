@@ -471,6 +471,7 @@ public class MainActivity extends Activity {
     }
 
     private View makeBookRow(Book book) {
+        int cardCornerRadius = 22;
         boolean dark = isDarkTheme(appTheme());
         int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
         int textColor = dark ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
@@ -481,7 +482,8 @@ public class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(2), dp(13), dp(2), dp(13));
-        row.setBackground(UiKit.interactive(this, surface, 22, UiKit.withAlpha(accent, 28)));
+        row.setBackground(UiKit.interactive(this, surface, cardCornerRadius,
+                UiKit.withAlpha(accent, 28)));
         row.setElevation(dp(1));
         row.setClipToOutline(true);
 
@@ -568,7 +570,7 @@ public class MainActivity extends Activity {
         ImageButton more = makeIconButton();
         more.setImageResource(R.drawable.ic_more);
         more.setContentDescription("编辑书籍信息");
-        UiKit.styleIconButton(this, more, actionText, moreBackground, 0);
+        UiKit.styleIconButton(this, more, actionText, moreBackground, cardCornerRadius);
         more.setOnClickListener(v -> showEditBookDialog(book));
         actions.addView(more, new LinearLayout.LayoutParams(actionWidth,
                 ViewGroup.LayoutParams.MATCH_PARENT));
@@ -576,7 +578,7 @@ public class MainActivity extends Activity {
         ImageButton delete = makeIconButton();
         delete.setImageResource(R.drawable.ic_delete);
         delete.setContentDescription("删除书籍");
-        UiKit.styleIconButton(this, delete, actionText, deleteBackground, 0);
+        UiKit.styleIconButton(this, delete, actionText, deleteBackground, cardCornerRadius);
         delete.setOnClickListener(v -> showDeleteBookDialog(book));
         actions.addView(delete, new LinearLayout.LayoutParams(actionWidth,
                 ViewGroup.LayoutParams.MATCH_PARENT));

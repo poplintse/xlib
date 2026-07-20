@@ -592,14 +592,17 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         final float[] touchDown = new float[1];
+        final float[] touchStartTranslation = new float[1];
         row.setOnTouchListener((view, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    view.animate().cancel();
                     touchDown[0] = event.getRawX();
+                    touchStartTranslation[0] = view.getTranslationX();
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     float translation = Math.min(0, Math.max(-actionMenuWidth,
-                            event.getRawX() - touchDown[0]));
+                            touchStartTranslation[0] + event.getRawX() - touchDown[0]));
                     actions.setVisibility(translation < 0 ? View.VISIBLE : View.INVISIBLE);
                     view.setTranslationX(translation);
                     return true;

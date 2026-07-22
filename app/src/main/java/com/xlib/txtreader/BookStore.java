@@ -41,8 +41,8 @@ final class BookStore {
         return books;
     }
 
-    void save(List<Book> books, Book preservedBook, long preservedOffset,
-              float preservedProgress) {
+    boolean save(List<Book> books, Book preservedBook, long preservedOffset,
+                 float preservedProgress) {
         try {
             JSONArray array = new JSONArray();
             for (Book book : books) {
@@ -51,8 +51,10 @@ final class BookStore {
                 array.put(toJson(book, offset, progress));
             }
             preferences.edit().putString(KEY_BOOKS, array.toString()).apply();
+            return true;
         } catch (Exception ignored) {
             // Keep the last valid snapshot if serialization ever fails.
+            return false;
         }
     }
 

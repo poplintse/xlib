@@ -8,3 +8,8 @@ local.properties
 *.keystore
 .idea/
 release/
+node_modules/
+.pnpm-store/
+server/dist/
+server/coverage/
+server/.env

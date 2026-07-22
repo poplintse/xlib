@@ -2,6 +2,8 @@
 
 xlib 是一款原生 Android TXT 阅读器（包名 `com.xlib.txtreader`），主打大文件（30–100 MB）的精确阅读位置、低内存下稳定的翻页体验，以及不把后台缓存边界暴露给显示链路。
 
+仓库同时包含可选的阅读进度同步后端，位于 [`server/`](server/README.md)。客户端不开启同步时，阅读器仍可完整离线使用。
+
 主要页面：书架、阅读、搜索、目录/书签、设置。
 
 ## 特性
@@ -129,7 +131,9 @@ xlib/
 │       └── test/java/com/xlib/txtreader/  # JUnit 单元测试
 ├── docs/
 │   ├── product-requirements.md            # 产品 / 交互 / 验收清单（当前有效）
-│   └── architecture.md                    # 数据归属、阅读定位、缓存、并发边界
+│   ├── architecture.md                    # 数据归属、阅读定位、缓存、并发边界
+│   └── sync-server-design.md              # 可选阅读进度同步服务端设计
+├── server/                                # 可独立部署的 TypeScript/PostgreSQL 同步 API
 ├── release/                               # 发行 APK（gitignored）
 ├── version.properties                     # versionCode + versionName 唯一来源
 ├── settings.gradle
@@ -153,3 +157,5 @@ xlib/
 
 - [`docs/product-requirements.md`](docs/product-requirements.md) — 产品 / 交互 / 验收清单
 - [`docs/architecture.md`](docs/architecture.md) — 数据归属、阅读定位、缓存、并发边界
+- [`docs/sync-server-design.md`](docs/sync-server-design.md) — 可选阅读进度同步服务端设计
+- [`server/README.md`](server/README.md) — 同步服务的开发、测试与部署说明

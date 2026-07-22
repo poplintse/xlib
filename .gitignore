@@ -7,4 +7,10 @@ local.properties
 *.jks
 *.keystore
 .idea/
+.DS_Store
 release/
+node_modules/
+.pnpm-store/
+server/dist/
+server/coverage/
+server/.env

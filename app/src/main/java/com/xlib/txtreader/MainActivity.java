@@ -104,9 +104,11 @@ public class MainActivity extends Activity {
     private static final String KEY_LINE_SPACING = "line_spacing";
     private static final int SETTINGS_GENERAL = 0;
     private static final int SETTINGS_READING = 1;
+    private static final int SETTINGS_SYNC = 2;
 
     private final List<Book> books = new ArrayList<>();
     private final Set<Long> selectedBookIds = new HashSet<>();
+    private final Set<Long> pendingProgressPublications = new HashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService libraryExecutor = Executors.newSingleThreadExecutor();
@@ -127,6 +129,12 @@ public class MainActivity extends Activity {
     private BookmarkStore bookmarkStore;
     private SharedPreferences preferences;
     private TocStore tocStore;
+    private LocalProgressStore localProgressStore;
+    private SyncTokenStore syncTokenStore;
+    private SyncServerConfig syncServerConfig;
+    private BookHashCache bookHashCache;
+    private ProgressSyncCoordinator syncCoordinator;
+    private volatile SyncUiState syncUiState;
     private Book currentBook;
     private boolean managingBooks;
     private boolean loadingChunk;
@@ -143,6 +151,7 @@ public class MainActivity extends Activity {
     private boolean searchOpen;
     private boolean settingsOpen;
     private boolean settingsOpenedFromLibrary;
+    private int currentSettingsTab = SETTINGS_GENERAL;
     private boolean catalogOpen;
     private boolean temporarySearchReading;
     private boolean suppressProgressSave;
@@ -239,6 +248,31 @@ public class MainActivity extends Activity {
         bookStore = new BookStore(preferences);
         bookmarkStore = new BookmarkStore(preferences);
         tocStore = new TocStore(this);
+        localProgressStore = new LocalProgressStore();
+        syncTokenStore = new SyncTokenStore(preferences);
+        syncServerConfig = new SyncServerConfig(preferences);
+        bookHashCache = new BookHashCache(preferences);
+        SyncApiClient syncApiClient = new SyncApiClient(syncServerConfig.url());
+        syncCoordinator = new ProgressSyncCoordinator(this, mainHandler,
+                new ProgressSyncCoordinator.Listener() {
+                    @Override public void onSyncStateChanged(SyncUiState state) {
+                        syncUiState = state;
+                        if (!activityDestroyed && settingsOpen
+                                && currentSettingsTab == SETTINGS_SYNC
+                                && settingsContent != null) {
+                            renderSyncSettingsForCurrentTheme();
+                        }
+                    }
+
+                    @Override public void onRemoteJumpAvailable(String sessionId,
+                                                                 long localBookId,
+                                                                 RemoteProgressSnapshot remote) {
+                        showRemoteJumpDialog(sessionId, localBookId, remote);
+                    }
+                }, localProgressStore, new RemoteProgressStore(preferences),
+                bookHashCache, syncTokenStore, syncServerConfig,
+                syncApiClient, getVersionName());
+        syncCoordinator.start();
         loadBooks();
         showLibrary();
         if (isAutoTocEnabled()) scheduleMissingTocGeneration();
@@ -250,6 +284,7 @@ public class MainActivity extends Activity {
         disableAutoPage();
         applyKeepScreenOn(false);
         saveCurrentProgress();
+        if (syncCoordinator != null) syncCoordinator.onBackground();
         flushReaderCacheWrite();
         super.onPause();
     }
@@ -258,6 +293,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         activityResumed = true;
+        if (syncCoordinator != null) syncCoordinator.onForeground();
         boolean readerAttached = readerFrame != null && readerFrame.isAttachedToWindow();
         applyKeepScreenOn(ReaderRuntimePolicy.shouldKeepScreenOn(
                 readingKeepScreenOn(), readerAttached));
@@ -268,6 +304,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         activityDestroyed = true;
         flushScheduledBooksSave();
+        if (syncCoordinator != null) syncCoordinator.shutdown();
         mainHandler.removeCallbacksAndMessages(null);
         ioExecutor.shutdownNow();
         libraryExecutor.shutdownNow();
@@ -307,6 +344,7 @@ public class MainActivity extends Activity {
             cancelReaderPipelineWork();
             releasePageSnapshot();
             currentBook = null;
+            if (syncCoordinator != null) syncCoordinator.closeBook();
             readerMenusOpen = false;
             showLibrary();
             return;
@@ -688,6 +726,55 @@ public class MainActivity extends Activity {
         return hours < 24L ? hours + "小时前" : (hours / 24L) + "天前";
     }
 
+    private void showRemoteJumpDialog(String sessionId, long localBookId,
+                                      RemoteProgressSnapshot remote) {
+        Book book = currentBook;
+        if (book == null || book.id != localBookId || temporarySearchReading
+                || activityDestroyed) {
+            if (syncCoordinator != null) syncCoordinator.onJumpDeclined(sessionId);
+            return;
+        }
+        String message = "是否跳转到在“" + remote.sourceDeviceName + "”阅读的最新进度？\n"
+                + "位置：" + String.format(Locale.getDefault(), "%,d", remote.offset)
+                + "（" + String.format(Locale.getDefault(), "%.2f%%", remote.progress * 100d)
+                + "）\n进度于" + remoteProgressRelativeTime(remote.readAtMs) + "保存。";
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("发现更新的阅读进度")
+                .setMessage(message)
+                .setNegativeButton("暂不跳转", (ignored, which) ->
+                        syncCoordinator.onJumpDeclined(sessionId))
+                .setPositiveButton("跳转", (ignored, which) -> {
+                    if (currentBook == null || currentBook.id != localBookId) {
+                        syncCoordinator.onJumpDeclined(sessionId);
+                        return;
+                    }
+                    applyFormalProgress(currentBook, remote.offset, remote.readAtMs);
+                    saveBooks();
+                    syncCoordinator.onRemoteJumpApplied(sessionId, remote.fileSize,
+                            remote.offset, remote.readAtMs);
+                    showReader(currentBook);
+                })
+                .create();
+        dialog.setOnCancelListener(ignored -> syncCoordinator.onJumpDeclined(sessionId));
+        dialog.show();
+    }
+
+    private String remoteProgressRelativeTime(long timestamp) {
+        long elapsed = Math.max(0L, System.currentTimeMillis() - timestamp);
+        long minutes = elapsed / 60_000L;
+        if (minutes < 1L) return "刚刚";
+        long days = minutes / (24L * 60L);
+        long hours = (minutes / 60L) % 24L;
+        long remainingMinutes = minutes % 60L;
+        StringBuilder result = new StringBuilder();
+        if (days > 0L) result.append(days).append("天");
+        if (hours > 0L) result.append(hours).append("小时");
+        if (remainingMinutes > 0L || result.length() == 0) {
+            result.append(remainingMinutes).append("分钟");
+        }
+        return result.append("前").toString();
+    }
+
     private void showEditBookDialog(Book book) {
         EditText titleInput = new EditText(this);
         titleInput.setSingleLine(true);
@@ -762,6 +849,7 @@ public class MainActivity extends Activity {
         deleteReaderCache(book);
         tocStore.delete(book);
         bookmarkStore.deleteForBook(book.id);
+        if (bookHashCache != null) bookHashCache.remove(book.id);
         File file = new File(book.path);
         if (file.exists()) {
             boolean ignored = file.delete();
@@ -898,12 +986,19 @@ public class MainActivity extends Activity {
         disableAutoPage();
         readerMenusOpen = false;
         currentBook = book;
+        if (syncCoordinator != null) {
+            syncCoordinator.openBook(book.id, new File(book.path), book.fileSize,
+                    book.offset, book.updatedAt);
+        }
         showReader(book);
     }
 
     private void showReader(Book book) {
         settingsOpen = false;
         catalogOpen = false;
+        if (syncCoordinator != null) {
+            syncCoordinator.setReaderActive(!temporarySearchReading, temporarySearchReading);
+        }
         cancelReaderPipelineWork();
         pageLayoutGeneration++;
         currentCombineStack = null;
@@ -1314,6 +1409,7 @@ public class MainActivity extends Activity {
 
     private void openSearchPage() {
         if (currentBook == null) return;
+        if (syncCoordinator != null) syncCoordinator.setReaderActive(false, false);
         saveCurrentProgress();
         flushReaderCacheWrite();
         cancelReaderPipelineWork();
@@ -1367,6 +1463,7 @@ public class MainActivity extends Activity {
 
     private void openCatalogPage() {
         if (currentBook == null) return;
+        if (syncCoordinator != null) syncCoordinator.setReaderActive(false, false);
         TocDocument document = tocStore.read(currentBook);
         saveCurrentProgress();
         disableAutoPage();
@@ -1554,9 +1651,7 @@ public class MainActivity extends Activity {
         temporarySearchReading = false;
         searchOpen = false;
         searchSession = null;
-        book.offset = Math.max(0L, Math.min(book.fileSize, offset));
-        book.progress = book.fileSize <= 0 ? 0f : book.offset / (float) book.fileSize;
-        book.updatedAt = System.currentTimeMillis();
+        applyFormalProgress(book, offset, null);
         saveBooks();
         catalogOpen = false;
         showReader(book);
@@ -1565,6 +1660,7 @@ public class MainActivity extends Activity {
     private void openSettingsPage(int initialTab) {
         settingsOpenedFromLibrary = currentBook == null;
         if (currentBook != null) saveCurrentProgress();
+        if (syncCoordinator != null) syncCoordinator.setReaderActive(false, false);
         disableAutoPage();
         cancelReaderPipelineWork();
         releasePageSnapshot();
@@ -1574,6 +1670,7 @@ public class MainActivity extends Activity {
     }
 
     private void showSettingsPage(Book book, int initialTab) {
+        currentSettingsTab = initialTab;
         int theme = appTheme();
         applyWindowColors(theme);
         boolean dark = isDarkTheme(theme);
@@ -1604,6 +1701,8 @@ public class MainActivity extends Activity {
         navigation.addView(back, backLp);
 
         boolean showGeneral = initialTab == SETTINGS_GENERAL;
+        boolean showReading = initialTab == SETTINGS_READING;
+        boolean showSync = initialTab == SETTINGS_SYNC;
         LinearLayout tabs = new LinearLayout(this);
         tabs.setGravity(Gravity.CENTER_VERTICAL);
         tabs.setPadding(dp(4), dp(4), dp(4), dp(4));
@@ -1612,23 +1711,37 @@ public class MainActivity extends Activity {
                 accentContainer);
         tabs.addView(general, new LinearLayout.LayoutParams(dp(72), dp(36)));
 
-        Button reading = makeSettingsNavButton("阅读", !showGeneral, text, accent,
+        Button reading = makeSettingsNavButton("阅读", showReading, text, accent,
                 accentContainer);
         LinearLayout.LayoutParams readingLp = new LinearLayout.LayoutParams(dp(72), dp(36));
         tabs.addView(reading, readingLp);
+        Button sync = makeSettingsNavButton("同步", showSync, text, accent,
+                accentContainer);
+        tabs.addView(sync, new LinearLayout.LayoutParams(dp(72), dp(36)));
         FrameLayout.LayoutParams tabsLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(44),
                 Gravity.CENTER_VERTICAL | Gravity.END);
         navigation.addView(tabs, tabsLp);
         general.setOnClickListener(v -> {
+            currentSettingsTab = SETTINGS_GENERAL;
             styleSettingsNavButton(general, true, text, accent, accentContainer);
             styleSettingsNavButton(reading, false, text, accent, accentContainer);
+            styleSettingsNavButton(sync, false, text, accent, accentContainer);
             renderGeneralSettings(surface, text, muted, accent);
         });
         reading.setOnClickListener(v -> {
+            currentSettingsTab = SETTINGS_READING;
             styleSettingsNavButton(general, false, text, accent, accentContainer);
             styleSettingsNavButton(reading, true, text, accent, accentContainer);
+            styleSettingsNavButton(sync, false, text, accent, accentContainer);
             renderReadingSettings(surface, text, muted, accent, accentContainer);
+        });
+        sync.setOnClickListener(v -> {
+            currentSettingsTab = SETTINGS_SYNC;
+            styleSettingsNavButton(general, false, text, accent, accentContainer);
+            styleSettingsNavButton(reading, false, text, accent, accentContainer);
+            styleSettingsNavButton(sync, true, text, accent, accentContainer);
+            renderSyncSettings(surface, text, muted, accent, accentContainer);
         });
 
         root.addView(navigation, new LinearLayout.LayoutParams(
@@ -1647,7 +1760,8 @@ public class MainActivity extends Activity {
 
         setContentView(root);
         if (showGeneral) renderGeneralSettings(surface, text, muted, accent);
-        else renderReadingSettings(surface, text, muted, accent, accentContainer);
+        else if (showReading) renderReadingSettings(surface, text, muted, accent, accentContainer);
+        else renderSyncSettings(surface, text, muted, accent, accentContainer);
     }
 
     private Button makeSettingsNavButton(String label, boolean selected, int text, int accent,
@@ -1698,6 +1812,306 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         settingsContent.addView(toc, settingsSectionLayoutParams());
         settingsScroll.scrollTo(0, 0);
+    }
+
+    private void renderSyncSettingsForCurrentTheme() {
+        int theme = appTheme();
+        boolean dark = isDarkTheme(theme);
+        renderSyncSettings(dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE,
+                textColor(theme), dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED,
+                dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT,
+                dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER);
+    }
+
+    private void renderSyncSettings(int surface, int text, int muted, int accent,
+                                    int accentContainer) {
+        if (settingsContent == null || settingsScroll == null || syncCoordinator == null) return;
+        settingsContent.removeAllViews();
+        int variant = isDarkTheme(appTheme())
+                ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
+
+        LinearLayout serverCard = makeSyncCard("同步服务器",
+                "仅支持 HTTPS。修改后会先从新服务器拉取云端状态。", surface, text, muted);
+        EditText serverInput = new EditText(this);
+        serverInput.setSingleLine(true);
+        serverInput.setText(syncCoordinator.serverUrl());
+        serverInput.setTextColor(text);
+        serverInput.setHintTextColor(muted);
+        serverInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        serverInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        serverInput.setBackground(UiKit.rounded(this, variant, 12));
+        serverInput.setPadding(dp(12), 0, dp(12), 0);
+        serverCard.addView(serverInput, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
+        Button saveServer = makeButton("保存服务器地址");
+        UiKit.styleButton(this, saveServer, accentContainer, accent, 14);
+        saveServer.setOnClickListener(v -> {
+            String previousUrl = syncCoordinator.serverUrl();
+            String requestedUrl = serverInput.getText().toString();
+            syncCoordinator.saveServerUrl(requestedUrl, result -> {
+                    if (!result.isSuccess()) {
+                        serverInput.setError("请输入不含查询参数的 HTTPS 地址");
+                    } else {
+                        boolean changed = !previousUrl.equals(
+                                SyncServerConfig.normalize(requestedUrl));
+                        Toast.makeText(this, changed
+                                        ? "地址已保存，请在新服务器上重新开启同步"
+                                        : "服务器地址已保存",
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+        });
+        LinearLayout.LayoutParams saveServerLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        saveServerLp.topMargin = dp(8);
+        serverCard.addView(saveServer, saveServerLp);
+        settingsContent.addView(serverCard, syncCardLayoutParams());
+
+        SyncUiState state = syncUiState == null ? syncCoordinator.state() : syncUiState;
+        boolean tokenRequired = state != null
+                && state.availability == SyncAvailability.TOKEN_REQUIRED;
+        if (state == null || !state.enabled || tokenRequired) {
+            LinearLayout enableCard = makeSyncCard("阅读进度同步",
+                    tokenRequired
+                            ? "同步凭据已失效，请重新输入邮箱开启。TXT 内容和文件名不会上传。"
+                            : "输入邮箱后可在不同设备间同步阅读进度。TXT 内容和文件名不会上传。",
+                    surface, text, muted);
+            EditText emailInput = new EditText(this);
+            emailInput.setSingleLine(true);
+            emailInput.setHint("邮箱");
+            if (tokenRequired) emailInput.setText(state.email);
+            emailInput.setTextColor(text);
+            emailInput.setHintTextColor(muted);
+            emailInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            emailInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                    | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+            emailInput.setBackground(UiKit.rounded(this, variant, 12));
+            emailInput.setPadding(dp(12), 0, dp(12), 0);
+            enableCard.addView(emailInput, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
+            Button enable = makeButton(state != null && state.busy ? "正在开启…"
+                    : (tokenRequired ? "重新开启同步" : "开始同步"));
+            UiKit.styleButton(this, enable, accentContainer, accent, 14);
+            enable.setEnabled(state == null || !state.busy);
+            enable.setOnClickListener(v -> syncCoordinator.startSync(
+                    emailInput.getText().toString(), result -> {
+                        if (!result.isSuccess()) {
+                            if ("INVALID_EMAIL".equals(result.errorCode)) {
+                                emailInput.setError("请输入有效邮箱");
+                            } else {
+                                showSyncActionError(result.errorCode);
+                            }
+                        } else {
+                            Toast.makeText(this, "同步已开启", Toast.LENGTH_SHORT).show();
+                        }
+                    }));
+            LinearLayout.LayoutParams enableLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+            enableLp.topMargin = dp(8);
+            enableCard.addView(enable, enableLp);
+            if (tokenRequired) {
+                Button disable = makeButton("关闭本机同步");
+                UiKit.styleButton(this, disable, variant, text, 14);
+                disable.setOnClickListener(v -> confirmDisableSync());
+                LinearLayout.LayoutParams disableLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+                disableLp.topMargin = dp(6);
+                enableCard.addView(disable, disableLp);
+            }
+            settingsContent.addView(enableCard, syncCardLayoutParams());
+            settingsScroll.scrollTo(0, 0);
+            return;
+        }
+
+        LinearLayout statusCard = makeSyncCard("同步状态",
+                syncAvailabilityText(state.availability), surface, text, muted);
+        addSyncDetail(statusCard, "邮箱", state.email, text, muted);
+        addSyncDetail(statusCard, "当前设备", state.deviceName, text, muted);
+        addSyncDetail(statusCard, "最后成功同步", formatSyncTime(state.lastSuccessAtMs),
+                text, muted);
+        settingsContent.addView(statusCard, syncCardLayoutParams());
+
+        LinearLayout actions = makeSyncCard("管理",
+                "刷新只拉取云端状态，不会上传本机进度。", surface, text, muted);
+        addSyncActionButton(actions, "刷新云端状态", false, text, accent, accentContainer,
+                variant, () -> syncCoordinator.refreshRemote(result -> {
+                    if (result.isSuccess()) Toast.makeText(this, "云端状态已刷新",
+                            Toast.LENGTH_SHORT).show();
+                    else showSyncActionError(result.errorCode);
+                }));
+        addSyncActionButton(actions, "设备管理", false, text, accent, accentContainer,
+                variant, this::showSyncDevices);
+        addSyncActionButton(actions, "关闭本机同步", false, text, accent, accentContainer,
+                variant, this::confirmDisableSync);
+        addSyncActionButton(actions, "删除云端阅读进度", true, text, accent, accentContainer,
+                variant, this::confirmDeleteRemoteProgress);
+        settingsContent.addView(actions, syncCardLayoutParams());
+        settingsScroll.scrollTo(0, 0);
+    }
+
+    private LinearLayout makeSyncCard(String titleText, String description, int surface,
+                                      int text, int muted) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+        UiKit.styleCard(this, card, surface, 20, 1);
+        TextView title = new TextView(this);
+        UiKit.styleTitle(title, text, 15);
+        title.setText(titleText);
+        card.addView(title);
+        TextView body = new TextView(this);
+        body.setText(description);
+        body.setTextColor(muted);
+        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        body.setPadding(0, dp(5), 0, dp(10));
+        card.addView(body);
+        return card;
+    }
+
+    private LinearLayout.LayoutParams syncCardLayoutParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = dp(8);
+        return params;
+    }
+
+    private void addSyncDetail(LinearLayout parent, String label, String value,
+                               int text, int muted) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = new TextView(this);
+        name.setText(label);
+        name.setTextColor(muted);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        row.addView(name, new LinearLayout.LayoutParams(0, dp(34), 1));
+        TextView detail = new TextView(this);
+        detail.setText(value);
+        detail.setTextColor(text);
+        detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        detail.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        detail.setSingleLine(true);
+        detail.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        row.addView(detail, new LinearLayout.LayoutParams(0, dp(34), 2));
+        parent.addView(row);
+    }
+
+    private void addSyncActionButton(LinearLayout parent, String label, boolean destructive,
+                                     int text, int accent, int accentContainer, int variant,
+                                     Runnable action) {
+        Button button = makeButton(label);
+        int background = destructive
+                ? (isDarkTheme(appTheme()) ? Color.rgb(86, 37, 38) : Color.rgb(255, 226, 225))
+                : variant;
+        int foreground = destructive
+                ? (isDarkTheme(appTheme()) ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27))
+                : text;
+        UiKit.styleButton(this, button, background, foreground, 14);
+        button.setOnClickListener(v -> action.run());
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        params.topMargin = dp(6);
+        parent.addView(button, params);
+    }
+
+    private String syncAvailabilityText(SyncAvailability availability) {
+        if (availability == SyncAvailability.OFFLINE) return "离线";
+        if (availability == SyncAvailability.SERVICE_UNAVAILABLE) return "服务暂不可用";
+        if (availability == SyncAvailability.TOKEN_REQUIRED) return "需要重新开启";
+        return "已连接";
+    }
+
+    private String formatSyncTime(long timestamp) {
+        if (timestamp <= 0L) return "尚未成功同步";
+        long minutes = Math.max(0L, (System.currentTimeMillis() - timestamp) / 60_000L);
+        if (minutes < 1L) return "刚刚";
+        if (minutes < 60L) return minutes + " 分钟前";
+        long hours = minutes / 60L;
+        if (hours < 24L) return hours + " 小时前";
+        return hours / 24L + " 天前";
+    }
+
+    private void showSyncActionError(String code) {
+        String message;
+        if ("OFFLINE".equals(code) || "CONNECTION_FAILED".equals(code)) {
+            message = "网络不可用，请稍后重试";
+        } else if ("TOKEN_REQUIRED".equals(code)) {
+            message = "同步凭据已失效，请重新开启";
+        } else if ("INVALID_SERVER_URL".equals(code)) {
+            message = "服务器地址必须是有效的 HTTPS 地址";
+        } else {
+            message = "同步服务暂不可用，请稍后重试";
+        }
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+    private void confirmDisableSync() {
+        new AlertDialog.Builder(this)
+                .setTitle("关闭本机同步？")
+                .setMessage("只会清除本机同步凭据，书籍和本地阅读进度会保留。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("关闭", (dialog, which) -> syncCoordinator.disableSync(
+                        result -> Toast.makeText(this, "本机同步已关闭",
+                                Toast.LENGTH_SHORT).show()))
+                .show();
+    }
+
+    private void confirmDeleteRemoteProgress() {
+        new AlertDialog.Builder(this)
+                .setTitle("删除云端阅读进度？")
+                .setMessage("此操作无法撤销，但不会删除本机书籍和本地阅读进度。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (dialog, which) ->
+                        syncCoordinator.deleteRemoteProgress(result -> {
+                            if (result.isSuccess()) Toast.makeText(this, "云端阅读进度已删除",
+                                    Toast.LENGTH_SHORT).show();
+                            else showSyncActionError(result.errorCode);
+                        }))
+                .show();
+    }
+
+    private void showSyncDevices() {
+        syncCoordinator.loadDevices(result -> {
+            if (!result.isSuccess()) {
+                showSyncActionError(result.errorCode);
+                return;
+            }
+            List<SyncDevice> devices = result.value;
+            if (devices.isEmpty()) {
+                Toast.makeText(this, "没有可管理的设备", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            String currentId = syncUiState == null ? "" : syncUiState.deviceId;
+            String[] labels = new String[devices.size()];
+            for (int i = 0; i < devices.size(); i++) {
+                SyncDevice device = devices.get(i);
+                labels[i] = device.deviceName + (device.deviceId.equals(currentId) ? "（本机）" : "")
+                        + (device.revoked ? " · 已移除" : "");
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("设备管理")
+                    .setItems(labels, (dialog, which) -> {
+                        SyncDevice device = devices.get(which);
+                        if (device.deviceId.equals(currentId) || device.revoked) return;
+                        confirmRevokeDevice(device);
+                    })
+                    .setNegativeButton("完成", null)
+                    .show();
+        });
+    }
+
+    private void confirmRevokeDevice(SyncDevice device) {
+        new AlertDialog.Builder(this)
+                .setTitle("移除“" + device.deviceName + "”？")
+                .setMessage("该设备需要重新输入邮箱才能再次同步。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("移除", (dialog, which) -> syncCoordinator.revokeDevice(
+                        device.deviceId, result -> {
+                            if (result.isSuccess()) Toast.makeText(this, "设备已移除",
+                                    Toast.LENGTH_SHORT).show();
+                            else showSyncActionError(result.errorCode);
+                        }))
+                .show();
     }
 
     private void renderReadingSettings(int surface, int text,
@@ -2402,7 +2816,6 @@ public class MainActivity extends Activity {
         temporarySearchReading = true;
         book.offset = Math.max(0L, Math.min(offset, Math.max(0L, book.fileSize)));
         book.progress = book.fileSize <= 0 ? 0f : book.offset / (float) book.fileSize;
-        book.updatedAt = System.currentTimeMillis();
         showReader(book);
     }
 
@@ -2520,7 +2933,7 @@ public class MainActivity extends Activity {
                     Toast.makeText(this, "打开失败：" + finalError.getMessage(), Toast.LENGTH_LONG).show();
                     return;
                 }
-                applyCacheWindowLoad(book, finalLoad);
+                applyCacheWindowLoad(book, finalLoad, !tryPersistentCache);
             });
         });
     }
@@ -2575,14 +2988,19 @@ public class MainActivity extends Activity {
         return new CacheWindowLoad(fileSize, clampedTarget, combineStack, combined);
     }
 
-    private void applyCacheWindowLoad(Book book, CacheWindowLoad load) {
+    private void applyCacheWindowLoad(Book book, CacheWindowLoad load,
+                                      boolean formalPositionChange) {
         if (load == null || readerText == null || readerScroll == null) return;
         book.fileSize = load.fileSize;
         currentCombineStack = load.combineStack;
         currentCache = load.cache;
-        book.offset = load.targetOffset;
-        book.progress = load.fileSize <= 0 ? 0f : load.targetOffset / (float) load.fileSize;
-        book.updatedAt = System.currentTimeMillis();
+        if (formalPositionChange && !temporarySearchReading) {
+            applyFormalProgress(book, load.targetOffset, null);
+        } else {
+            book.offset = load.targetOffset;
+            book.progress = load.fileSize <= 0 ? 0f
+                    : load.targetOffset / (float) load.fileSize;
+        }
         pageStateGeneration++;
         requestReaderPageWindow(book, load.cache, load.targetOffset);
         saveBooks();
@@ -3000,10 +3418,13 @@ public class MainActivity extends Activity {
         releasePageSnapshot();
         readerText.setReaderPage(page, readerDisplayText(page.text, currentBook));
         readerScroll.scrollTo(0, 0);
-        currentBook.offset = Math.min(page.startOffset, currentBook.fileSize);
-        currentBook.progress = currentBook.fileSize <= 0
-                ? 0f : currentBook.offset / (float) currentBook.fileSize;
-        currentBook.updatedAt = System.currentTimeMillis();
+        if (suppressProgressSave || temporarySearchReading) {
+            currentBook.offset = Math.min(page.startOffset, currentBook.fileSize);
+            currentBook.progress = currentBook.fileSize <= 0
+                    ? 0f : currentBook.offset / (float) currentBook.fileSize;
+        } else {
+            applyFormalProgress(currentBook, page.startOffset, null);
+        }
         scheduleBooksSave();
         updateProgressText();
         if (seekBar != null && !seekTracking) {
@@ -3445,7 +3866,6 @@ public class MainActivity extends Activity {
         float fontSize = ReaderSettingsOptions.normalizeFontSize(readingFontSize() + delta);
         setReadingFontSize(fontSize);
         pageLayoutGeneration++;
-        currentBook.updatedAt = System.currentTimeMillis();
         pageStateGeneration++;
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSize);
         refreshReaderSpacing(true);
@@ -3645,11 +4065,23 @@ public class MainActivity extends Activity {
         if (suppressProgressSave || currentBook == null) return;
         ReaderPage page = readerPageWindow.current();
         if (page == null) return;
-        currentBook.offset = Math.min(page.startOffset, Math.max(0L, currentBook.fileSize));
-        currentBook.progress = currentBook.fileSize <= 0 ? 0f : currentBook.offset / (float) currentBook.fileSize;
-        currentBook.updatedAt = System.currentTimeMillis();
+        if (!temporarySearchReading) {
+            applyFormalProgress(currentBook, page.startOffset, null);
+        }
         saveBooks();
         if (seekBar != null) seekBar.setProgress((int) (currentBook.progress * 1000f));
+    }
+
+    private boolean applyFormalProgress(Book book, long offset, Long preservedReadAtMs) {
+        long safeOffset = Math.max(0L, Math.min(offset, Math.max(0L, book.fileSize)));
+        if (book.offset == safeOffset && preservedReadAtMs == null) return false;
+        book.offset = safeOffset;
+        book.progress = book.fileSize <= 0L ? 0f : safeOffset / (float) book.fileSize;
+        book.updatedAt = preservedReadAtMs == null
+                ? SyncRules.monotonicReadAt(System.currentTimeMillis(), book.updatedAt)
+                : preservedReadAtMs;
+        pendingProgressPublications.add(book.id);
+        return true;
     }
 
     private void updateProgressText() {
@@ -3877,6 +4309,15 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String getVersionName() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return info.versionName == null ? "0.0.0" : info.versionName;
+        } catch (Exception ignored) {
+            return "0.0.0";
+        }
+    }
+
     private String formatFileSize(long bytes) {
         return TextFileUtils.formatFileSize(bytes);
     }
@@ -3892,7 +4333,19 @@ public class MainActivity extends Activity {
         Book preservedBook = temporarySearchReading && searchSession != null ? currentBook : null;
         long preservedOffset = preservedBook == null ? 0L : searchSession.returnOffset;
         float preservedProgress = preservedBook == null ? 0f : searchSession.returnProgress;
-        bookStore.save(books, preservedBook, preservedOffset, preservedProgress);
+        if (bookStore.save(books, preservedBook, preservedOffset, preservedProgress)
+                && syncCoordinator != null && !pendingProgressPublications.isEmpty()) {
+            for (Book book : books) {
+                if (pendingProgressPublications.contains(book.id)) {
+                    long publishedOffset = book == preservedBook ? preservedOffset : book.offset;
+                    long publishedReadAt = book == preservedBook && searchSession != null
+                            ? searchSession.returnUpdatedAt : book.updatedAt;
+                    syncCoordinator.onLocalProgressChanged(book.id, book.fileSize,
+                            publishedOffset, publishedReadAt);
+                }
+            }
+            pendingProgressPublications.clear();
+        }
     }
 
     private void scheduleBooksSave() {

@@ -29,6 +29,9 @@ struct SyncSettingsView: View {
                     SyncValueRow(title: "当前设备", value: sync.currentDeviceName, theme: theme)
                     SettingsDivider(theme: theme)
                     SyncValueRow(title: "最后同步", value: lastSyncText, theme: theme)
+                } else if sync.isServiceConfigured {
+                    SettingsDivider(theme: theme)
+                    SyncStartForm(store: store)
                 }
             }
 
@@ -77,17 +80,7 @@ struct SyncSettingsView: View {
                     }
                 }
                 SettingsNote(text: "删除云端进度不会删除本机书籍和本机阅读位置。", theme: theme)
-            } else {
-                SettingsSection(title: "可选功能", theme: theme) {
-                    SettingsNavigationRow(
-                        title: "开始同步",
-                        value: nil,
-                        accessibilityIdentifier: "sync.start",
-                        theme: theme
-                    ) {
-                        SyncStartView(store: store)
-                    }
-                }
+            } else if !sync.isSyncEnabled {
                 SettingsNote(
                     text: "同步只保存阅读时间和精确进度。TXT 文件、书架、目录和书签不会上传。",
                     theme: theme
@@ -240,7 +233,7 @@ private enum SyncSettingsConfirmation {
     }
 }
 
-private struct SyncStartView: View {
+private struct SyncStartForm: View {
     @Bindable var store: SettingsStore
     @Environment(ProgressSyncCoordinator.self) private var sync
     @Environment(\.dismiss) private var dismiss
@@ -251,20 +244,18 @@ private struct SyncStartView: View {
     private var theme: AppTheme { store.settings.theme }
 
     var body: some View {
-        SettingsPage(title: "开始同步", theme: theme) {
-            SettingsSection(title: "同步邮箱", theme: theme) {
-                TextField("邮箱", text: $email)
-                    .keyboardType(.emailAddress)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textContentType(.emailAddress)
-                    .focused($emailIsFocused)
-                    .submitLabel(.go)
-                    .onSubmit { submit() }
-                    .frame(minHeight: 58)
-                    .foregroundStyle(theme.text)
-                    .accessibilityIdentifier("sync.email")
-            }
+        VStack(spacing: 10) {
+            TextField("邮箱", text: $email)
+                .keyboardType(.emailAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.emailAddress)
+                .focused($emailIsFocused)
+                .submitLabel(.go)
+                .onSubmit { submit() }
+                .frame(minHeight: 58)
+                .foregroundStyle(theme.text)
+                .accessibilityIdentifier("sync.email")
 
             if let message = localError ?? sync.lastFailureMessage {
                 SettingsNote(text: message, theme: theme)
@@ -291,6 +282,7 @@ private struct SyncStartView: View {
                 theme: theme
             )
         }
+        .padding(.vertical, 8)
         .onAppear { emailIsFocused = true }
     }
 

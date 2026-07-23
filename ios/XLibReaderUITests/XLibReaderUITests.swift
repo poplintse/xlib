@@ -66,11 +66,6 @@ final class XLibReaderUITests: XCTestCase {
 
         app.buttons["常规设置"].tap()
         app.buttons["settings.progressSync"].tap()
-        let start = app.buttons["sync.start"]
-        XCTAssertTrue(start.waitForExistence(timeout: 5))
-        XCTAssertEqual(start.label, "开始同步")
-        start.tap()
-
         XCTAssertTrue(app.textFields["sync.email"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["sync.startSubmit"].exists)
         XCTAssertFalse(app.secureTextFields.firstMatch.exists)

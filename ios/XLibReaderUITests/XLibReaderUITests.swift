@@ -59,15 +59,17 @@ final class XLibReaderUITests: XCTestCase {
     }
 
     @MainActor
-    func testProgressSyncStartsWithEmailOnly() {
+    func testProgressSyncSettingsContainEmailAndDeviceName() {
         let app = XCUIApplication()
         app.launch()
         XCTAssertTrue(app.staticTexts["我的书架"].waitForExistence(timeout: 5))
 
         app.buttons["常规设置"].tap()
         app.buttons["settings.progressSync"].tap()
+        app.buttons["sync.accountSettings"].tap()
         XCTAssertTrue(app.textFields["sync.email"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["sync.startSubmit"].exists)
+        XCTAssertTrue(app.textFields["sync.deviceName"].exists)
+        XCTAssertTrue(app.buttons["sync.settingsSave"].exists)
         XCTAssertFalse(app.secureTextFields.firstMatch.exists)
         XCTAssertFalse(app.segmentedControls.firstMatch.exists)
     }

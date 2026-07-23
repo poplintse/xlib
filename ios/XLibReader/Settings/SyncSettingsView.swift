@@ -21,7 +21,14 @@ struct SyncSettingsView: View {
             }
 
             SettingsSection(title: "状态", theme: theme) {
-                SyncValueRow(title: "同步状态", value: sync.statusTitle, theme: theme)
+                SettingsNavigationRow(
+                    title: "同步状态",
+                    value: sync.statusTitle,
+                    accessibilityIdentifier: "sync.accountSettings",
+                    theme: theme
+                ) {
+                    SyncAccountSettingsView(store: store)
+                }
                 if sync.isSyncEnabled {
                     SettingsDivider(theme: theme)
                     SyncValueRow(title: "邮箱", value: sync.email ?? "—", theme: theme)
@@ -29,9 +36,6 @@ struct SyncSettingsView: View {
                     SyncValueRow(title: "当前设备", value: sync.currentDeviceName, theme: theme)
                     SettingsDivider(theme: theme)
                     SyncValueRow(title: "最后同步", value: lastSyncText, theme: theme)
-                } else if sync.isServiceConfigured {
-                    SettingsDivider(theme: theme)
-                    SyncStartForm(store: store)
                 }
             }
 
@@ -233,11 +237,12 @@ private enum SyncSettingsConfirmation {
     }
 }
 
-private struct SyncStartForm: View {
+private struct SyncAccountSettingsView: View {
     @Bindable var store: SettingsStore
     @Environment(ProgressSyncCoordinator.self) private var sync
     @Environment(\.dismiss) private var dismiss
     @State private var email = ""
+    @State private var deviceName = ""
     @State private var localError: String?
     @FocusState private var emailIsFocused: Bool
 
@@ -257,6 +262,18 @@ private struct SyncStartForm: View {
                 .foregroundStyle(theme.text)
                 .accessibilityIdentifier("sync.email")
 
+            SettingsDivider(theme: theme)
+
+            TextField("设备名称", text: $deviceName)
+                .textInputAutocapitalization(.sentences)
+                .autocorrectionDisabled()
+                .textContentType(.name)
+                .submitLabel(.done)
+                .onSubmit { submit() }
+                .frame(minHeight: 58)
+                .foregroundStyle(theme.text)
+                .accessibilityIdentifier("sync.deviceName")
+
             if let message = localError ?? sync.lastFailureMessage {
                 SettingsNote(text: message, theme: theme)
                     .accessibilityIdentifier("sync.authError")
@@ -267,7 +284,7 @@ private struct SyncStartForm: View {
             } label: {
                 HStack(spacing: 8) {
                     if sync.isWorking { ProgressView().tint(theme.surface) }
-                    Text(sync.isWorking ? "正在开启…" : "开始同步")
+                    Text(sync.isWorking ? "正在保存…" : "保存")
                         .font(.headline)
                 }
                 .frame(maxWidth: .infinity, minHeight: 52)
@@ -275,29 +292,34 @@ private struct SyncStartForm: View {
             .buttonStyle(XLPrimaryButtonStyle(theme: theme))
             .disabled(!canSubmit || sync.isWorking)
             .opacity(!canSubmit || sync.isWorking ? 0.55 : 1)
-            .accessibilityIdentifier("sync.startSubmit")
+            .accessibilityIdentifier("sync.settingsSave")
 
             SettingsNote(
-                text: "服务端会为邮箱创建或返回已有同步 Token，App 会把 Token 保存在本机安全存储中。同步仍是可选功能。",
+                text: "服务端会为邮箱创建或返回已有同步 Token，设备名称用于区分不同设备。",
                 theme: theme
             )
         }
         .padding(.vertical, 8)
-        .onAppear { emailIsFocused = true }
+        .onAppear {
+            email = sync.email ?? ""
+            deviceName = sync.currentDeviceName
+            emailIsFocused = true
+        }
     }
 
     private var canSubmit: Bool {
         Self.isValidEmail(email)
+            && !deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func submit() {
         guard canSubmit else {
-            localError = "请输入有效的邮箱地址。"
+            localError = "请输入有效的邮箱地址和设备名称。"
             return
         }
         localError = nil
         Task {
-            if await sync.startSync(email: email) {
+            if await sync.startSync(email: email, deviceName: deviceName) {
                 dismiss()
             }
         }

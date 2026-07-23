@@ -23,7 +23,7 @@ final class ProgressSyncCoordinator {
     private let syncInterval: Duration
     private let healthProbeDelays: [Duration]
     private let now: @Sendable () -> Date
-    private let deviceRegistration: SyncDeviceRegistration
+    private var deviceRegistration: SyncDeviceRegistration
 
     private var credentials: SyncCredentials?
     private var remoteByKey: [SyncBookKey: RemoteProgressSnapshot] = [:]
@@ -136,7 +136,7 @@ final class ProgressSyncCoordinator {
         await syncCurrentProgress(forceLatest: true)
     }
 
-    func startSync(email: String) async -> Bool {
+    func startSync(email: String, deviceName: String? = nil) async -> Bool {
         guard api.isConfigured else {
             lastFailureMessage = SyncAPIError.notConfigured.localizedDescription
             return false
@@ -147,15 +147,25 @@ final class ProgressSyncCoordinator {
             return false
         }
 
+        let trimmedDeviceName = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedDeviceName.map({ !$0.isEmpty }) ?? true else {
+            lastFailureMessage = "请输入设备名称。"
+            return false
+        }
+        var registration = deviceRegistration
+        if let trimmedDeviceName { registration.deviceName = trimmedDeviceName }
+
         isWorking = true
         lastFailureMessage = nil
         defer { isWorking = false }
         let request = SyncStartRequest(
             email: email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            device: deviceRegistration
+            device: registration
         )
         do {
             let response = try await api.startSync(request)
+            deviceRegistration = registration
+            defaults.set(registration.deviceName, forKey: Self.deviceNameKey)
             credentials = response.credentials
             await vault.save(response.credentials)
             defaults.set(serverAddress, forKey: SyncServerConfiguration.credentialServerKey)
@@ -560,12 +570,16 @@ final class ProgressSyncCoordinator {
             deviceID = UUID()
             defaults.set(deviceID.uuidString.lowercased(), forKey: key)
         }
-        let name = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let storedName = defaults.string(forKey: deviceNameKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultName = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
         return SyncDeviceRegistration(
             deviceId: deviceID,
-            deviceName: name.isEmpty ? "iOS 设备" : name,
+            deviceName: storedName.flatMap({ $0.isEmpty ? nil : $0 })
+                ?? (defaultName.isEmpty ? "iOS 设备" : defaultName),
             platform: "ios",
             appVersion: AppVersion.displayText
         )
     }
+
+    private static let deviceNameKey = "sync.device.name.v1"
 }

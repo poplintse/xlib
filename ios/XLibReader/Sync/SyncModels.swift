@@ -105,7 +105,7 @@ struct SyncCredentials: Codable, Equatable, Sendable {
 
 struct SyncDeviceRegistration: Codable, Equatable, Sendable {
     let deviceId: UUID
-    let deviceName: String
+    var deviceName: String
     let platform: String
     let appVersion: String
 }

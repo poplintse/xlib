@@ -68,6 +68,13 @@ final class SyncTokenStore {
         return preferences.getString(KEY_EMAIL, "");
     }
 
+    synchronized void saveDeviceName(String deviceName) {
+        String normalized = normalizeDeviceName(deviceName);
+        if (!normalized.isEmpty()) {
+            preferences.edit().putString(KEY_DEVICE_NAME, normalized).apply();
+        }
+    }
+
     synchronized void clear() {
         preferences.edit()
                 .remove(KEY_EMAIL)
@@ -118,5 +125,17 @@ final class SyncTokenStore {
 
     static String normalizeEmail(String email) {
         return email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    static String normalizeDeviceName(String deviceName) {
+        if (deviceName == null) return "";
+        String normalized = deviceName.trim();
+        return normalized.length() > 80 ? normalized.substring(0, 80) : normalized;
+    }
+
+    static boolean isValidDeviceName(String deviceName) {
+        if (deviceName == null) return false;
+        String normalized = deviceName.trim();
+        return !normalized.isEmpty() && normalized.length() <= 80;
     }
 }

@@ -174,11 +174,16 @@ final class ProgressSyncCoordinator {
         });
     }
 
-    void startSync(String email, ActionCallback<Void> callback) {
+    void startSync(String email, String deviceName, ActionCallback<Void> callback) {
         serial.execute(() -> {
             String normalized = SyncTokenStore.normalizeEmail(email);
             if (!isValidEmail(normalized)) {
                 deliver(callback, SyncActionResult.failure("INVALID_EMAIL"));
+                return;
+            }
+            String normalizedDeviceName = SyncTokenStore.normalizeDeviceName(deviceName);
+            if (!SyncTokenStore.isValidDeviceName(normalizedDeviceName)) {
+                deliver(callback, SyncActionResult.failure("INVALID_DEVICE_NAME"));
                 return;
             }
             if (!api.configured()) {
@@ -199,8 +204,9 @@ final class ProgressSyncCoordinator {
             try {
                 lastAttemptAtMs = System.currentTimeMillis();
                 SyncApiClient.StartSyncResponse response = api.startSync(normalized,
-                        tokenStore.deviceId(), tokenStore.deviceName(), appVersion);
+                        tokenStore.deviceId(), normalizedDeviceName, appVersion);
                 String previousEmail = tokenStore.email();
+                tokenStore.saveDeviceName(normalizedDeviceName);
                 tokenStore.save(response.email, response.token);
                 if (!response.email.equals(previousEmail)) remoteStore.clear();
                 remoteStore.open(response.email);
@@ -224,6 +230,10 @@ final class ProgressSyncCoordinator {
                 publishState();
             }
         });
+    }
+
+    String deviceName() {
+        return tokenStore.deviceName();
     }
 
     void disableSync(ActionCallback<Void> callback) {

@@ -1874,31 +1874,42 @@ public class MainActivity extends Activity {
         if (state == null || !state.enabled || tokenRequired) {
             LinearLayout enableCard = makeSyncCard("阅读进度同步",
                     tokenRequired
-                            ? "同步凭据已失效，请重新输入邮箱开启。TXT 内容和文件名不会上传。"
-                            : "输入邮箱后可在不同设备间同步阅读进度。TXT 内容和文件名不会上传。",
+                            ? "同步凭据已失效，请重新输入账户信息开启。TXT 内容和文件名不会上传。"
+                            : "输入账户信息后可在不同设备间同步阅读进度。TXT 内容和文件名不会上传。",
                     surface, text, muted);
+            TextView accountLabel = makeSyncFieldLabel("账户信息", text);
+            enableCard.addView(accountLabel);
             EditText emailInput = new EditText(this);
             emailInput.setSingleLine(true);
             emailInput.setHint("邮箱");
             if (tokenRequired) emailInput.setText(state.email);
-            emailInput.setTextColor(text);
-            emailInput.setHintTextColor(muted);
-            emailInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-            emailInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
-                    | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-            emailInput.setBackground(UiKit.rounded(this, variant, 12));
-            emailInput.setPadding(dp(12), 0, dp(12), 0);
-            enableCard.addView(emailInput, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
-            Button enable = makeButton(state != null && state.busy ? "正在开启…"
-                    : (tokenRequired ? "重新开启同步" : "开始同步"));
+            styleSyncInput(emailInput, text, muted, variant,
+                    android.text.InputType.TYPE_CLASS_TEXT
+                            | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+            enableCard.addView(emailInput, syncFieldLayoutParams());
+            TextView deviceLabel = makeSyncFieldLabel("设备信息", text);
+            LinearLayout.LayoutParams deviceLabelLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            deviceLabelLp.topMargin = dp(10);
+            enableCard.addView(deviceLabel, deviceLabelLp);
+            EditText deviceInput = new EditText(this);
+            deviceInput.setSingleLine(true);
+            deviceInput.setHint("设备名称");
+            deviceInput.setText(syncCoordinator.deviceName());
+            styleSyncInput(deviceInput, text, muted, variant,
+                    android.text.InputType.TYPE_CLASS_TEXT
+                            | android.text.InputType.TYPE_TEXT_VARIATION_NORMAL);
+            enableCard.addView(deviceInput, syncFieldLayoutParams());
+            Button enable = makeButton(state != null && state.busy ? "正在保存…" : "保存");
             UiKit.styleButton(this, enable, accentContainer, accent, 14);
             enable.setEnabled(state == null || !state.busy);
             enable.setOnClickListener(v -> syncCoordinator.startSync(
-                    emailInput.getText().toString(), result -> {
+                    emailInput.getText().toString(), deviceInput.getText().toString(), result -> {
                         if (!result.isSuccess()) {
                             if ("INVALID_EMAIL".equals(result.errorCode)) {
                                 emailInput.setError("请输入有效邮箱");
+                            } else if ("INVALID_DEVICE_NAME".equals(result.errorCode)) {
+                                deviceInput.setError("请输入设备名称（最多 80 个字符）");
                             } else {
                                 showSyncActionError(result.errorCode);
                             }
@@ -1910,6 +1921,12 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
             enableLp.topMargin = dp(8);
             enableCard.addView(enable, enableLp);
+            TextView syncNote = new TextView(this);
+            syncNote.setText("服务端会为邮箱创建或返回已有同步 Token，设备名称用于区分不同设备。");
+            syncNote.setTextColor(muted);
+            syncNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            syncNote.setPadding(0, dp(10), 0, 0);
+            enableCard.addView(syncNote);
             if (tokenRequired) {
                 Button disable = makeButton("关闭本机同步");
                 UiKit.styleButton(this, disable, variant, text, 14);
@@ -1948,6 +1965,30 @@ public class MainActivity extends Activity {
                 variant, this::confirmDeleteRemoteProgress);
         settingsContent.addView(actions, syncCardLayoutParams());
         settingsScroll.scrollTo(0, 0);
+    }
+
+    private TextView makeSyncFieldLabel(String label, int text) {
+        TextView view = new TextView(this);
+        view.setText(label);
+        view.setTextColor(text);
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        return view;
+    }
+
+    private void styleSyncInput(EditText input, int text, int muted, int variant, int inputType) {
+        input.setTextColor(text);
+        input.setHintTextColor(muted);
+        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        input.setInputType(inputType);
+        input.setBackground(UiKit.rounded(this, variant, 12));
+        input.setPadding(dp(12), 0, dp(12), 0);
+    }
+
+    private LinearLayout.LayoutParams syncFieldLayoutParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+        params.topMargin = dp(5);
+        return params;
     }
 
     private LinearLayout makeSyncCard(String titleText, String description, int surface,

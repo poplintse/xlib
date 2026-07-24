@@ -1,0 +1,89 @@
+name: Release verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Monorepo release manifest version
+        required: true
+        default: 0.9.0
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    outputs:
+      release: ${{ steps.release.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            value="${GITHUB_REF_NAME#v}"
+          else
+            value="${{ inputs.release }}"
+          fi
+          echo "value=${value}" >> "${GITHUB_OUTPUT}"
+      - run: ./scripts/release-check.sh "${{ steps.release.outputs.value }}"
+      - run: swift test --package-path packages/apple-shared
+
+  backend:
+    needs: verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/backend
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.9.0
+          run_install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: services/backend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  android:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./scripts/build-android-debug.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: xlib-android-debug-${{ needs.verify.outputs.release }}
+          path: apps/android/app/build/outputs/apk/debug/xlib-debug.apk
+
+  ios:
+    needs: verify
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: ./scripts/build-ios-debug.sh
+        env:
+          XLIB_DERIVED_DATA: ${{ runner.temp }}/xlib-derived-data/ios-debug
+      - uses: actions/upload-artifact@v7
+        with:
+          name: xlib-ios-simulator-debug-${{ needs.verify.outputs.release }}
+          path: ${{ runner.temp }}/xlib-derived-data/ios-debug/Build/Products/Debug-iphonesimulator/XLibReader.app
+
+# This workflow intentionally does not sign, publish, tag, create a GitHub
+# Release, deploy the backend, or upload to an app store.

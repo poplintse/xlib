@@ -1,7 +1,19 @@
 # XLib 架构
 
 本文记录当前实现的稳定边界。产品交互以
-[`product-requirements.md`](product-requirements.md) 为准；本文只说明数据归属、阅读定位、缓存、目录、书签和运行状态如何协作。
+[`features/reader.md`](features/reader.md) 为准；本文重点说明阅读器的数据归属、阅读定位、缓存、目录、书签和运行状态如何协作。
+
+## 0. Monorepo 边界
+
+- `apps/android` 与 `apps/ios` 是独立原生客户端；`apps/macos` 当前为 planned。
+- `packages/apple-shared` 只提供不依赖平台 UI 的 Swift 编码与 byte-offset 核心。
+- `services/backend` 提供可选的同步能力，客户端离线时仍可完整阅读。
+- `contracts/openapi.yaml` 是 Backend、Android 与 iOS 之间的 HTTP 合同。
+- 客户端只同步 TXT 哈希、文件大小、阅读 offset、时间和设备元数据，不上传正文、书名或本地路径。
+
+下面第 1–7 节记录当前 Android 阅读器实现；iOS 迁移设计和同步边界分别见
+[`features/ios.md`](features/ios.md)、[`features/sync-client.md`](features/sync-client.md)
+和 [`features/sync-server.md`](features/sync-server.md)。
 
 ## 1. 页面与状态边界
 
@@ -147,6 +159,7 @@ UTF-8、UTF-16LE、UTF-16BE、GB18030 等多字节编码必须在完整字符边
 
 ## 7. 构建边界
 
-- `version.properties` 是 `versionCode` 和 `versionName` 的唯一来源。
-- 成功完成 `assembleDebug` 或 `assembleRelease` 后，Gradle 的 `bumpVersion` 会把 `versionCode` 增加 1。
-- 普通代码审查、文档整理和静态检查不得触发构建；只有用户明确要求时才执行 Debug/Release 编译或 APK 打包。
+- `apps/android/version.properties` 是 Android `versionCode` 和 `versionName` 的唯一来源。
+- Android 和 iOS 的普通构建不得修改版本文件；版本变化只能来自明确的发布准备操作。
+- 根 `Makefile` 与 `scripts/` 是本地和 CI 的统一入口，组件内部仍保留各自原生工具链。
+- `releases/<version>.yaml` 记录 monorepo 发布与组件版本映射，不重置组件自己的版本历史。

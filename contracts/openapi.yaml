@@ -1,0 +1,469 @@
+openapi: 3.0.3
+info:
+  title: XLib Sync API
+  version: 1.0.0
+  description: Reading-progress synchronization API for XLib native clients.
+servers:
+  - url: https://sync.example.com
+    description: Placeholder only; production domains are not stored in the repository.
+tags:
+  - name: auth
+  - name: devices
+  - name: progress
+  - name: operations
+paths:
+  /v1/auth/start-sync:
+    post:
+      tags: [auth]
+      operationId: startSync
+      summary: Create or recover a fixed sync token and register a device.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartSyncRequest"
+      responses:
+        "200":
+          description: Sync identity and device are active.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartSyncResponse"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "422":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ApiError"
+  /v1/devices:
+    get:
+      tags: [devices]
+      operationId: listDevices
+      summary: List all devices associated with the current sync identity.
+      security:
+        - SyncToken: []
+          DeviceId: []
+      responses:
+        "200":
+          description: Device list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceListResponse"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/devices/{deviceId}:
+    delete:
+      tags: [devices]
+      operationId: revokeDevice
+      summary: Revoke a device.
+      security:
+        - SyncToken: []
+          DeviceId: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdPath"
+      responses:
+        "204":
+          description: Device revoked.
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/account:
+    delete:
+      tags: [auth]
+      operationId: deleteAccount
+      summary: Permanently delete the sync identity, devices, and cloud progress.
+      description: Clients must present an explicit destructive confirmation before calling.
+      security:
+        - SyncToken: []
+          DeviceId: []
+      responses:
+        "204":
+          description: Account and associated cloud data deleted.
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/progress:
+    get:
+      tags: [progress]
+      operationId: listProgress
+      summary: List all cloud reading progress.
+      security:
+        - SyncToken: []
+          DeviceId: []
+      responses:
+        "200":
+          description: Current progress states.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgressListResponse"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    delete:
+      tags: [progress]
+      operationId: deleteProgress
+      summary: Permanently delete all cloud progress for the sync identity.
+      description: Clients must present an explicit destructive confirmation before calling.
+      security:
+        - SyncToken: []
+          DeviceId: []
+      responses:
+        "204":
+          description: All cloud progress deleted.
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/progress/sync:
+    post:
+      tags: [progress]
+      operationId: syncProgress
+      summary: Arbitrate and store one to 100 progress candidates.
+      security:
+        - SyncToken: []
+          DeviceId: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProgressSyncRequest"
+      responses:
+        "200":
+          description: A decision and final state for each input item, in input order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgressSyncResponse"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "413":
+          $ref: "#/components/responses/ApiError"
+        "422":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /health:
+    get:
+      tags: [operations]
+      operationId: health
+      summary: Check API and database health.
+      security: []
+      responses:
+        "200":
+          description: Healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Database unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /metrics:
+    get:
+      tags: [operations]
+      operationId: metrics
+      summary: Export Prometheus metrics for internal monitoring.
+      security:
+        - MetricsToken: []
+      responses:
+        "200":
+          description: Prometheus text exposition.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/ApiError"
+components:
+  securitySchemes:
+    SyncToken:
+      type: http
+      scheme: bearer
+      bearerFormat: 43-character base64url token
+    DeviceId:
+      type: apiKey
+      in: header
+      name: X-Device-Id
+    MetricsToken:
+      type: http
+      scheme: bearer
+      bearerFormat: metrics token
+  headers:
+    RequestId:
+      description: Request correlation identifier.
+      schema:
+        type: string
+  parameters:
+    DeviceIdPath:
+      name: deviceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    ApiError:
+      description: Error response.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    RateLimited:
+      description: Request rate limit exceeded.
+      headers:
+        Retry-After:
+          description: Seconds before retrying when available.
+          schema:
+            type: integer
+            minimum: 0
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    Platform:
+      type: string
+      enum: [ios, android]
+    DeviceRegistration:
+      type: object
+      additionalProperties: false
+      required: [deviceId, deviceName, platform, appVersion]
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+        deviceName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        platform:
+          $ref: "#/components/schemas/Platform"
+        appVersion:
+          type: string
+          minLength: 1
+          maxLength: 40
+    StartSyncRequest:
+      type: object
+      additionalProperties: false
+      required: [email, device]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        device:
+          $ref: "#/components/schemas/DeviceRegistration"
+    StartSyncResponse:
+      type: object
+      required: [token, user, device, serverTimeMs]
+      properties:
+        token:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          readOnly: true
+        user:
+          type: object
+          required: [userId, email]
+          properties:
+            userId:
+              type: string
+              format: uuid
+            email:
+              type: string
+              format: email
+        device:
+          $ref: "#/components/schemas/DeviceSummary"
+        serverTimeMs:
+          $ref: "#/components/schemas/TimestampMs"
+    DeviceSummary:
+      type: object
+      required: [deviceId, deviceName, platform]
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+        deviceName:
+          type: string
+        platform:
+          $ref: "#/components/schemas/Platform"
+    DeviceState:
+      allOf:
+        - $ref: "#/components/schemas/DeviceSummary"
+        - type: object
+          required: [appVersion, lastSeenAtMs, createdAtMs, revokedAtMs, current]
+          properties:
+            appVersion:
+              type: string
+            lastSeenAtMs:
+              $ref: "#/components/schemas/TimestampMs"
+            createdAtMs:
+              $ref: "#/components/schemas/TimestampMs"
+            revokedAtMs:
+              type: integer
+              format: int64
+              nullable: true
+            current:
+              type: boolean
+    DeviceListResponse:
+      type: object
+      required: [serverTimeMs, items]
+      properties:
+        serverTimeMs:
+          $ref: "#/components/schemas/TimestampMs"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeviceState"
+    ProgressCandidate:
+      type: object
+      additionalProperties: false
+      required: [bookHash, fileSize, offset, readAtMs]
+      properties:
+        bookHash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        fileSize:
+          type: integer
+          format: int64
+          minimum: 1
+        offset:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Must be less than or equal to fileSize.
+        readAtMs:
+          $ref: "#/components/schemas/TimestampMs"
+    ProgressSyncRequest:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/ProgressCandidate"
+    ProgressState:
+      type: object
+      required: [bookHash, fileSize, offset, progress, readAtMs, version, device]
+      properties:
+        bookHash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        fileSize:
+          type: integer
+          format: int64
+          minimum: 1
+        offset:
+          type: integer
+          format: int64
+          minimum: 0
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        readAtMs:
+          $ref: "#/components/schemas/TimestampMs"
+        version:
+          type: string
+          pattern: "^[0-9]+$"
+        device:
+          $ref: "#/components/schemas/DeviceSummary"
+    ProgressListResponse:
+      type: object
+      required: [serverTimeMs, items]
+      properties:
+        serverTimeMs:
+          $ref: "#/components/schemas/TimestampMs"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProgressState"
+    ProgressSyncResult:
+      type: object
+      required: [decision, timeAdjusted, state]
+      properties:
+        decision:
+          type: string
+          enum: [accepted, server_kept, unchanged]
+        timeAdjusted:
+          type: boolean
+        state:
+          $ref: "#/components/schemas/ProgressState"
+    ProgressSyncResponse:
+      type: object
+      required: [serverTimeMs, results]
+      properties:
+        serverTimeMs:
+          $ref: "#/components/schemas/TimestampMs"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProgressSyncResult"
+    TimestampMs:
+      type: integer
+      format: int64
+      minimum: 0
+      maximum: 253402300799999
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable, requestId]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            retryable:
+              type: boolean
+            requestId:
+              type: string
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]

@@ -1,0 +1,80 @@
+plugins {
+    id "com.android.application"
+}
+
+// version.properties is the single source of truth for the app's versionCode
+// and versionName. Builds are intentionally reproducible and never mutate it;
+// the repository release preparation script owns version changes.
+def versionPropsFile = rootProject.file("version.properties")
+def versionProps = new Properties()
+if (versionPropsFile.exists()) {
+    versionPropsFile.withInputStream { versionProps.load(it) }
+} else {
+    versionProps.setProperty("versionCode", "1")
+    versionProps.setProperty("versionName", "0.9.0")
+    versionPropsFile.parentFile.mkdirs()
+    versionPropsFile.withOutputStream {
+        versionProps.store(it, "xlib version (versionCode auto-increments on assembleDebug)")
+    }
+}
+def currentCode = versionProps.getProperty("versionCode", "1").toInteger()
+def currentName = versionProps.getProperty("versionName", "0.9.0")
+
+// local.properties holds signing credentials for the release build. Kept out of
+// git (see .gitignore); copy local.properties.example if you need a fresh start.
+def localPropsFile = rootProject.file("local.properties")
+def localProps = new Properties()
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+
+android {
+    namespace "com.xlib.txtreader"
+    compileSdk 35
+
+    signingConfigs {
+        create("release") {
+            storeFile file(localProps.getProperty("RELEASE_STORE_FILE", "release.jks"))
+            storePassword localProps.getProperty("RELEASE_STORE_PASSWORD", "")
+            keyAlias localProps.getProperty("RELEASE_KEY_ALIAS", "")
+            keyPassword localProps.getProperty("RELEASE_KEY_PASSWORD", "")
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.xlib.txtreader"
+        minSdk 23
+        targetSdk 35
+        versionCode currentCode
+        versionName currentName
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
+    applicationVariants.configureEach { variant ->
+        variant.outputs.configureEach { output ->
+            if (variant.buildType.name == "debug") {
+                output.outputFileName = "xlib-debug.apk"
+            } else if (variant.buildType.name == "release") {
+                output.outputFileName = "xlib-release.apk"
+            }
+        }
+    }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+}

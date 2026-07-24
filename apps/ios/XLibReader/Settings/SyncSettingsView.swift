@@ -249,30 +249,32 @@ private struct SyncAccountSettingsView: View {
     private var theme: AppTheme { store.settings.theme }
 
     var body: some View {
-        VStack(spacing: 10) {
-            TextField("邮箱", text: $email)
-                .keyboardType(.emailAddress)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textContentType(.emailAddress)
-                .focused($emailIsFocused)
-                .submitLabel(.go)
-                .onSubmit { submit() }
-                .frame(minHeight: 58)
-                .foregroundStyle(theme.text)
-                .accessibilityIdentifier("sync.email")
+        SettingsPage(title: "同步账户", theme: theme) {
+            SettingsSection(title: "账户信息", theme: theme) {
+                TextField("邮箱", text: $email)
+                    .keyboardType(.emailAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textContentType(.emailAddress)
+                    .focused($emailIsFocused)
+                    .submitLabel(.go)
+                    .onSubmit { submit() }
+                    .frame(maxWidth: .infinity, minHeight: 58)
+                    .foregroundStyle(theme.text)
+                    .accessibilityIdentifier("sync.email")
 
-            SettingsDivider(theme: theme)
+                SettingsDivider(theme: theme)
 
-            TextField("设备名称", text: $deviceName)
-                .textInputAutocapitalization(.sentences)
-                .autocorrectionDisabled()
-                .textContentType(.name)
-                .submitLabel(.done)
-                .onSubmit { submit() }
-                .frame(minHeight: 58)
-                .foregroundStyle(theme.text)
-                .accessibilityIdentifier("sync.deviceName")
+                TextField("设备名称", text: $deviceName)
+                    .textInputAutocapitalization(.sentences)
+                    .autocorrectionDisabled()
+                    .textContentType(.name)
+                    .submitLabel(.done)
+                    .onSubmit { submit() }
+                    .frame(maxWidth: .infinity, minHeight: 58)
+                    .foregroundStyle(theme.text)
+                    .accessibilityIdentifier("sync.deviceName")
+            }
 
             if let message = localError ?? sync.lastFailureMessage {
                 SettingsNote(text: message, theme: theme)
@@ -299,7 +301,6 @@ private struct SyncAccountSettingsView: View {
                 theme: theme
             )
         }
-        .padding(.vertical, 8)
         .onAppear {
             email = sync.email ?? ""
             deviceName = sync.currentDeviceName

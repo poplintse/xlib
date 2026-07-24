@@ -69,9 +69,17 @@ final class XLibReaderUITests: XCTestCase {
         app.buttons["sync.accountSettings"].tap()
         XCTAssertTrue(app.textFields["sync.email"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textFields["sync.deviceName"].exists)
+        XCTAssertTrue(app.staticTexts["同步账户"].exists)
         XCTAssertTrue(app.buttons["sync.settingsSave"].exists)
         XCTAssertFalse(app.secureTextFields.firstMatch.exists)
         XCTAssertFalse(app.segmentedControls.firstMatch.exists)
+
+        let email = app.textFields["sync.email"]
+        let deviceName = app.textFields["sync.deviceName"]
+        XCTAssertGreaterThanOrEqual(email.frame.minX, app.frame.minX)
+        XCTAssertLessThanOrEqual(email.frame.maxX, app.frame.maxX)
+        XCTAssertGreaterThanOrEqual(deviceName.frame.minX, app.frame.minX)
+        XCTAssertLessThanOrEqual(deviceName.frame.maxX, app.frame.maxX)
     }
 
     @MainActor

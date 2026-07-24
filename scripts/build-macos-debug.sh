@@ -2,11 +2,14 @@
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+logs="$root/artifacts/logs"
+timestamp="$(date '+%Y%m%d-%H%M%S')"
+log="$logs/macos-debug-$timestamp-$$.log"
+mkdir -p "$logs"
+: >"$log"
 
-if ! find "$root/apps/macos" -maxdepth 1 -name '*.xcodeproj' -print -quit | grep -q .; then
-    echo "macOS is planned: no buildable Xcode project exists in apps/macos" >&2
-    exit 2
-fi
+message="macOS is planned: no buildable Xcode project exists in apps/macos"
+printf '%s\n' "$message" >"$log"
+printf 'FAILED macOS Debug: %s\nlog: %s\n' "$message" "$log" >&2
 
-echo "a macOS project exists but no canonical scheme has been approved" >&2
 exit 2

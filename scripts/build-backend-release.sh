@@ -19,10 +19,8 @@ fail() {
     exit "$status"
 }
 
-if [ -z "$requested" ]; then
-    fail "VERSION is required (for example: make build-backend-release VERSION=0.9.0)" 2
-fi
-if ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+if [ -n "$requested" ] &&
+    ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
     fail "invalid VERSION: $requested" 2
 fi
 
@@ -32,8 +30,26 @@ if ! actual="$(
 )"; then
     fail "could not read the backend version"
 fi
-if [ "$requested" != "$actual" ]; then
-    fail "VERSION $requested does not match backend package version $actual"
+if ! printf '%s\n' "$actual" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+    fail "invalid backend version: $actual"
+fi
+if [ -n "$requested" ] && [ "$requested" != "$actual" ]; then
+    staged_package_json="$package_json.tmp.$$"
+    trap 'rm -f "$staged_package_json"' EXIT HUP INT TERM
+    if ! ruby -e '
+      source, previous, requested, output = ARGV
+      text = File.read(source)
+      current = %("version": "#{previous}")
+      replacement = %("version": "#{requested}")
+      abort "package version entry was not found" unless text.include?(current)
+      File.write(output, text.sub(current, replacement))
+    ' "$package_json" "$actual" "$requested" "$staged_package_json" 2>>"$log"; then
+        fail "could not update backend package version to $requested"
+    fi
+    mv "$staged_package_json" "$package_json"
+    trap - EXIT HUP INT TERM
+    printf 'Backend package version: %s -> %s\n' "$actual" "$requested" >>"$log"
+    actual="$requested"
 fi
 
 if ! command -v node >/dev/null 2>&1; then
@@ -70,7 +86,7 @@ fi
 artifact_dir="$root/artifacts/backend/$actual"
 artifact="$artifact_dir/xlib-backend-$actual.tar.gz"
 mkdir -p "$artifact_dir"
-before="$(shasum -a 256 "$package_json")"
+before_build="$(shasum -a 256 "$package_json")"
 
 set +e
 (
@@ -107,8 +123,8 @@ if [ "$status" -ne 0 ]; then
     fail "backend build or artifact verification failed" "$status"
 fi
 
-after="$(shasum -a 256 "$package_json")"
-if [ "$before" != "$after" ]; then
+after_build="$(shasum -a 256 "$package_json")"
+if [ "$before_build" != "$after_build" ]; then
     fail "build mutated services/backend/package.json"
 fi
 

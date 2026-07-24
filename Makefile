@@ -15,13 +15,13 @@ help:
 		'make check-alpha           Run the full Alpha verification suite' \
 		'make test-backend          Lint, typecheck, test and build the backend' \
 		'make test-apple-shared     Test the shared Swift package' \
-		'make build-android-debug   Build an Android Debug APK' \
-		'make build-android-release Build an Android Release APK (requires VERSION)' \
-		'make build-ios-debug       Build an iOS Simulator Debug app' \
-		'make build-ios-release     Build a signed iOS Release app (requires VERSION)' \
+		'make build-android-debug   Build an Android Debug APK (optional VERSION)' \
+		'make build-android-release Build an Android Release APK (optional VERSION)' \
+		'make build-ios-debug       Build an iOS Simulator Debug app (optional VERSION)' \
+		'make build-ios-release     Build a signed iOS Release app (optional VERSION)' \
 		'make build-macos-debug     Build macOS when a real target exists' \
-		'make build-macos-release   Build macOS Release when a real target exists (requires VERSION)' \
-		'make build-backend-release Build a backend release bundle (requires VERSION)' \
+		'make build-macos-release   Build macOS Release when a real target exists (optional VERSION)' \
+		'make build-backend-release Build a backend release bundle (optional VERSION)' \
 		'make release-check         Validate releases/$(RELEASE).yaml'
 
 bootstrap:
@@ -40,19 +40,19 @@ test-apple-shared:
 	swift test --package-path packages/apple-shared
 
 build-android-debug:
-	@./scripts/build-android-debug.sh
+	@VERSION="$(VERSION)" ./scripts/build-android-debug.sh
 
 build-android-release:
 	@VERSION="$(VERSION)" ./scripts/build-android-release.sh
 
 build-ios-debug:
-	@./scripts/build-ios-debug.sh
+	@VERSION="$(VERSION)" ./scripts/build-ios-debug.sh
 
 build-ios-release:
 	@VERSION="$(VERSION)" ./scripts/build-ios-release.sh
 
 build-macos-debug:
-	@./scripts/build-macos-debug.sh
+	@VERSION="$(VERSION)" ./scripts/build-macos-debug.sh
 
 build-macos-release:
 	@VERSION="$(VERSION)" ./scripts/build-macos-release.sh

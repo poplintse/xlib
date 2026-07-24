@@ -20,10 +20,8 @@ fail() {
     exit "$status"
 }
 
-if [ -z "$requested" ]; then
-    fail "VERSION is required (for example: make build-ios-release VERSION=0.9.0)" 2
-fi
-if ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+if [ -n "$requested" ] &&
+    ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
     fail "invalid VERSION: $requested" 2
 fi
 
@@ -36,8 +34,29 @@ if ! actual="$(
 )"; then
     fail "could not read the iOS version"
 fi
-if [ "$requested" != "$actual" ]; then
-    fail "VERSION $requested does not match iOS MARKETING_VERSION $actual"
+if ! printf '%s\n' "$actual" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+    fail "invalid iOS version: $actual"
+fi
+if [ -n "$requested" ] && [ "$requested" != "$actual" ]; then
+    staged_project="$project.tmp.$$"
+    trap 'rm -f "$staged_project"' EXIT HUP INT TERM
+    if ! ruby -e '
+      source, previous, requested, output = ARGV
+      text = File.read(source)
+      current = "MARKETING_VERSION = #{previous};"
+      replacement = "MARKETING_VERSION = #{requested};"
+      abort "MARKETING_VERSION entry was not found" unless text.include?(current)
+      File.write(output, text.gsub(current, replacement))
+    ' "$project" "$actual" "$requested" "$staged_project" 2>>"$log"; then
+        fail "could not update iOS MARKETING_VERSION to $requested"
+    fi
+    mv "$staged_project" "$project"
+    trap - EXIT HUP INT TERM
+    printf 'iOS MARKETING_VERSION: %s -> %s\n' "$actual" "$requested" >>"$log"
+    actual="$requested"
+fi
+if ! SRCROOT="$ios" "$ios/Scripts/increment_build_number.sh" >>"$log" 2>&1; then
+    fail "could not increment the iOS build number"
 fi
 if ! build_number="$(
     ruby -e '
@@ -57,8 +76,8 @@ artifact="$artifact_dir/XLibReader-Release.app"
 derived_data="$root/artifacts/.build/ios-release"
 mkdir -p "$artifact_dir" "$derived_data"
 
-before_project="$(shasum -a 256 "$project")"
-before_plist="$(shasum -a 256 "$plist")"
+before_build_project="$(shasum -a 256 "$project")"
+before_build_plist="$(shasum -a 256 "$plist")"
 
 set +e
 (
@@ -80,9 +99,7 @@ set +e
     cp -R "$source_app" "$staged"
     rm -rf "$artifact"
     mv "$staged" "$artifact"
-    "$root/scripts/verify-artifact.sh" ios "$actual" "$artifact"
-    built_number="$(plutil -extract CFBundleVersion raw -o - "$artifact/Info.plist")"
-    [ "$built_number" = "$build_number" ]
+    "$root/scripts/verify-artifact.sh" ios "$actual" "$artifact" "$build_number"
     [ -f "$artifact/embedded.mobileprovision" ]
     codesign --verify --deep --strict "$artifact"
 ) >>"$log" 2>&1
@@ -92,10 +109,12 @@ if [ "$status" -ne 0 ]; then
     fail "xcodebuild or artifact verification failed" "$status"
 fi
 
-after_project="$(shasum -a 256 "$project")"
-after_plist="$(shasum -a 256 "$plist")"
-if [ "$before_project" != "$after_project" ] || [ "$before_plist" != "$after_plist" ]; then
+after_build_project="$(shasum -a 256 "$project")"
+after_build_plist="$(shasum -a 256 "$plist")"
+if [ "$before_build_project" != "$after_build_project" ] ||
+    [ "$before_build_plist" != "$after_build_plist" ]; then
     fail "build mutated version-managed project files"
 fi
 
-printf 'OK iOS Release %s (signed)\nartifact: %s\nlog: %s\n' "$actual" "$artifact" "$log"
+printf 'OK iOS Release %s (build %s, signed)\nartifact: %s\nlog: %s\n' \
+    "$actual" "$build_number" "$artifact" "$log"

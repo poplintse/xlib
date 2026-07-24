@@ -20,16 +20,37 @@ fail() {
     exit "$status"
 }
 
-if [ -z "$requested" ]; then
-    fail "VERSION is required (for example: make build-android-release VERSION=0.9.0)" 2
-fi
-if ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+if [ -n "$requested" ] &&
+    ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
     fail "invalid VERSION: $requested" 2
 fi
 
+version_name_count="$(
+    awk '
+      /^versionName=/ { count += 1 }
+      END { print count + 0 }
+    ' "$version_file"
+)"
+if [ "$version_name_count" -ne 1 ]; then
+    fail "apps/android/version.properties must contain exactly one versionName"
+fi
 actual="$(sed -n 's/^versionName=//p' "$version_file")"
-if [ "$requested" != "$actual" ]; then
-    fail "VERSION $requested does not match Android versionName $actual"
+if ! printf '%s\n' "$actual" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+    fail "invalid Android version: ${actual:-missing}"
+fi
+if [ -n "$requested" ] && [ "$requested" != "$actual" ]; then
+    staged_version_file="$version_file.tmp.$$"
+    trap 'rm -f "$staged_version_file"' EXIT HUP INT TERM
+    sed "s/^versionName=.*/versionName=$requested/" \
+        "$version_file" >"$staged_version_file"
+    staged_version="$(sed -n 's/^versionName=//p' "$staged_version_file")"
+    if [ "$staged_version" != "$requested" ]; then
+        fail "could not update Android versionName to $requested"
+    fi
+    mv "$staged_version_file" "$version_file"
+    trap - EXIT HUP INT TERM
+    printf 'Android versionName: %s -> %s\n' "$actual" "$requested" >>"$log"
+    actual="$requested"
 fi
 version_code="$(sed -n 's/^versionCode=//p' "$version_file")"
 if ! printf '%s\n' "$version_code" | grep -Eq '^[1-9][0-9]*$'; then
@@ -61,7 +82,7 @@ fi
 artifact_dir="$root/artifacts/android/$actual"
 artifact="$artifact_dir/xlib-release.apk"
 mkdir -p "$artifact_dir"
-before="$(shasum -a 256 "$version_file")"
+before_build="$(shasum -a 256 "$version_file")"
 
 set +e
 (
@@ -74,7 +95,7 @@ set +e
     staged="$artifact.tmp.$$"
     cp "$source_apk" "$staged"
     mv "$staged" "$artifact"
-    "$root/scripts/verify-artifact.sh" android "$actual" "$artifact"
+    "$root/scripts/verify-artifact.sh" android "$actual" "$artifact" "$version_code"
     "$apksigner" verify "$artifact"
 ) >>"$log" 2>&1
 status=$?
@@ -83,10 +104,14 @@ if [ "$status" -ne 0 ]; then
     fail "Gradle or artifact verification failed" "$status"
 fi
 
-after="$(shasum -a 256 "$version_file")"
-if [ "$before" != "$after" ]; then
+after_build="$(shasum -a 256 "$version_file")"
+if [ "$before_build" != "$after_build" ]; then
     fail "build mutated version.properties"
 fi
+if ! "$root/scripts/increment-android-version-code.sh" "$version_file" >>"$log" 2>&1; then
+    fail "could not increment the Android versionCode"
+fi
+next_version_code="$(sed -n 's/^versionCode=//p' "$version_file")"
 
-printf 'OK Android Release %s (%s)\nartifact: %s\nlog: %s\n' \
-    "$actual" "$version_code" "$artifact" "$log"
+printf 'OK Android Release %s (build %s; next %s)\nartifact: %s\nlog: %s\n' \
+    "$actual" "$version_code" "$next_version_code" "$artifact" "$log"

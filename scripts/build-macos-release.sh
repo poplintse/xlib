@@ -9,10 +9,8 @@ log="$logs/macos-release-$timestamp-$$.log"
 mkdir -p "$logs"
 : >"$log"
 
-if [ -z "$requested" ]; then
-    message="VERSION is required (for example: make build-macos-release VERSION=0.9.0)"
-    status=2
-elif ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+if [ -n "$requested" ] &&
+    ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
     message="invalid VERSION: $requested"
     status=2
 else

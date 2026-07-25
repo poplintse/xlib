@@ -10,7 +10,7 @@ public class SyncTokenStoreTest {
     @Test
     public void normalizesDeviceNameWithoutChangingReadableContent() {
         assertEquals("我的手机", SyncTokenStore.normalizeDeviceName("  我的手机  "));
-        assertEquals(80, SyncTokenStore.normalizeDeviceName(repeat('a', 100)).length());
+        assertEquals(20, SyncTokenStore.normalizeDeviceName(repeat('a', 100)).length());
     }
 
     @Test
@@ -18,7 +18,7 @@ public class SyncTokenStoreTest {
         assertFalse(SyncTokenStore.isValidDeviceName(null));
         assertFalse(SyncTokenStore.isValidDeviceName("   "));
         assertTrue(SyncTokenStore.isValidDeviceName("Iphone2"));
-        assertFalse(SyncTokenStore.isValidDeviceName(repeat('a', 81)));
+        assertFalse(SyncTokenStore.isValidDeviceName(repeat('a', 21)));
     }
 
     private static String repeat(char value, int count) {

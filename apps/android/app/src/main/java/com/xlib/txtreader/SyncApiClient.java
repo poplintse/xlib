@@ -55,7 +55,7 @@ final class SyncApiClient {
         JSONObject returnedDevice = response.getJSONObject("device");
         if (!deviceId.equals(requiredString(returnedDevice, "deviceId"))
                 || !"android".equals(requiredString(returnedDevice, "platform"))
-                || requiredString(returnedDevice, "deviceName").length() > 80) {
+                || requiredString(returnedDevice, "deviceName").length() > 20) {
             throw new ProtocolException("invalid registered device");
         }
         return new StartSyncResponse(token, normalizedEmail);
@@ -145,7 +145,7 @@ final class SyncApiClient {
         if (!hash.matches("[0-9a-f]{64}") || fileSize <= 0L || offset < 0L
                 || offset > fileSize || !Double.isFinite(progress) || progress < 0d
                 || progress > 1d || readAtMs < 0L || version.isEmpty()
-                || !isUuid(sourceDeviceId) || sourceDeviceName.length() > 80
+                || !isUuid(sourceDeviceId) || sourceDeviceName.length() > 20
                 || !(platform.equals("android") || platform.equals("ios"))) {
             throw new ProtocolException("invalid progress state");
         }

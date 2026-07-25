@@ -38,6 +38,15 @@ final class SyncRules {
         return exceedsPromptThreshold(local.offset, remote.offset, local.fileSize);
     }
 
+    static boolean shouldUploadLocal(LocalProgressSnapshot local,
+                                     RemoteProgressSnapshot remote) {
+        if (local == null || local.bookHash == null) return false;
+        if (remote == null || !local.bookHash.equals(remote.bookHash)
+                || local.fileSize != remote.fileSize) return true;
+        return local.offset > remote.offset
+                || (local.offset == remote.offset && local.readAtMs > remote.readAtMs);
+    }
+
     static long healthBackoffMs(int attempt) {
         if (attempt <= 0) return 30_000L;
         if (attempt == 1) return 60_000L;

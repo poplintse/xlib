@@ -57,6 +57,16 @@ public class SyncRulesTest {
     }
 
     @Test
+    public void localProgressAheadIsUploadedAfterComparison() {
+        LocalProgressSnapshot local = new LocalProgressSnapshot(
+                1L, HASH, 100_000L, 200L, 100L, 2L);
+        assertTrue(SyncRules.shouldUploadLocal(local,
+                remote(HASH, 100_000L, 100L, 200L, "2", "other", "launch")));
+        assertFalse(SyncRules.shouldUploadLocal(local,
+                remote(HASH, 100_000L, 200L, 100L, "2", "other", "launch")));
+    }
+
+    @Test
     public void healthBackoffCapsAtFiveMinutes() {
         assertEquals(30_000L, SyncRules.healthBackoffMs(0));
         assertEquals(60_000L, SyncRules.healthBackoffMs(1));

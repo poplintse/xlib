@@ -2,6 +2,7 @@ package com.xlib.txtreader;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
@@ -10,6 +11,7 @@ import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -197,6 +199,7 @@ public class MainActivity extends Activity {
     private ReaderPageTextView readerText;
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
+    private TextView pageIndicator;
     private Button progressButton;
     private final List<View> progressStepButtons = new ArrayList<>();
     private ImageButton keepScreenOnButton;
@@ -205,6 +208,9 @@ public class MainActivity extends Activity {
     private SeekBar seekBar;
     private ScrollView settingsScroll;
     private LinearLayout settingsContent;
+    private final Runnable hidePageIndicatorRunnable = () -> {
+        if (pageIndicator != null) pageIndicator.animate().alpha(0f).setDuration(180L).start();
+    };
 
     private final Runnable seekPreviewRunnable = () -> {
         if (seekTracking) {
@@ -738,12 +744,8 @@ public class MainActivity extends Activity {
                 + "位置：" + String.format(Locale.getDefault(), "%,d", remote.offset)
                 + "（" + String.format(Locale.getDefault(), "%.2f%%", remote.progress * 100d)
                 + "）\n进度于" + remoteProgressRelativeTime(remote.readAtMs) + "保存。";
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("发现更新的阅读进度")
-                .setMessage(message)
-                .setNegativeButton("暂不跳转", (ignored, which) ->
-                        syncCoordinator.onJumpDeclined(sessionId))
-                .setPositiveButton("跳转", (ignored, which) -> {
+        showModernConfirmDialog("发现更新的阅读进度", message, "暂不跳转", "跳转",
+                () -> syncCoordinator.onJumpDeclined(sessionId), () -> {
                     if (currentBook == null || currentBook.id != localBookId) {
                         syncCoordinator.onJumpDeclined(sessionId);
                         return;
@@ -753,10 +755,58 @@ public class MainActivity extends Activity {
                     syncCoordinator.onRemoteJumpApplied(sessionId, remote.fileSize,
                             remote.offset, remote.readAtMs);
                     showReader(currentBook);
-                })
-                .create();
-        dialog.setOnCancelListener(ignored -> syncCoordinator.onJumpDeclined(sessionId));
+                });
+    }
+
+    private void showModernConfirmDialog(String title, String message, String negative,
+                                         String positive, Runnable onNegative,
+                                         Runnable onPositive) {
+        int theme = appTheme();
+        boolean dark = isDarkTheme(theme);
+        int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int text = textColor(theme);
+        int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+        int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(22), dp(20), dp(22), dp(14));
+        UiKit.styleCard(this, card, surface, 24, 12);
+        TextView heading = new TextView(this);
+        UiKit.styleTitle(heading, text, 19);
+        heading.setText(title);
+        card.addView(heading);
+        TextView body = new TextView(this);
+        body.setText(message);
+        body.setTextColor(muted);
+        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        body.setLineSpacing(dp(3), 1f);
+        body.setPadding(0, dp(10), 0, dp(12));
+        card.addView(body);
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        Button cancel = makeButton(negative);
+        UiKit.styleButton(this, cancel, Color.TRANSPARENT, muted, 14);
+        cancel.setOnClickListener(v -> { if (onNegative != null) onNegative.run(); dialog.dismiss(); });
+        Button confirm = makeButton(positive);
+        UiKit.styleButton(this, confirm,
+                dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER, accent, 14);
+        confirm.setOnClickListener(v -> { if (onPositive != null) onPositive.run(); dialog.dismiss(); });
+        actions.addView(cancel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+        LinearLayout.LayoutParams confirmLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+        confirmLp.leftMargin = dp(6);
+        actions.addView(confirm, confirmLp);
+        card.addView(actions);
+        dialog.setContentView(card);
+        dialog.setOnCancelListener(ignored -> { if (onNegative != null) onNegative.run(); });
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            dialog.getWindow().setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.90f),
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
     }
 
     private String remoteProgressRelativeTime(long timestamp) {
@@ -1397,6 +1447,19 @@ public class MainActivity extends Activity {
             frame.addView(returnToSearch, returnLp);
         }
 
+        pageIndicator = new TextView(this);
+        pageIndicator.setTextColor(Color.WHITE);
+        pageIndicator.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        pageIndicator.setGravity(Gravity.CENTER);
+        pageIndicator.setIncludeFontPadding(false);
+        pageIndicator.setPadding(dp(14), dp(8), dp(14), dp(8));
+        pageIndicator.setBackground(UiKit.rounded(this, UiKit.withAlpha(Color.BLACK, 180), 18));
+        pageIndicator.setAlpha(0f);
+        FrameLayout.LayoutParams pageIndicatorLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER);
+        frame.addView(pageIndicator, pageIndicatorLp);
+
         setContentView(frame);
         long requestedOffset = book.offset;
         frame.post(this::alignMenusToReaderViewport);
@@ -1670,6 +1733,7 @@ public class MainActivity extends Activity {
     }
 
     private void showSettingsPage(Book book, int initialTab) {
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         currentSettingsTab = initialTab;
         int theme = appTheme();
         applyWindowColors(theme);
@@ -1874,8 +1938,8 @@ public class MainActivity extends Activity {
         if (state == null || !state.enabled || tokenRequired) {
             LinearLayout enableCard = makeSyncCard("阅读进度同步",
                     tokenRequired
-                            ? "同步凭据已失效，请重新输入账户信息开启。TXT 内容和文件名不会上传。"
-                            : "输入账户信息后可在不同设备间同步阅读进度。TXT 内容和文件名不会上传。",
+                            ? "同步凭据已失效，请重新输入账户信息开启。"
+                            : "输入账户信息后可在不同设备间同步阅读进度。",
                     surface, text, muted);
             TextView accountLabel = makeSyncFieldLabel("账户信息", text);
             enableCard.addView(accountLabel);
@@ -1886,6 +1950,7 @@ public class MainActivity extends Activity {
             styleSyncInput(emailInput, text, muted, variant,
                     android.text.InputType.TYPE_CLASS_TEXT
                             | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+            makeSettingsInputKeyboardAware(emailInput);
             enableCard.addView(emailInput, syncFieldLayoutParams());
             TextView deviceLabel = makeSyncFieldLabel("设备信息", text);
             LinearLayout.LayoutParams deviceLabelLp = new LinearLayout.LayoutParams(
@@ -1899,6 +1964,8 @@ public class MainActivity extends Activity {
             styleSyncInput(deviceInput, text, muted, variant,
                     android.text.InputType.TYPE_CLASS_TEXT
                             | android.text.InputType.TYPE_TEXT_VARIATION_NORMAL);
+            deviceInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(20)});
+            makeSettingsInputKeyboardAware(deviceInput);
             enableCard.addView(deviceInput, syncFieldLayoutParams());
             Button enable = makeButton(state != null && state.busy ? "正在保存…" : "保存");
             UiKit.styleButton(this, enable, accentContainer, accent, 14);
@@ -1909,7 +1976,7 @@ public class MainActivity extends Activity {
                             if ("INVALID_EMAIL".equals(result.errorCode)) {
                                 emailInput.setError("请输入有效邮箱");
                             } else if ("INVALID_DEVICE_NAME".equals(result.errorCode)) {
-                                deviceInput.setError("请输入设备名称（最多 80 个字符）");
+                                deviceInput.setError("请输入设备名称（最多 20 个字符）");
                             } else {
                                 showSyncActionError(result.errorCode);
                             }
@@ -1949,11 +2016,10 @@ public class MainActivity extends Activity {
                 text, muted);
         settingsContent.addView(statusCard, syncCardLayoutParams());
 
-        LinearLayout actions = makeSyncCard("管理",
-                "刷新只拉取云端状态，不会上传本机进度。", surface, text, muted);
-        addSyncActionButton(actions, "刷新云端状态", false, text, accent, accentContainer,
+        LinearLayout actions = makeSyncCard("", "", surface, text, muted);
+        addSyncActionButton(actions, "刷新同步状态", false, text, accent, accentContainer,
                 variant, () -> syncCoordinator.refreshRemote(result -> {
-                    if (result.isSuccess()) Toast.makeText(this, "云端状态已刷新",
+                    if (result.isSuccess()) Toast.makeText(this, "同步状态已刷新",
                             Toast.LENGTH_SHORT).show();
                     else showSyncActionError(result.errorCode);
                 }));
@@ -1984,6 +2050,17 @@ public class MainActivity extends Activity {
         input.setPadding(dp(12), 0, dp(12), 0);
     }
 
+    private void makeSettingsInputKeyboardAware(EditText input) {
+        input.setOnFocusChangeListener((view, focused) -> {
+            if (focused && settingsScroll != null) {
+                view.post(() -> view.requestRectangleOnScreen(
+                        new android.graphics.Rect(0, 0, view.getWidth(), view.getHeight()), true));
+            }
+        });
+        input.setOnClickListener(view -> view.post(() -> view.requestRectangleOnScreen(
+                new android.graphics.Rect(0, 0, view.getWidth(), view.getHeight()), true)));
+    }
+
     private LinearLayout.LayoutParams syncFieldLayoutParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
@@ -1997,16 +2074,20 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(14), dp(14), dp(14), dp(14));
         UiKit.styleCard(this, card, surface, 20, 1);
-        TextView title = new TextView(this);
-        UiKit.styleTitle(title, text, 15);
-        title.setText(titleText);
-        card.addView(title);
-        TextView body = new TextView(this);
-        body.setText(description);
-        body.setTextColor(muted);
-        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        body.setPadding(0, dp(5), 0, dp(10));
-        card.addView(body);
+        if (!TextUtils.isEmpty(titleText)) {
+            TextView title = new TextView(this);
+            UiKit.styleTitle(title, text, 15);
+            title.setText(titleText);
+            card.addView(title);
+        }
+        if (!TextUtils.isEmpty(description)) {
+            TextView body = new TextView(this);
+            body.setText(description);
+            body.setTextColor(muted);
+            body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            body.setPadding(0, dp(5), 0, dp(10));
+            card.addView(body);
+        }
         return card;
     }
 
@@ -2123,36 +2204,89 @@ public class MainActivity extends Activity {
                 return;
             }
             String currentId = syncUiState == null ? "" : syncUiState.deviceId;
-            String[] labels = new String[devices.size()];
-            for (int i = 0; i < devices.size(); i++) {
-                SyncDevice device = devices.get(i);
-                labels[i] = device.deviceName + (device.deviceId.equals(currentId) ? "（本机）" : "")
-                        + (device.revoked ? " · 已移除" : "");
+            int theme = appTheme();
+            boolean dark = isDarkTheme(theme);
+            int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+            int variant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
+            int text = textColor(theme);
+            int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+            int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+            Dialog dialog = new Dialog(this);
+            dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(dp(20), dp(20), dp(20), dp(14));
+            UiKit.styleCard(this, card, surface, 24, 12);
+            TextView title = new TextView(this);
+            UiKit.styleTitle(title, text, 19);
+            title.setText("设备管理");
+            card.addView(title);
+            TextView subtitle = new TextView(this);
+            subtitle.setText("本机不可删除，其他设备可移除同步权限。设备名称最多 20 个字符。\n");
+            subtitle.setTextColor(muted);
+            subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            subtitle.setPadding(0, dp(8), 0, dp(4));
+            card.addView(subtitle);
+            for (SyncDevice device : devices) {
+                LinearLayout row = new LinearLayout(this);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(12), dp(4), dp(6), dp(4));
+                row.setBackground(UiKit.interactive(this, variant, 14, UiKit.withAlpha(accent, 28)));
+                TextView name = new TextView(this);
+                name.setText(device.deviceName);
+                name.setTextColor(text);
+                name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                name.setSingleLine(true);
+                name.setEllipsize(TextUtils.TruncateAt.END);
+                row.addView(name, new LinearLayout.LayoutParams(0, dp(44), 1));
+                boolean local = device.deviceId.equals(currentId);
+                if (local) {
+                    TextView localLabel = new TextView(this);
+                    localLabel.setText("本机");
+                    localLabel.setTextColor(accent);
+                    localLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    localLabel.setGravity(Gravity.CENTER);
+                    row.addView(localLabel, new LinearLayout.LayoutParams(dp(56), dp(40)));
+                } else if (!device.revoked) {
+                    Button remove = makeButton("删除");
+                    UiKit.styleButton(this, remove,
+                            dark ? Color.rgb(86, 37, 38) : Color.rgb(255, 226, 225),
+                            dark ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27), 12);
+                    remove.setOnClickListener(v -> confirmRevokeDevice(device));
+                    row.addView(remove, new LinearLayout.LayoutParams(dp(64), dp(40)));
+                }
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+                rowLp.topMargin = dp(6);
+                card.addView(row, rowLp);
             }
-            new AlertDialog.Builder(this)
-                    .setTitle("设备管理")
-                    .setItems(labels, (dialog, which) -> {
-                        SyncDevice device = devices.get(which);
-                        if (device.deviceId.equals(currentId) || device.revoked) return;
-                        confirmRevokeDevice(device);
-                    })
-                    .setNegativeButton("完成", null)
-                    .show();
+            Button done = makeButton("完成");
+            UiKit.styleButton(this, done,
+                    dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER, accent, 14);
+            done.setOnClickListener(v -> dialog.dismiss());
+            LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+            doneLp.topMargin = dp(12);
+            card.addView(done, doneLp);
+            dialog.setContentView(card);
+            dialog.show();
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                dialog.getWindow().setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.90f),
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+            }
         });
     }
 
     private void confirmRevokeDevice(SyncDevice device) {
-        new AlertDialog.Builder(this)
-                .setTitle("移除“" + device.deviceName + "”？")
-                .setMessage("该设备需要重新输入邮箱才能再次同步。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("移除", (dialog, which) -> syncCoordinator.revokeDevice(
+        showModernConfirmDialog("删除“" + device.deviceName + "”？",
+                "删除后，该设备将失去同步权限，需要重新输入账户信息才能再次同步。",
+                "取消", "删除", null, () -> syncCoordinator.revokeDevice(
                         device.deviceId, result -> {
                             if (result.isSuccess()) Toast.makeText(this, "设备已移除",
                                     Toast.LENGTH_SHORT).show();
                             else showSyncActionError(result.errorCode);
-                        }))
-                .show();
+                        }));
     }
 
     private void renderReadingSettings(int surface, int text,
@@ -3471,6 +3605,15 @@ public class MainActivity extends Activity {
         if (seekBar != null && !seekTracking) {
             seekBar.setProgress((int) (currentBook.progress * 1000f));
         }
+        showPageIndicator(readerPageWindow.pagesBefore() + 1);
+    }
+
+    private void showPageIndicator(int pageNumber) {
+        if (pageIndicator == null) return;
+        mainHandler.removeCallbacks(hidePageIndicatorRunnable);
+        pageIndicator.setText("第 " + Math.max(1, pageNumber) + " 页");
+        pageIndicator.animate().alpha(0.70f).setDuration(100L).start();
+        mainHandler.postDelayed(hidePageIndicatorRunnable, 1_000L);
     }
 
     private void maybeRefillReaderPageWindow() {

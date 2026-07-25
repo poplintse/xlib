@@ -130,12 +130,12 @@ final class SyncTokenStore {
     static String normalizeDeviceName(String deviceName) {
         if (deviceName == null) return "";
         String normalized = deviceName.trim();
-        return normalized.length() > 80 ? normalized.substring(0, 80) : normalized;
+        return normalized.length() > 20 ? normalized.substring(0, 20) : normalized;
     }
 
     static boolean isValidDeviceName(String deviceName) {
         if (deviceName == null) return false;
         String normalized = deviceName.trim();
-        return !normalized.isEmpty() && normalized.length() <= 80;
+        return !normalized.isEmpty() && normalized.length() <= 20;
     }
 }

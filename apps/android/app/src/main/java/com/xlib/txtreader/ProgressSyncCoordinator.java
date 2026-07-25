@@ -468,7 +468,9 @@ final class ProgressSyncCoordinator {
             cancelPeriodic();
             return;
         }
+        boolean uploadLocal = SyncRules.shouldUploadLocal(local, remote);
         completeComparison();
+        if (uploadLocal) syncLatest(true);
     }
 
     private void completeJumpDecision(String sessionId) {

@@ -83,7 +83,7 @@ if [ -z "$apksigner" ] || [ ! -x "$apksigner" ]; then
 fi
 
 artifact_dir="$root/artifacts/android/$actual"
-artifact="$artifact_dir/xlib-release.apk"
+artifact="$artifact_dir/xlib-release-${version_code}.apk"
 mkdir -p "$artifact_dir"
 before_build="$(shasum -a 256 "$version_file")"
 

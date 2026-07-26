@@ -108,6 +108,7 @@ public class MainActivity extends Activity {
     private static final int SETTINGS_GENERAL = 0;
     private static final int SETTINGS_READING = 1;
     private static final int SETTINGS_SYNC = 2;
+    private static final boolean SHOW_PAGE_OFFSET_INDICATOR = false;
 
     private final List<Book> books = new ArrayList<>();
     private final Set<Long> selectedBookIds = new HashSet<>();
@@ -3769,7 +3770,7 @@ public class MainActivity extends Activity {
     }
 
     private void showPageIndicator(long offset) {
-        if (pageIndicator == null) return;
+        if (!SHOW_PAGE_OFFSET_INDICATOR || pageIndicator == null) return;
         mainHandler.removeCallbacks(hidePageIndicatorRunnable);
         pageIndicator.setText("Offset " + String.format(Locale.getDefault(), "%,d", offset));
         pageIndicator.animate().alpha(0.70f).setDuration(100L).start();
@@ -4460,6 +4461,9 @@ public class MainActivity extends Activity {
         int background = enabled
                 ? (dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER)
                 : (dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT);
+        autoPageButton.setImageResource(enabled
+                ? R.drawable.ic_auto_page_stop
+                : R.drawable.ic_auto_page);
         UiKit.styleIconButton(this, autoPageButton, foreground, background, 14);
         autoPageButton.setContentDescription(autoPageDescription(autoPageSeconds));
     }

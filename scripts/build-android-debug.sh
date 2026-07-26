@@ -69,7 +69,7 @@ if ! printf '%s\n' "$version_code" | grep -Eq '^[1-9][0-9]*$'; then
 fi
 
 artifact_dir="$root/artifacts/android/$version"
-artifact="$artifact_dir/xlib-debug.apk"
+artifact="$artifact_dir/xlib-debug-${version_code}.apk"
 mkdir -p "$artifact_dir"
 before_build="$(shasum -a 256 "$version_file")"
 

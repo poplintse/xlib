@@ -1,7 +1,6 @@
 package com.xlib.txtreader;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -11,6 +10,7 @@ import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -30,6 +30,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.animation.AccelerateDecelerateInterpolator;
@@ -208,6 +209,7 @@ public class MainActivity extends Activity {
     private SeekBar seekBar;
     private ScrollView settingsScroll;
     private LinearLayout settingsContent;
+    private EditText focusedSettingsInput;
     private final Runnable hidePageIndicatorRunnable = () -> {
         if (pageIndicator != null) pageIndicator.animate().alpha(0f).setDuration(180L).start();
     };
@@ -744,7 +746,7 @@ public class MainActivity extends Activity {
                 + "位置：" + String.format(Locale.getDefault(), "%,d", remote.offset)
                 + "（" + String.format(Locale.getDefault(), "%.2f%%", remote.progress * 100d)
                 + "）\n进度于" + remoteProgressRelativeTime(remote.readAtMs) + "保存。";
-        showModernConfirmDialog("发现更新的阅读进度", message, "暂不跳转", "跳转",
+        showModernConfirmDialog("发现更新的阅读进度", message, "暂不跳转", "跳转", false,
                 () -> syncCoordinator.onJumpDeclined(sessionId), () -> {
                     if (currentBook == null || currentBook.id != localBookId) {
                         syncCoordinator.onJumpDeclined(sessionId);
@@ -759,7 +761,7 @@ public class MainActivity extends Activity {
     }
 
     private void showModernConfirmDialog(String title, String message, String negative,
-                                         String positive, Runnable onNegative,
+                                         String positive, boolean destructive, Runnable onNegative,
                                          Runnable onPositive) {
         int theme = appTheme();
         boolean dark = isDarkTheme(theme);
@@ -767,6 +769,8 @@ public class MainActivity extends Activity {
         int text = textColor(theme);
         int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
         int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+        int destructiveContainer = dark ? Color.rgb(86, 37, 38) : Color.rgb(255, 226, 225);
+        int destructiveText = dark ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27);
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         LinearLayout card = new LinearLayout(this);
@@ -790,8 +794,9 @@ public class MainActivity extends Activity {
         UiKit.styleButton(this, cancel, Color.TRANSPARENT, muted, 14);
         cancel.setOnClickListener(v -> { if (onNegative != null) onNegative.run(); dialog.dismiss(); });
         Button confirm = makeButton(positive);
-        UiKit.styleButton(this, confirm,
-                dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER, accent, 14);
+        UiKit.styleButton(this, confirm, destructive ? destructiveContainer
+                        : (dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER),
+                destructive ? destructiveText : accent, 14);
         confirm.setOnClickListener(v -> { if (onPositive != null) onPositive.run(); dialog.dismiss(); });
         actions.addView(cancel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
         LinearLayout.LayoutParams confirmLp = new LinearLayout.LayoutParams(
@@ -826,32 +831,52 @@ public class MainActivity extends Activity {
     }
 
     private void showEditBookDialog(Book book) {
+        int theme = appTheme();
+        boolean dark = isDarkTheme(theme);
+        int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int variant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
+        int text = textColor(theme);
+        int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+        int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(22), dp(20), dp(22), dp(14));
+        UiKit.styleCard(this, card, surface, 24, 12);
+        TextView heading = new TextView(this);
+        heading.setText("编辑书籍信息");
+        UiKit.styleTitle(heading, text, 19);
+        card.addView(heading);
         EditText titleInput = new EditText(this);
         titleInput.setSingleLine(true);
         titleInput.setHint("书名");
         titleInput.setText(TextUtils.isEmpty(book.title) ? defaultBookName(book) : book.title);
         titleInput.setSelection(titleInput.length());
+        styleDialogInput(titleInput, text, muted, variant);
         EditText authorInput = new EditText(this);
         authorInput.setSingleLine(true);
         authorInput.setHint("作者");
         authorInput.setText(editableBookAuthor(book));
         authorInput.setSelection(authorInput.length());
-        int padding = dp(20);
-        LinearLayout container = new LinearLayout(this);
-        container.setOrientation(LinearLayout.VERTICAL);
-        container.setPadding(padding, dp(8), padding, 0);
-        container.addView(titleInput, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        container.addView(authorInput, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("编辑书籍信息")
-                .setView(container)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存", null)
-                .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(v -> {
+        styleDialogInput(authorInput, text, muted, variant);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        titleLp.topMargin = dp(14);
+        card.addView(titleInput, titleLp);
+        LinearLayout.LayoutParams authorLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        authorLp.topMargin = dp(8);
+        card.addView(authorInput, authorLp);
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        Button cancel = makeButton("取消");
+        UiKit.styleButton(this, cancel, Color.TRANSPARENT, muted, 14);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        Button save = makeButton("保存");
+        UiKit.styleButton(this, save,
+                dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER, accent, 14);
+        save.setOnClickListener(v -> {
                     String title = titleInput.getText().toString().trim();
                     if (title.isEmpty()) {
                         titleInput.setError("书籍名称不能为空");
@@ -864,8 +889,33 @@ public class MainActivity extends Activity {
                     hideKeyboard(titleInput);
                     dialog.dismiss();
                     mainHandler.postDelayed(this::showLibrary, 200L);
-                }));
+                });
+        actions.addView(cancel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+        saveLp.leftMargin = dp(6);
+        actions.addView(save, saveLp);
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        actionsLp.topMargin = dp(8);
+        card.addView(actions, actionsLp);
+        dialog.setContentView(card);
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.90f),
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+    }
+
+    private void styleDialogInput(EditText input, int text, int muted, int variant) {
+        input.setTextColor(text);
+        input.setHintTextColor(muted);
+        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        input.setBackground(UiKit.rounded(this, variant, 12));
+        input.setPadding(dp(14), 0, dp(14), 0);
     }
 
     private void hideKeyboard(View view) {
@@ -876,14 +926,9 @@ public class MainActivity extends Activity {
     }
 
     private void showDeleteBookDialog(Book book) {
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("删除书籍？")
-                .setMessage("将删除《" + book.title + "》及本地 TXT 文件，此操作无法撤销。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (ignored, which) -> deleteBook(book))
-                .create();
-        dialog.setCanceledOnTouchOutside(true);
-        dialog.show();
+        showModernConfirmDialog("删除书籍？",
+                "将删除《" + book.title + "》及本地 TXT 文件，此操作无法撤销。",
+                "取消", "删除", true, null, () -> deleteBook(book));
     }
 
     private void deleteBook(Book book) {
@@ -1457,7 +1502,8 @@ public class MainActivity extends Activity {
         pageIndicator.setAlpha(0f);
         FrameLayout.LayoutParams pageIndicatorLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER);
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        pageIndicatorLp.bottomMargin = readerBottomInset(readingFontSize()) + dp(24);
         frame.addView(pageIndicator, pageIndicatorLp);
 
         setContentView(frame);
@@ -1806,6 +1852,7 @@ public class MainActivity extends Activity {
             styleSettingsNavButton(reading, false, text, accent, accentContainer);
             styleSettingsNavButton(sync, true, text, accent, accentContainer);
             renderSyncSettings(surface, text, muted, accent, accentContainer);
+            if (syncCoordinator != null) syncCoordinator.preloadDevices();
         });
 
         root.addView(navigation, new LinearLayout.LayoutParams(
@@ -1821,11 +1868,15 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
         contentLp.topMargin = dp(8);
         root.addView(settingsScroll, contentLp);
+        installSettingsKeyboardAvoidance(root);
 
         setContentView(root);
         if (showGeneral) renderGeneralSettings(surface, text, muted, accent);
         else if (showReading) renderReadingSettings(surface, text, muted, accent, accentContainer);
-        else renderSyncSettings(surface, text, muted, accent, accentContainer);
+        else {
+            renderSyncSettings(surface, text, muted, accent, accentContainer);
+            if (syncCoordinator != null) syncCoordinator.preloadDevices();
+        }
     }
 
     private Button makeSettingsNavButton(String label, boolean selected, int text, int accent,
@@ -1906,6 +1957,7 @@ public class MainActivity extends Activity {
                 | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         serverInput.setBackground(UiKit.rounded(this, variant, 12));
         serverInput.setPadding(dp(12), 0, dp(12), 0);
+        makeSettingsInputKeyboardAware(serverInput);
         serverCard.addView(serverInput, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
         Button saveServer = makeButton("保存服务器地址");
@@ -1957,6 +2009,12 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             deviceLabelLp.topMargin = dp(10);
             enableCard.addView(deviceLabel, deviceLabelLp);
+            TextView deviceHint = new TextView(this);
+            deviceHint.setText("设备名称最多 20 个字符，用于区分不同设备。");
+            deviceHint.setTextColor(muted);
+            deviceHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            deviceHint.setPadding(0, dp(3), 0, 0);
+            enableCard.addView(deviceHint);
             EditText deviceInput = new EditText(this);
             deviceInput.setSingleLine(true);
             deviceInput.setHint("设备名称");
@@ -2052,13 +2110,48 @@ public class MainActivity extends Activity {
 
     private void makeSettingsInputKeyboardAware(EditText input) {
         input.setOnFocusChangeListener((view, focused) -> {
-            if (focused && settingsScroll != null) {
-                view.post(() -> view.requestRectangleOnScreen(
-                        new android.graphics.Rect(0, 0, view.getWidth(), view.getHeight()), true));
+            if (focused) {
+                focusedSettingsInput = input;
+                revealSettingsInput(input, 0L);
+                revealSettingsInput(input, 260L);
+            } else if (focusedSettingsInput == input) {
+                focusedSettingsInput = null;
             }
         });
-        input.setOnClickListener(view -> view.post(() -> view.requestRectangleOnScreen(
-                new android.graphics.Rect(0, 0, view.getWidth(), view.getHeight()), true)));
+        input.setOnClickListener(view -> {
+            focusedSettingsInput = input;
+            revealSettingsInput(input, 0L);
+            revealSettingsInput(input, 260L);
+        });
+    }
+
+    private void installSettingsKeyboardAvoidance(View root) {
+        root.getViewTreeObserver().addOnGlobalLayoutListener(
+                new ViewTreeObserver.OnGlobalLayoutListener() {
+                    @Override public void onGlobalLayout() {
+                        EditText input = focusedSettingsInput;
+                        if (input != null && input.hasFocus()) revealSettingsInput(input, 0L);
+                    }
+                });
+    }
+
+    private void revealSettingsInput(EditText input, long delayMs) {
+        input.postDelayed(() -> {
+            if (settingsScroll == null || !input.hasFocus() || input != focusedSettingsInput) return;
+            Rect viewport = new Rect();
+            Rect field = new Rect();
+            if (!settingsScroll.getGlobalVisibleRect(viewport)
+                    || !input.getGlobalVisibleRect(field)) return;
+            int topPadding = dp(12);
+            int bottomPadding = dp(18);
+            int delta = 0;
+            if (field.bottom > viewport.bottom - bottomPadding) {
+                delta = field.bottom - (viewport.bottom - bottomPadding);
+            } else if (field.top < viewport.top + topPadding) {
+                delta = field.top - (viewport.top + topPadding);
+            }
+            if (delta != 0) settingsScroll.smoothScrollBy(0, delta);
+        }, delayMs);
     }
 
     private LinearLayout.LayoutParams syncFieldLayoutParams() {
@@ -2161,6 +2254,14 @@ public class MainActivity extends Activity {
             message = "同步凭据已失效，请重新开启";
         } else if ("INVALID_SERVER_URL".equals(code)) {
             message = "服务器地址必须是有效的 HTTPS 地址";
+        } else if ("CURRENT_DEVICE".equals(code)) {
+            message = "不能删除本机设备";
+        } else if ("DEVICE_NOT_FOUND".equals(code)) {
+            message = "该设备已不存在，设备列表已刷新";
+        } else if ("DEVICE_FORBIDDEN".equals(code)) {
+            message = "当前设备没有删除权限，请重新开启同步后重试";
+        } else if ("RATE_LIMITED".equals(code)) {
+            message = "操作过于频繁，请稍后重试";
         } else {
             message = "同步服务暂不可用，请稍后重试";
         }
@@ -2168,124 +2269,150 @@ public class MainActivity extends Activity {
     }
 
     private void confirmDisableSync() {
-        new AlertDialog.Builder(this)
-                .setTitle("关闭本机同步？")
-                .setMessage("只会清除本机同步凭据，书籍和本地阅读进度会保留。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("关闭", (dialog, which) -> syncCoordinator.disableSync(
+        showModernConfirmDialog("关闭本机同步？",
+                "只会清除本机同步凭据，书籍和本地阅读进度会保留。",
+                "取消", "关闭", false, null, () -> syncCoordinator.disableSync(
                         result -> Toast.makeText(this, "本机同步已关闭",
-                                Toast.LENGTH_SHORT).show()))
-                .show();
+                                Toast.LENGTH_SHORT).show()));
     }
 
     private void confirmDeleteRemoteProgress() {
-        new AlertDialog.Builder(this)
-                .setTitle("删除云端阅读进度？")
-                .setMessage("此操作无法撤销，但不会删除本机书籍和本地阅读进度。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (dialog, which) ->
+        showModernConfirmDialog("删除云端阅读进度？",
+                "此操作无法撤销，但不会删除本机书籍和本地阅读进度。",
+                "取消", "删除", true, null, () ->
                         syncCoordinator.deleteRemoteProgress(result -> {
                             if (result.isSuccess()) Toast.makeText(this, "云端阅读进度已删除",
                                     Toast.LENGTH_SHORT).show();
                             else showSyncActionError(result.errorCode);
-                        }))
-                .show();
+                        }));
     }
 
     private void showSyncDevices() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setContentView(new FrameLayout(this));
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            dialog.getWindow().setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.90f),
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+        List<SyncDevice> cached = syncCoordinator.cachedDevices();
+        renderSyncDevicesDialog(dialog, cached, true, null);
         syncCoordinator.loadDevices(result -> {
-            if (!result.isSuccess()) {
-                showSyncActionError(result.errorCode);
+            if (!dialog.isShowing()) return;
+            if (result.isSuccess()) {
+                renderSyncDevicesDialog(dialog, result.value, false, null);
                 return;
             }
-            List<SyncDevice> devices = result.value;
-            if (devices.isEmpty()) {
-                Toast.makeText(this, "没有可管理的设备", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            String currentId = syncUiState == null ? "" : syncUiState.deviceId;
-            int theme = appTheme();
-            boolean dark = isDarkTheme(theme);
-            int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
-            int variant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
-            int text = textColor(theme);
-            int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
-            int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
-            Dialog dialog = new Dialog(this);
-            dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-            LinearLayout card = new LinearLayout(this);
-            card.setOrientation(LinearLayout.VERTICAL);
-            card.setPadding(dp(20), dp(20), dp(20), dp(14));
-            UiKit.styleCard(this, card, surface, 24, 12);
-            TextView title = new TextView(this);
-            UiKit.styleTitle(title, text, 19);
-            title.setText("设备管理");
-            card.addView(title);
-            TextView subtitle = new TextView(this);
-            subtitle.setText("本机不可删除，其他设备可移除同步权限。设备名称最多 20 个字符。\n");
-            subtitle.setTextColor(muted);
-            subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            subtitle.setPadding(0, dp(8), 0, dp(4));
-            card.addView(subtitle);
-            for (SyncDevice device : devices) {
-                LinearLayout row = new LinearLayout(this);
-                row.setGravity(Gravity.CENTER_VERTICAL);
-                row.setPadding(dp(12), dp(4), dp(6), dp(4));
-                row.setBackground(UiKit.interactive(this, variant, 14, UiKit.withAlpha(accent, 28)));
-                TextView name = new TextView(this);
-                name.setText(device.deviceName);
-                name.setTextColor(text);
-                name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-                name.setSingleLine(true);
-                name.setEllipsize(TextUtils.TruncateAt.END);
-                row.addView(name, new LinearLayout.LayoutParams(0, dp(44), 1));
-                boolean local = device.deviceId.equals(currentId);
-                if (local) {
-                    TextView localLabel = new TextView(this);
-                    localLabel.setText("本机");
-                    localLabel.setTextColor(accent);
-                    localLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                    localLabel.setGravity(Gravity.CENTER);
-                    row.addView(localLabel, new LinearLayout.LayoutParams(dp(56), dp(40)));
-                } else if (!device.revoked) {
-                    Button remove = makeButton("删除");
-                    UiKit.styleButton(this, remove,
-                            dark ? Color.rgb(86, 37, 38) : Color.rgb(255, 226, 225),
-                            dark ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27), 12);
-                    remove.setOnClickListener(v -> confirmRevokeDevice(device));
-                    row.addView(remove, new LinearLayout.LayoutParams(dp(64), dp(40)));
-                }
-                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
-                rowLp.topMargin = dp(6);
-                card.addView(row, rowLp);
-            }
-            Button done = makeButton("完成");
-            UiKit.styleButton(this, done,
-                    dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER, accent, 14);
-            done.setOnClickListener(v -> dialog.dismiss());
-            LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
-            doneLp.topMargin = dp(12);
-            card.addView(done, doneLp);
-            dialog.setContentView(card);
-            dialog.show();
-            if (dialog.getWindow() != null) {
-                dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-                dialog.getWindow().setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.90f),
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-            }
+            renderSyncDevicesDialog(dialog, cached, false, result.errorCode);
         });
     }
 
-    private void confirmRevokeDevice(SyncDevice device) {
+    private void renderSyncDevicesDialog(Dialog dialog, List<SyncDevice> devices,
+                                         boolean refreshing, String errorCode) {
+        int theme = appTheme();
+        boolean dark = isDarkTheme(theme);
+        int surface = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int variant = dark ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
+        int text = textColor(theme);
+        int muted = dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED;
+        int accent = dark ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(20), dp(20), dp(20), dp(14));
+        UiKit.styleCard(this, card, surface, 24, 12);
+        TextView title = new TextView(this);
+        UiKit.styleTitle(title, text, 19);
+        title.setText("设备管理");
+        card.addView(title);
+        TextView subtitle = new TextView(this);
+        subtitle.setText(refreshing ? "正在读取设备信息…" : "本机不可删除，其他设备可移除同步权限。");
+        subtitle.setTextColor(muted);
+        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        subtitle.setPadding(0, dp(8), 0, dp(4));
+        card.addView(subtitle);
+        if (errorCode != null) {
+            TextView error = new TextView(this);
+            error.setText("设备信息刷新失败，显示最近一次结果。\n");
+            error.setTextColor(dark ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27));
+            error.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            card.addView(error);
+        }
+        String currentId = syncUiState == null ? "" : syncUiState.deviceId;
+        if (devices.isEmpty() && !refreshing) {
+            TextView empty = new TextView(this);
+            empty.setText("没有可管理的设备");
+            empty.setTextColor(muted);
+            empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            empty.setPadding(0, dp(22), 0, dp(22));
+            empty.setGravity(Gravity.CENTER);
+            card.addView(empty);
+        }
+        for (SyncDevice device : devices) {
+            addSyncDeviceRow(card, device, currentId, dark, variant, text, accent, dialog);
+        }
+        Button close = makeButton("关闭");
+        UiKit.styleButton(this, close,
+                dark ? UiKit.DARK_ACCENT_CONTAINER : UiKit.LIGHT_ACCENT_CONTAINER, accent, 14);
+        close.setOnClickListener(v -> dialog.dismiss());
+        LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        closeLp.topMargin = dp(12);
+        card.addView(close, closeLp);
+        dialog.setContentView(card);
+    }
+
+    private void addSyncDeviceRow(LinearLayout card, SyncDevice device, String currentId,
+                                  boolean dark, int variant, int text, int accent, Dialog dialog) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(4), dp(6), dp(4));
+        row.setBackground(UiKit.interactive(this, variant, 14, UiKit.withAlpha(accent, 28)));
+        TextView name = new TextView(this);
+        name.setText(device.deviceName);
+        name.setTextColor(text);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        row.addView(name, new LinearLayout.LayoutParams(0, dp(44), 1));
+        boolean local = device.deviceId.equals(currentId);
+        if (local) {
+            TextView localLabel = new TextView(this);
+            localLabel.setText("本机");
+            localLabel.setTextColor(accent);
+            localLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            localLabel.setGravity(Gravity.CENTER);
+            row.addView(localLabel, new LinearLayout.LayoutParams(dp(56), dp(40)));
+        } else if (!device.revoked) {
+            Button remove = makeButton("删除");
+            UiKit.styleButton(this, remove,
+                    dark ? Color.rgb(86, 37, 38) : Color.rgb(255, 226, 225),
+                    dark ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27), 12);
+            remove.setOnClickListener(v -> confirmRevokeDevice(device, () -> {
+                if (dialog.isShowing()) {
+                    renderSyncDevicesDialog(dialog, syncCoordinator.cachedDevices(), false, null);
+                }
+            }));
+            row.addView(remove, new LinearLayout.LayoutParams(dp(64), dp(40)));
+        }
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        rowLp.topMargin = dp(6);
+        card.addView(row, rowLp);
+    }
+
+    private void confirmRevokeDevice(SyncDevice device, Runnable onRevoked) {
         showModernConfirmDialog("删除“" + device.deviceName + "”？",
                 "删除后，该设备将失去同步权限，需要重新输入账户信息才能再次同步。",
-                "取消", "删除", null, () -> syncCoordinator.revokeDevice(
+                "取消", "删除", true, null, () -> syncCoordinator.revokeDevice(
                         device.deviceId, result -> {
-                            if (result.isSuccess()) Toast.makeText(this, "设备已移除",
-                                    Toast.LENGTH_SHORT).show();
-                            else showSyncActionError(result.errorCode);
+                            if (result.isSuccess()) {
+                                Toast.makeText(this, "设备已移除", Toast.LENGTH_SHORT).show();
+                                if (onRevoked != null) onRevoked.run();
+                            } else {
+                                showSyncActionError(result.errorCode);
+                            }
                         }));
     }
 
@@ -3605,13 +3732,13 @@ public class MainActivity extends Activity {
         if (seekBar != null && !seekTracking) {
             seekBar.setProgress((int) (currentBook.progress * 1000f));
         }
-        showPageIndicator(readerPageWindow.pagesBefore() + 1);
+        showPageIndicator(page.startOffset);
     }
 
-    private void showPageIndicator(int pageNumber) {
+    private void showPageIndicator(long offset) {
         if (pageIndicator == null) return;
         mainHandler.removeCallbacks(hidePageIndicatorRunnable);
-        pageIndicator.setText("第 " + Math.max(1, pageNumber) + " 页");
+        pageIndicator.setText("Offset " + String.format(Locale.getDefault(), "%,d", offset));
         pageIndicator.animate().alpha(0.70f).setDuration(100L).start();
         mainHandler.postDelayed(hidePageIndicatorRunnable, 1_000L);
     }

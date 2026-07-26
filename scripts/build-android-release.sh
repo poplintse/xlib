@@ -52,6 +52,9 @@ if [ -n "$requested" ] && [ "$requested" != "$actual" ]; then
     printf 'Android versionName: %s -> %s\n' "$actual" "$requested" >>"$log"
     actual="$requested"
 fi
+if ! "$root/scripts/prepare-android-version-code.sh" "$version_file" "$root/artifacts/android" >>"$log" 2>&1; then
+    fail "could not prepare a unique Android versionCode"
+fi
 version_code="$(sed -n 's/^versionCode=//p' "$version_file")"
 if ! printf '%s\n' "$version_code" | grep -Eq '^[1-9][0-9]*$'; then
     fail "invalid Android versionCode: ${version_code:-missing}"

@@ -51,6 +51,9 @@ if [ -n "$requested" ] && [ "$requested" != "$version" ]; then
     printf 'Android versionName: %s -> %s\n' "$version" "$requested" >>"$log"
     version="$requested"
 fi
+if ! "$root/scripts/prepare-android-version-code.sh" "$version_file" "$root/artifacts/android" >>"$log" 2>&1; then
+    fail "could not prepare a unique Android versionCode"
+fi
 version_code_count="$(
     awk '
       /^versionCode=/ { count += 1 }

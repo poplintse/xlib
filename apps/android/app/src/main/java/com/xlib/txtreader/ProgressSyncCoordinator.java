@@ -5,6 +5,7 @@ import android.os.Handler;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -44,8 +45,11 @@ final class ProgressSyncCoordinator {
     private final String appVersion;
     private final String launchId = UUID.randomUUID().toString();
     private final Set<BookKey> disabledBookKeys = new HashSet<>();
+    private final List<ActionCallback<List<SyncDevice>>> pendingDeviceCallbacks = new ArrayList<>();
 
     private volatile SyncUiState uiState;
+    private volatile List<SyncDevice> cachedDevices = Collections.emptyList();
+    private boolean deviceLoadInFlight;
     private boolean foreground;
     private boolean networkAvailable;
     private boolean pullCompletedForLaunch;
@@ -242,6 +246,7 @@ final class ProgressSyncCoordinator {
             remoteStore.clear();
             pullCompletedForLaunch = false;
             disabledBookKeys.clear();
+            cachedDevices = Collections.emptyList();
             cancelPeriodic();
             cancelRecovery();
             if (session != null) session.comparisonState = ReaderComparisonState.PENDING;
@@ -281,6 +286,7 @@ final class ProgressSyncCoordinator {
                 tokenStore.clear();
                 remoteStore.clear();
                 disabledBookKeys.clear();
+                cachedDevices = Collections.emptyList();
                 availability = SyncAvailability.AVAILABLE;
                 lastFailureCode = null;
                 if (session != null) session.comparisonState = ReaderComparisonState.PENDING;
@@ -307,21 +313,42 @@ final class ProgressSyncCoordinator {
 
     void loadDevices(ActionCallback<List<SyncDevice>> callback) {
         serial.execute(() -> {
+            if (callback != null) pendingDeviceCallbacks.add(callback);
+            if (deviceLoadInFlight) return;
             if (!canCallBusinessApi()) {
-                deliver(callback, SyncActionResult.failure(stateErrorCode()));
+                deliverPendingDeviceCallbacks(SyncActionResult.failure(stateErrorCode()));
                 return;
             }
+            deviceLoadInFlight = true;
             try {
                 lastAttemptAtMs = System.currentTimeMillis();
                 List<SyncDevice> devices = api.listDevices(tokenStore.token(),
                         tokenStore.deviceId());
+                cachedDevices = Collections.unmodifiableList(new ArrayList<>(devices));
                 markSuccess();
-                deliver(callback, SyncActionResult.success(devices));
+                deliverPendingDeviceCallbacks(SyncActionResult.success(cachedDevices));
             } catch (Exception error) {
                 handleFailure(error, null);
-                deliver(callback, SyncActionResult.failure(errorCode(error)));
+                deliverPendingDeviceCallbacks(SyncActionResult.failure(errorCode(error)));
+            } finally {
+                deviceLoadInFlight = false;
             }
         });
+    }
+
+    void preloadDevices() {
+        loadDevices(null);
+    }
+
+    List<SyncDevice> cachedDevices() {
+        return cachedDevices;
+    }
+
+    private void deliverPendingDeviceCallbacks(SyncActionResult<List<SyncDevice>> result) {
+        List<ActionCallback<List<SyncDevice>>> callbacks =
+                new ArrayList<>(pendingDeviceCallbacks);
+        pendingDeviceCallbacks.clear();
+        for (ActionCallback<List<SyncDevice>> callback : callbacks) deliver(callback, result);
     }
 
     void revokeDevice(String targetDeviceId, ActionCallback<Void> callback) {
@@ -337,6 +364,11 @@ final class ProgressSyncCoordinator {
             try {
                 lastAttemptAtMs = System.currentTimeMillis();
                 api.revokeDevice(tokenStore.token(), tokenStore.deviceId(), targetDeviceId);
+                ArrayList<SyncDevice> remaining = new ArrayList<>();
+                for (SyncDevice device : cachedDevices) {
+                    if (!targetDeviceId.equals(device.deviceId)) remaining.add(device);
+                }
+                cachedDevices = Collections.unmodifiableList(remaining);
                 markSuccess();
                 deliver(callback, SyncActionResult.success(null));
             } catch (Exception error) {

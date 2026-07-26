@@ -1795,7 +1795,7 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(background);
-        root.setPadding(dp(8), statusBarHeight() + dp(12), dp(8), navigationBarHeight() + dp(12));
+        root.setPadding(dp(8), dp(12), dp(8), dp(12));
 
         FrameLayout navigation = new FrameLayout(this);
         navigation.setPadding(dp(6), dp(6), dp(6), dp(6));
@@ -1868,9 +1868,9 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
         contentLp.topMargin = dp(8);
         root.addView(settingsScroll, contentLp);
-        installSettingsKeyboardAvoidance(root);
 
         setContentView(root);
+        installSettingsKeyboardAvoidance(root);
         if (showGeneral) renderGeneralSettings(surface, text, muted, accent);
         else if (showReading) renderReadingSettings(surface, text, muted, accent, accentContainer);
         else {
@@ -2126,30 +2126,52 @@ public class MainActivity extends Activity {
     }
 
     private void installSettingsKeyboardAvoidance(View root) {
-        root.getViewTreeObserver().addOnGlobalLayoutListener(
-                new ViewTreeObserver.OnGlobalLayoutListener() {
-                    @Override public void onGlobalLayout() {
-                        EditText input = focusedSettingsInput;
-                        if (input != null && input.hasFocus()) revealSettingsInput(input, 0L);
-                    }
-                });
+        int horizontalPadding = dp(8);
+        int verticalPadding = dp(12);
+        root.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+            int leftInset;
+            int topInset;
+            int rightInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets bars = windowInsets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                android.graphics.Insets ime = windowInsets.getInsets(WindowInsets.Type.ime());
+                leftInset = bars.left;
+                topInset = bars.top;
+                rightInset = bars.right;
+                bottomInset = Math.max(bars.bottom, ime.bottom);
+            } else {
+                leftInset = windowInsets.getSystemWindowInsetLeft();
+                topInset = windowInsets.getSystemWindowInsetTop();
+                rightInset = windowInsets.getSystemWindowInsetRight();
+                // adjustResize reduces the content window on older Android versions.
+                bottomInset = windowInsets.getSystemWindowInsetBottom();
+            }
+            view.setPadding(horizontalPadding + leftInset, verticalPadding + topInset,
+                    horizontalPadding + rightInset, verticalPadding + bottomInset);
+            EditText input = focusedSettingsInput;
+            if (input != null && input.hasFocus()) {
+                view.post(() -> revealSettingsInput(input, 0L));
+            }
+            return windowInsets;
+        });
+        root.requestApplyInsets();
     }
 
     private void revealSettingsInput(EditText input, long delayMs) {
         input.postDelayed(() -> {
             if (settingsScroll == null || !input.hasFocus() || input != focusedSettingsInput) return;
-            Rect viewport = new Rect();
             Rect field = new Rect();
-            if (!settingsScroll.getGlobalVisibleRect(viewport)
-                    || !input.getGlobalVisibleRect(field)) return;
+            input.getDrawingRect(field);
+            settingsScroll.offsetDescendantRectToMyCoords(input, field);
+            int viewportTop = settingsScroll.getScrollY() + settingsScroll.getPaddingTop();
+            int viewportBottom = settingsScroll.getScrollY() + settingsScroll.getHeight()
+                    - settingsScroll.getPaddingBottom();
             int topPadding = dp(12);
-            int bottomPadding = dp(18);
-            int delta = 0;
-            if (field.bottom > viewport.bottom - bottomPadding) {
-                delta = field.bottom - (viewport.bottom - bottomPadding);
-            } else if (field.top < viewport.top + topPadding) {
-                delta = field.top - (viewport.top + topPadding);
-            }
+            int bottomPadding = dp(24);
+            int delta = KeyboardAvoidancePolicy.scrollDelta(field.top, field.bottom,
+                    viewportTop, viewportBottom, topPadding, bottomPadding);
             if (delta != 0) settingsScroll.smoothScrollBy(0, delta);
         }, delayMs);
     }

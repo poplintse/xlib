@@ -100,6 +100,66 @@ final class ProgressSyncTests: XCTestCase {
         XCTAssertEqual(startedEmail, "tester@example.com")
     }
 
+    @MainActor
+    func testSyncRefreshStartsConfiguredSyncAndRejectsIncompleteConfiguration() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let vault = CredentialVaultSpy(initial: nil)
+        let spy = SyncAPISpy(pullItems: [], startCredentials: fixture.credentials)
+        let coordinator = makeCoordinator(
+            fixture: fixture,
+            api: await spy.client(),
+            vault: await vault.client()
+        )
+
+        await coordinator.start()
+        let incomplete = await coordinator.syncRefresh()
+        XCTAssertFalse(incomplete)
+        XCTAssertEqual(coordinator.lastFailureMessage, "请先完成同步配置。")
+        XCTAssertTrue(coordinator.saveConfiguredEmail("  Reader@Example.COM "))
+        XCTAssertFalse(coordinator.saveDeviceName(String(repeating: "a", count: 21)))
+        XCTAssertTrue(coordinator.saveDeviceName("  我的 iPhone  "))
+        XCTAssertEqual(coordinator.configuredEmail, "reader@example.com")
+        XCTAssertEqual(coordinator.currentDeviceName, "我的 iPhone")
+
+        let started = await coordinator.syncRefresh()
+        let startedEmail = await spy.startedEmail()
+        XCTAssertTrue(started)
+        XCTAssertTrue(coordinator.isSyncEnabled)
+        XCTAssertEqual(startedEmail, "reader@example.com")
+    }
+
+    @MainActor
+    func testDeviceRemovalUsesAuthorizedDeviceIDToProtectCurrentDevice() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let authorizedDevice = SyncDevice(deviceId: UUID(), deviceName: "当前 iPhone", platform: "ios")
+        let remoteDevice = SyncDevice(deviceId: UUID(), deviceName: "iPad", platform: "ios")
+        let credentials = SyncCredentials(
+            token: fixture.credentials.token,
+            userID: fixture.credentials.userID,
+            email: fixture.credentials.email,
+            device: authorizedDevice
+        )
+        let spy = SyncAPISpy(pullItems: [], devices: [authorizedDevice, remoteDevice])
+        let coordinator = makeCoordinator(
+            fixture: fixture,
+            api: await spy.client(),
+            vault: .constant(credentials)
+        )
+
+        await coordinator.start()
+        await coordinator.loadDevices()
+
+        XCTAssertEqual(coordinator.currentDeviceID, authorizedDevice.deviceId)
+        let protectedCurrentDevice = await coordinator.removeDevice(authorizedDevice)
+        let removedRemoteDevice = await coordinator.removeDevice(remoteDevice)
+        let deletedDeviceIDs = await spy.deletedDeviceIDs()
+        XCTAssertFalse(protectedCurrentDevice)
+        XCTAssertTrue(removedRemoteDevice)
+        XCTAssertEqual(deletedDeviceIDs, [remoteDevice.deviceId])
+    }
+
     func testServerAddressDefaultsToXUnitAndNormalizesSavedValue() {
         let suiteName = "ProgressSyncServerAddress.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -115,6 +175,23 @@ final class ProgressSyncTests: XCTestCase {
         )
         XCTAssertNil(SyncServerConfiguration.normalizedAddress("http://sync.example.com"))
         XCTAssertNil(SyncServerConfiguration.normalizedAddress("https://sync.example.com/api?token=secret"))
+    }
+
+    func testDeleteDeviceSendsValidEmptyJSONBody() async throws {
+        DeleteRequestURLProtocol.store.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DeleteRequestURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let client = SyncAPIClient.live(address: "https://sync.example.com", session: session)
+        let authorization = SyncAuthorization(token: "test-token", deviceID: UUID())
+
+        try await client.deleteDevice(UUID(), authorization)
+
+        let request = try XCTUnwrap(DeleteRequestURLProtocol.store.request)
+        XCTAssertEqual(request.httpMethod, "DELETE")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(DeleteRequestURLProtocol.store.body, Data("{}".utf8))
     }
 
     @MainActor
@@ -340,23 +417,98 @@ private struct Fixture {
     }
 }
 
+private final class DeleteRequestStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedRequest: URLRequest?
+    private var storedBody: Data?
+
+    var request: URLRequest? {
+        lock.withLock { storedRequest }
+    }
+
+    var body: Data? {
+        lock.withLock { storedBody }
+    }
+
+    func record(_ request: URLRequest, body: Data?) {
+        lock.withLock {
+            storedRequest = request
+            storedBody = body
+        }
+    }
+
+    func reset() {
+        lock.withLock {
+            storedRequest = nil
+            storedBody = nil
+        }
+    }
+}
+
+private final class DeleteRequestURLProtocol: URLProtocol {
+    static let store = DeleteRequestStore()
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.store.record(request, body: Self.readBody(from: request))
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 204,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func readBody(from request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1_024)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+}
+
 private actor SyncAPISpy {
     private let pullItems: [RemoteProgressSnapshot]
+    private let devices: [SyncDevice]
     private let syncError: SyncAPIError?
     private let startCredentials: SyncCredentials?
     private var startCallCount = 0
     private var pullCallCount = 0
     private var syncCallCount = 0
     private var requestedEmail: String?
+    private var deletedDeviceIDsValue: [UUID] = []
 
     init(
         pullItems: [RemoteProgressSnapshot],
         syncError: SyncAPIError? = nil,
-        startCredentials: SyncCredentials? = nil
+        startCredentials: SyncCredentials? = nil,
+        devices: [SyncDevice] = []
     ) {
         self.pullItems = pullItems
         self.syncError = syncError
         self.startCredentials = startCredentials
+        self.devices = devices
     }
 
     func client() -> SyncAPIClient {
@@ -375,8 +527,14 @@ private actor SyncAPISpy {
                 return try await self.sync(request)
             },
             deleteProgress: { _ in },
-            listDevices: { _ in [] },
-            deleteDevice: { _, _ in },
+            listDevices: { [weak self] _ in
+                guard let self else { throw CancellationError() }
+                return await self.listDevices()
+            },
+            deleteDevice: { [weak self] deviceID, _ in
+                guard let self else { throw CancellationError() }
+                await self.deleteDevice(deviceID)
+            },
             health: { true }
         )
     }
@@ -387,6 +545,10 @@ private actor SyncAPISpy {
 
     func startedEmail() -> String? {
         requestedEmail
+    }
+
+    func deletedDeviceIDs() -> [UUID] {
+        deletedDeviceIDsValue
     }
 
     private func start(_ request: SyncStartRequest) throws -> SyncStartResponse {
@@ -404,6 +566,14 @@ private actor SyncAPISpy {
     private func pull() -> ProgressPullResponse {
         pullCallCount += 1
         return ProgressPullResponse(serverTimeMs: 2_000_000_000_000, items: pullItems)
+    }
+
+    private func listDevices() -> [SyncDevice] {
+        devices
+    }
+
+    private func deleteDevice(_ deviceID: UUID) {
+        deletedDeviceIDsValue.append(deviceID)
     }
 
     private func sync(_ request: ProgressSyncRequest) throws -> ProgressSyncResponse {

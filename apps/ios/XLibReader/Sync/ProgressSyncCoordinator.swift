@@ -24,6 +24,7 @@ final class ProgressSyncCoordinator {
     private let healthProbeDelays: [Duration]
     private let now: @Sendable () -> Date
     private var deviceRegistration: SyncDeviceRegistration
+    private var configuredEmailValue: String?
 
     private var credentials: SyncCredentials?
     private var remoteByKey: [SyncBookKey: RemoteProgressSnapshot] = [:]
@@ -69,6 +70,7 @@ final class ProgressSyncCoordinator {
         self.healthProbeDelays = healthProbeDelays
         self.now = now
         deviceRegistration = Self.loadDeviceRegistration(defaults: defaults)
+        configuredEmailValue = Self.loadConfiguredEmail(defaults: defaults)
 
         connectivity.setCallback { [weak self] online in
             Task { @MainActor [weak self] in
@@ -80,12 +82,13 @@ final class ProgressSyncCoordinator {
     var isServiceConfigured: Bool { api.isConfigured }
     var isSyncEnabled: Bool { credentials != nil }
     var email: String? { credentials?.email }
+    var configuredEmail: String? { configuredEmailValue ?? credentials?.email }
     var currentDeviceName: String { deviceRegistration.deviceName }
-    var currentDeviceID: UUID { deviceRegistration.deviceId }
+    var currentDeviceID: UUID { credentials?.device.deviceId ?? deviceRegistration.deviceId }
 
     var statusTitle: String {
         guard api.isConfigured else { return "服务未配置" }
-        guard credentials != nil else { return "未开启" }
+        guard credentials != nil else { return "未同步" }
         return availability.title
     }
 
@@ -95,6 +98,10 @@ final class ProgressSyncCoordinator {
         let cached = await stateStore.cachedRemote()
         remoteByKey = Dictionary(uniqueKeysWithValues: cached.map { ($0.key, $0) })
         credentials = await vault.load()
+        if configuredEmailValue == nil, let email = credentials?.email {
+            configuredEmailValue = email
+            defaults.set(email, forKey: Self.emailKey)
+        }
         if credentials != nil {
             if let credentialServer = defaults.string(
                 forKey: SyncServerConfiguration.credentialServerKey
@@ -152,6 +159,10 @@ final class ProgressSyncCoordinator {
             lastFailureMessage = "请输入设备名称。"
             return false
         }
+        guard trimmedDeviceName.map({ $0.count <= Self.maximumDeviceNameLength }) ?? true else {
+            lastFailureMessage = "设备名称不能超过20个字符。"
+            return false
+        }
         var registration = deviceRegistration
         if let trimmedDeviceName { registration.deviceName = trimmedDeviceName }
 
@@ -167,6 +178,8 @@ final class ProgressSyncCoordinator {
             deviceRegistration = registration
             defaults.set(registration.deviceName, forKey: Self.deviceNameKey)
             credentials = response.credentials
+            configuredEmailValue = response.credentials.email
+            defaults.set(response.credentials.email, forKey: Self.emailKey)
             await vault.save(response.credentials)
             defaults.set(serverAddress, forKey: SyncServerConfiguration.credentialServerKey)
             availability = .available
@@ -179,6 +192,37 @@ final class ProgressSyncCoordinator {
             handle(error)
             return false
         }
+    }
+
+    @discardableResult
+    func saveConfiguredEmail(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let parts = normalized.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              !parts[0].isEmpty,
+              parts[1].contains("."),
+              !parts[1].hasPrefix("."),
+              !parts[1].hasSuffix(".") else { return false }
+        configuredEmailValue = normalized
+        defaults.set(normalized, forKey: Self.emailKey)
+        return true
+    }
+
+    @discardableResult
+    func saveDeviceName(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= Self.maximumDeviceNameLength else { return false }
+        deviceRegistration.deviceName = trimmed
+        defaults.set(trimmed, forKey: Self.deviceNameKey)
+        return true
+    }
+
+    func startConfiguredSync() async -> Bool {
+        guard let configuredEmail else {
+            lastFailureMessage = "请先设置邮箱。"
+            return false
+        }
+        return await startSync(email: configuredEmail, deviceName: currentDeviceName)
     }
 
     func disableSync() async {
@@ -223,6 +267,22 @@ final class ProgressSyncCoordinator {
         await pullOnly()
     }
 
+    func syncRefresh() async -> Bool {
+        guard isServiceConfigured,
+              configuredEmail != nil,
+              !currentDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            lastFailureMessage = "请先完成同步配置。"
+            return false
+        }
+        guard isSyncEnabled else { return await startConfiguredSync() }
+
+        isWorking = true
+        lastFailureMessage = nil
+        defer { isWorking = false }
+        await refreshRemoteStates()
+        return lastFailureMessage == nil
+    }
+
     func deleteCloudProgress() async -> Bool {
         guard credentials != nil else { return false }
         isWorking = true
@@ -250,15 +310,18 @@ final class ProgressSyncCoordinator {
         }
     }
 
-    func removeDevice(_ device: SyncDevice) async {
-        guard device.deviceId != deviceRegistration.deviceId else { return }
+    func removeDevice(_ device: SyncDevice) async -> Bool {
+        guard device.deviceId != currentDeviceID else { return false }
+        lastFailureMessage = nil
         do {
             try await authorized { authorization in
                 try await self.api.deleteDevice(device.deviceId, authorization)
             }
             devices.removeAll { $0.deviceId == device.deviceId }
+            return true
         } catch {
             handle(error)
+            return false
         }
     }
 
@@ -582,4 +645,11 @@ final class ProgressSyncCoordinator {
     }
 
     private static let deviceNameKey = "sync.device.name.v1"
+    private static let emailKey = "sync.email.v1"
+    static let maximumDeviceNameLength = 20
+
+    private static func loadConfiguredEmail(defaults: UserDefaults) -> String? {
+        let value = defaults.string(forKey: emailKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.flatMap { $0.isEmpty ? nil : $0 }
+    }
 }

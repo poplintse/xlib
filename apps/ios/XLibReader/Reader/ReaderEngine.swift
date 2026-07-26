@@ -297,14 +297,27 @@ final class ReaderCoordinator {
     }
 
     private func turn(_ direction: ReaderDirection) -> Bool {
-        guard !menuVisible else { return false }
+        guard !menuVisible else {
+            ReaderTurnDiagnostics.log(
+                "turn rejected direction=\(ReaderTurnDiagnostics.directionName(direction)) reason=menu"
+            )
+            return false
+        }
         requestedProgress = nil
+        let previousPageID = pageWindow.currentPage?.id ?? -1
+        let previousOffset = pageWindow.currentPage?.startOffset ?? -1
         guard pageWindow.move(direction) else {
+            ReaderTurnDiagnostics.log(
+                "turn rejected direction=\(ReaderTurnDiagnostics.directionName(direction)) from=\(previousPageID) offset=\(previousOffset) reason=boundary"
+            )
             schedulePageMaintenance()
             return false
         }
         lastTurnDirection = direction
         completedPageTurns &+= 1
+        ReaderTurnDiagnostics.log(
+            "turn accepted sequence=\(self.completedPageTurns) direction=\(ReaderTurnDiagnostics.directionName(direction)) from=\(previousPageID) to=\(self.pageWindow.currentPage?.id ?? -1) offset=\(previousOffset)->\(self.pageWindow.currentPage?.startOffset ?? -1)"
+        )
         commitProgressChange(changedAt: .now, publishesEvent: true)
         schedulePageMaintenance()
         return true

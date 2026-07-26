@@ -35,3 +35,9 @@ Alpha 允许通过规范化邮箱创建或恢复同一个固定 Token。这不�
 状态：accepted。
 
 Debug、test 和普通 release build 都不得修改受 Git 管理的文件。版本变更只能通过明确的发布准备操作进行。
+
+## D-007 跨设备进度以绝对 offset 优先
+
+状态：accepted。
+
+同步比较和服务端裁决先比较同一 `bookHash + fileSize` 的绝对 byte offset：云端更靠后时客户端提示用户跳转，本地更靠后时更新云端。`readAtMs` 只在 offset 相同时用于去重和确定来源，不能让较新的时间戳覆盖更靠后的阅读位置。任何云端状态都不得未经用户确认自动改变当前阅读页。

@@ -26,6 +26,8 @@ enum ReaderTapAction: Equatable {
 
 enum ReaderPageInteraction {
     static let navigationEdgeWidth: CGFloat = 24
+    static let previousPageZoneRatio: CGFloat = 0.35
+    static let nextPageZoneStartRatio: CGFloat = 0.55
 
     static func isNavigationEdgeDrag(startX: CGFloat) -> Bool {
         startX <= navigationEdgeWidth
@@ -33,8 +35,8 @@ enum ReaderPageInteraction {
 
     static func tapAction(x: CGFloat, width: CGFloat) -> ReaderTapAction {
         guard width > 0 else { return .toggleMenu }
-        if x < width * 0.30 { return .previousPage }
-        if x > width * 0.70 { return .nextPage }
+        if x < width * previousPageZoneRatio { return .previousPage }
+        if x > width * nextPageZoneStartRatio { return .nextPage }
         return .toggleMenu
     }
 

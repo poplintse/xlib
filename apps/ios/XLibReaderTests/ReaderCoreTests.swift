@@ -19,8 +19,8 @@ final class ReaderCoreTests: XCTestCase {
         )
 
         XCTAssertEqual(controller.view.backgroundColor, .systemBackground)
-        XCTAssertEqual(ReaderSoftPageTurnStyle.duration, 0.40, accuracy: 0.001)
-        XCTAssertLessThan(ReaderSoftPageTurnStyle.maximumAngle, .pi / 2)
+        XCTAssertEqual(ReaderSoftPageTurnStyle.duration, 0.32, accuracy: 0.001)
+        XCTAssertEqual(ReaderSoftPageTurnStyle.maximumAngle, .pi / 2, accuracy: 0.001)
         XCTAssertEqual(
             ReaderSoftPageTurnStyle.anchorPoint(for: .forward),
             CGPoint(x: 0, y: 0.5)
@@ -137,10 +137,66 @@ final class ReaderCoreTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
     }
 
-    func testReaderTapZonesIncludeTheFarLeftEdge() {
+    @MainActor
+    func testRapidPageTurnsArePresentedInOrderWithoutDroppingIntermediatePages() async throws {
+        let controller = ReaderSoftPageTurnRepresentable.makePageTurnController(
+            backgroundColor: .systemBackground
+        )
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        let coordinator = ReaderSoftPageTurnRepresentable.Coordinator()
+        let pages = (20..<24).map { page(index: $0) }
+        let spec = ReaderLayoutSpec(width: 320, height: 540)
+
+        func update(page: ReaderPageDescriptor, sequence: Int) {
+            coordinator.update(
+                controller: controller,
+                page: page,
+                spec: spec,
+                backgroundColor: .systemBackground,
+                textColor: .label,
+                direction: .forward,
+                completedPageTurns: sequence,
+                reduceMotion: false,
+                previous: {},
+                next: {},
+                toggleMenu: {}
+            )
+        }
+
+        update(page: pages[0], sequence: 0)
+        update(page: pages[1], sequence: 1)
+        update(page: pages[2], sequence: 2)
+        update(page: pages[3], sequence: 3)
+
+        XCTAssertTrue(coordinator.isAnimating)
+        XCTAssertEqual(coordinator.pendingPageTurnCount, 2)
+
+        for _ in 0..<200 {
+            if !coordinator.isAnimating,
+               coordinator.pendingPageTurnCount == 0,
+               controller.currentPageID == pages[3].id {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(coordinator.isAnimating)
+        XCTAssertEqual(coordinator.pendingPageTurnCount, 0)
+        XCTAssertEqual(controller.currentPageID, pages[3].id)
+    }
+
+    func testReaderTapZonesUseThirtyFiveTwentyFortyFiveSplit() {
         XCTAssertEqual(ReaderPageInteraction.tapAction(x: 0, width: 400), .previousPage)
-        XCTAssertEqual(ReaderPageInteraction.tapAction(x: 24, width: 400), .previousPage)
-        XCTAssertEqual(ReaderPageInteraction.tapAction(x: 200, width: 400), .toggleMenu)
+        XCTAssertEqual(ReaderPageInteraction.tapAction(x: 139, width: 400), .previousPage)
+        XCTAssertEqual(ReaderPageInteraction.tapAction(x: 140, width: 400), .toggleMenu)
+        XCTAssertEqual(ReaderPageInteraction.tapAction(x: 220, width: 400), .toggleMenu)
+        XCTAssertEqual(ReaderPageInteraction.tapAction(x: 221, width: 400), .nextPage)
         XCTAssertEqual(ReaderPageInteraction.tapAction(x: 399, width: 400), .nextPage)
     }
 
@@ -206,6 +262,33 @@ final class ReaderCoreTests: XCTestCase {
         XCTAssertEqual(window.currentPage?.id, pages[4].id)
         XCTAssertTrue(window.move(.backward))
         XCTAssertEqual(window.currentPage?.id, pages[3].id)
+    }
+
+    func testSlidingWindowReversesTwentyTrimmedPageTurnsExactly() throws {
+        let allPages = (0..<80).map { page(index: $0) }
+        var window = PageSlidingWindow(
+            pages: Array(allPages[0..<PageSlidingWindow.maximumPages]),
+            selectedIndex: PageSlidingWindow.targetPagesPerSide
+        )
+        let startingPage = try XCTUnwrap(window.currentPage)
+        var nextPageIndex = PageSlidingWindow.maximumPages
+
+        for _ in 0..<20 {
+            if window.pagesAfterCurrent < PageSlidingWindow.warmPagesPerSide {
+                let count = PageSlidingWindow.targetPagesPerSide - window.pagesAfterCurrent
+                let upperBound = min(allPages.count, nextPageIndex + count)
+                window.append(Array(allPages[nextPageIndex..<upperBound]))
+                nextPageIndex = upperBound
+                window.trim()
+            }
+            XCTAssertTrue(window.move(.forward))
+        }
+
+        for _ in 0..<20 {
+            XCTAssertTrue(window.move(.backward))
+        }
+
+        XCTAssertEqual(window.currentPage, startingPage)
     }
 
     func testPageSlidingWindowPrependAndAppendKeepCurrentPageStable() {

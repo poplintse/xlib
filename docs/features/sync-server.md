@@ -1,17 +1,17 @@
 # XLib 阅读进度同步服务端设计
 
-> 状态：第一阶段详细设计。本文只设计可选的阅读进度同步服务，不改变 XLib 无账号也可完整使用的产品边界。客户端行为见 [`sync-client-design.md`](sync-client-design.md)。
+> 状态：当前有效规范。本文只设计可选的阅读进度同步服务，不改变 XLib 无账号也可完整使用的产品边界。客户端行为见 [`sync-client.md`](sync-client.md)。
 
 ## 1. 目标与边界
 
-服务端为已经主动开启同步的用户保存每本 TXT 的最新阅读进度，并在多个设备提交状态时使用统一的时间规则选出唯一状态。
+服务端为已经主动开启同步的用户保存每本 TXT 已确认的最远阅读位置，并在多个设备提交状态时使用统一的绝对 offset 规则选出唯一状态。
 
 第一阶段服务端负责：
 
 - 邮箱、固定同步 Token 和设备元数据管理；
 - 按用户保存 TXT 阅读进度；
 - 启动阶段批量返回用户的全部云端进度；
-- 阅读阶段原子比较并接收时间更新的进度；
+- 阅读阶段原子比较并接收绝对 offset 更靠后的进度；
 - 提供轻量健康检查，支持客户端暂停与恢复同步；
 - 提供云端同步数据删除能力。
 
@@ -67,18 +67,19 @@ flowchart LR
 每个用户、每个 `bookKey` 在服务器上只保留一条当前状态。收到客户端候选状态时：
 
 ```text
-incoming.readAtMs > stored.readAtMs
+incoming.offset > stored.offset
     接收 incoming
 
-incoming.readAtMs < stored.readAtMs
+incoming.offset < stored.offset
     保留 stored
 
-incoming.readAtMs == stored.readAtMs
-    同设备且 offset 相同：视为重复请求，保留 stored
-    其他情况：按 deviceId 的稳定字典序确定唯一结果
+incoming.offset == stored.offset
+    incoming.readAtMs > stored.readAtMs：接收 incoming 的时间和来源
+    incoming.readAtMs < stored.readAtMs：保留 stored
+    时间也相同：相同设备视为重复；跨设备按 deviceId 稳定字典序确定唯一结果
 ```
 
-客户端必须保证同一设备内 `readAtMs` 单调递增：正式位置发生变化时使用 `max(currentUtcMs, previousReadAtMs + 1)`。因此相同设备、相同时间、不同位置只能来自异常或旧客户端。
+绝对 offset 优先于时间。客户端必须保证同一设备内 `readAtMs` 单调递增，但时间只在 offset 相同时参与去重和确定来源，不能让更晚时间的较后退位置覆盖更靠后的阅读位置。云端位置因此单调不后退；用户要清空云端位置时使用显式“删除云端阅读进度”操作。
 
 服务端永远返回裁决后的最终云端状态。客户端在阅读过程中不得因为返回了云端状态而自动跳页。
 
@@ -121,7 +122,7 @@ incoming.readAtMs == stored.readAtMs
 | `id` | `bigint identity` | 主键。 |
 | `user_id` | `bigint` | 外键到 users，级联删除。 |
 | `device_uid` | `uuid` | 客户端稳定设备 ID。 |
-| `device_name` | `text` | 弹窗显示名称，去首尾空白后 1–80 字符。 |
+| `device_name` | `text` | 去首尾空白后 1–80 字符；当前客户端输入限制为 1–20 字符，服务端上限保留旧客户端兼容和防御性校验。 |
 | `platform` | `text` | `ios/android` 检查约束。 |
 | `app_version` | `text` | 最近上报版本。 |
 | `last_seen_at` | `timestamptz` | 最近成功使用同步服务的时间。 |
@@ -142,8 +143,9 @@ incoming.readAtMs == stored.readAtMs
 | `book_hash` | `bytea` | 精确 32 字节。 |
 | `file_size` | `bigint` | `> 0`。 |
 | `offset_bytes` | `bigint` | `>= 0` 且 `<= file_size`。 |
-| `read_at` | `timestamptz` | 参与裁决的阅读时间。 |
+| `read_at` | `timestamptz` | offset 相同时参与去重和来源裁决的阅读时间。 |
 | `device_id` | `bigint` | 外键到 devices。 |
+| `device_uid_order` | `uuid` | offset 和时间都相同时使用的稳定公开设备排序键。 |
 | `version` | `bigint` | 初始为 1，每次真实替换加 1。 |
 | `received_at` | `timestamptz` | 服务端接收当前状态的时间。 |
 | `updated_at` | `timestamptz` | 数据库更新时间。 |
@@ -182,10 +184,16 @@ do update set
     received_at = now(),
     updated_at = now()
 where
-    excluded.read_at > reading_progress.read_at
+    excluded.offset_bytes > reading_progress.offset_bytes
     or (
-        excluded.read_at = reading_progress.read_at
-        and excluded.device_id > reading_progress.device_id
+        excluded.offset_bytes = reading_progress.offset_bytes
+        and (
+            excluded.read_at > reading_progress.read_at
+            or (
+                excluded.read_at = reading_progress.read_at
+                and excluded.device_uid_order > reading_progress.device_uid_order
+            )
+        )
     )
 returning ...;
 ```
@@ -342,7 +350,7 @@ returning ...;
 
 ### 9.2 POST /v1/progress/sync
 
-用途：正式阅读会话开始后，客户端提交当前最新进度，由服务器进行时间裁决。
+用途：正式阅读会话开始后，客户端提交当前最新进度，由服务器进行 offset 优先裁决。
 
 请求：
 
@@ -391,7 +399,7 @@ returning ...;
 | 值 | 含义 |
 | --- | --- |
 | `accepted` | 本机候选状态成为新的云端状态。 |
-| `server_kept` | 服务器已有状态更新或时间相同且按确定性规则获胜。 |
+| `server_kept` | 服务器 offset 更靠后，或 offset 相同且服务器状态按时间/设备稳定规则获胜。 |
 | `unchanged` | 提交状态与服务器状态完全相同，没有增加 version。 |
 
 规则：
@@ -487,10 +495,11 @@ returning ...;
 ### 14.1 单元测试
 
 - 新记录首次写入；
-- 本机时间更新时替换；
-- 本机时间较早时保留服务器；
+- 本机 offset 更靠后时替换；
+- 本机 offset 较小时保留服务器，即使本机时间更新；
+- offset 相同时才比较阅读时间；
 - 相同状态重复提交返回 unchanged；
-- 相同时间的跨设备确定性裁决；
+- offset 和时间均相同的跨设备确定性裁决；
 - offset 边界和哈希格式校验；
 - 未来时间调整；
 - progress 计算精度。
@@ -518,7 +527,7 @@ returning ...;
 
 - 启动拉取接口永不修改进度；
 - 单一唯一约束保证每个用户、每本书只有一个云端状态；
-- 时间更新规则在并发下仍保持确定性；
+- offset 优先规则在并发下仍保持确定性；
 - 服务故障不会要求客户端补传历史 offset；
 - 数据库备份可恢复；
 - 除已明确接受的“邮箱即可恢复固定 Token”产品风险外，未发现跨邮箱访问、令牌泄漏或未校验输入等其他高风险问题。

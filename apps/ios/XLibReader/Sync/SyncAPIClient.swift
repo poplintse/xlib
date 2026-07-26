@@ -103,7 +103,13 @@ private actor SyncHTTPTransport {
         path: String,
         authorization: SyncAuthorization? = nil
     ) async throws {
-        _ = try await execute(method: method, path: path, bodyData: nil, authorization: authorization)
+        let bodyData = method == "DELETE" ? Data("{}".utf8) : nil
+        _ = try await execute(
+            method: method,
+            path: path,
+            bodyData: bodyData,
+            authorization: authorization
+        )
     }
 
     private func send<Response: Decodable & Sendable>(

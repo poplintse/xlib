@@ -1,6 +1,27 @@
 import CoreText
+import OSLog
 import SwiftUI
 import UIKit
+
+enum ReaderTurnDiagnostics {
+#if DEBUG
+    static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "XLibReader",
+        category: "ReaderPageTurn"
+    )
+#endif
+
+    static func directionName(_ direction: ReaderDirection) -> String {
+        direction == .forward ? "forward" : "backward"
+    }
+
+    static func log(_ message: @autoclosure () -> String) {
+#if DEBUG
+        let value = message()
+        logger.notice("\(value, privacy: .public)")
+#endif
+    }
+}
 
 @MainActor
 final class ReaderCanvasView: UIView {
@@ -127,9 +148,9 @@ final class ReaderPageContentViewController: UIViewController {
 }
 
 enum ReaderSoftPageTurnStyle {
-    static let duration: TimeInterval = 0.40
+    static let duration: TimeInterval = 0.32
     static let perspectiveDistance: CGFloat = 900
-    static let maximumAngle: CGFloat = .pi * 0.48
+    static let maximumAngle: CGFloat = .pi / 2
 
     static func anchorPoint(for direction: ReaderDirection) -> CGPoint {
         direction == .forward
@@ -249,8 +270,8 @@ final class ReaderSoftPageTurnController: UIViewController {
         foldShadow.alpha = 0.2
 
         let timing = UICubicTimingParameters(
-            controlPoint1: CGPoint(x: 0.22, y: 0),
-            controlPoint2: CGPoint(x: 0.30, y: 1)
+            controlPoint1: CGPoint(x: 0.28, y: 0.08),
+            controlPoint2: CGPoint(x: 0.72, y: 0.92)
         )
         let animator = UIViewPropertyAnimator(
             duration: ReaderSoftPageTurnStyle.duration,
@@ -305,11 +326,13 @@ final class ReaderSoftPageTurnController: UIViewController {
         leaf.layer.shadowRadius = 10
         leaf.layer.shadowOffset = CGSize(width: direction == .forward ? 7 : -5, height: 0)
         leaf.layer.shadowPath = UIBezierPath(rect: leaf.bounds).cgPath
+        leaf.layer.isDoubleSided = false
     }
 
     private func normalize(_ pageView: UIView) {
         pageView.layer.transform = CATransform3DIdentity
         pageView.layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        pageView.layer.isDoubleSided = true
         pageView.layer.shadowOpacity = 0
         pageView.layer.shadowRadius = 0
         pageView.layer.shadowOffset = .zero
@@ -376,6 +399,7 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
             let backgroundColor: UIColor
             let textColor: UIColor
             let direction: ReaderDirection
+            let turnSequence: Int
             let animated: Bool
             let previous: () -> Void
             let next: () -> Void
@@ -384,7 +408,9 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
 
         private var lastCompletedPageTurns: Int?
         private(set) var isAnimating = false
-        private var pendingPresentation: Presentation?
+        private var pendingPageTurns: [Presentation] = []
+        private var pendingRefresh: Presentation?
+        var pendingPageTurnCount: Int { pendingPageTurns.count }
 
         func update(
             controller: ReaderSoftPageTurnController,
@@ -409,6 +435,7 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
                 backgroundColor: backgroundColor,
                 textColor: textColor,
                 direction: direction,
+                turnSequence: completedPageTurns,
                 animated: isCompletedTurn && !reduceMotion,
                 previous: previous,
                 next: next,
@@ -419,7 +446,14 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
 
         private func present(_ presentation: Presentation, on controller: ReaderSoftPageTurnController) {
             if isAnimating {
-                pendingPresentation = presentation
+                if presentation.animated {
+                    pendingPageTurns.append(presentation)
+                    ReaderTurnDiagnostics.log(
+                        "animation queued sequence=\(presentation.turnSequence) direction=\(ReaderTurnDiagnostics.directionName(presentation.direction)) page=\(presentation.page.id) queue=\(self.pendingPageTurns.count)"
+                    )
+                } else {
+                    pendingRefresh = presentation
+                }
                 return
             }
 
@@ -456,6 +490,9 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
             }
 
             isAnimating = true
+            ReaderTurnDiagnostics.log(
+                "animation started sequence=\(presentation.turnSequence) direction=\(ReaderTurnDiagnostics.directionName(presentation.direction)) from=\(controller.currentPageID ?? -1) to=\(presentation.page.id)"
+            )
             controller.present(
                 target,
                 direction: presentation.direction,
@@ -463,9 +500,16 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
             ) { [weak self, weak controller] in
                 guard let self, let controller else { return }
                 self.isAnimating = false
-                guard let pending = self.pendingPresentation else { return }
-                self.pendingPresentation = nil
-                self.present(pending, on: controller)
+                ReaderTurnDiagnostics.log(
+                    "animation completed sequence=\(presentation.turnSequence) page=\(presentation.page.id) queue=\(self.pendingPageTurns.count)"
+                )
+                if !self.pendingPageTurns.isEmpty {
+                    let pending = self.pendingPageTurns.removeFirst()
+                    self.present(pending, on: controller)
+                } else if let refresh = self.pendingRefresh {
+                    self.pendingRefresh = nil
+                    self.present(refresh, on: controller)
+                }
             }
         }
     }

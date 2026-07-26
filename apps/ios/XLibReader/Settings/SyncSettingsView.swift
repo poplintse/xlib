@@ -3,13 +3,53 @@ import SwiftUI
 struct SyncSettingsView: View {
     @Bindable var store: SettingsStore
     @Environment(ProgressSyncCoordinator.self) private var sync
-    @State private var confirmation: SyncSettingsConfirmation?
 
     private var theme: AppTheme { store.settings.theme }
 
     var body: some View {
         SettingsPage(title: "阅读进度同步", theme: theme) {
-            SettingsSection(title: "同步服务器", theme: theme) {
+            SettingsSection(title: "状态", theme: theme) {
+                SyncValueRow(title: "同步状态", value: sync.statusTitle, theme: theme)
+                SettingsDivider(theme: theme)
+                SyncValueRow(title: "最后同步", value: lastSyncText, theme: theme)
+                SettingsDivider(theme: theme)
+                SyncCenteredActionRow(
+                    title: sync.isWorking ? "正在同步…" : "同步刷新",
+                    theme: theme,
+                    disabled: sync.isWorking,
+                    accessibilityIdentifier: "sync.startStop"
+                ) {
+                    Task { await sync.syncRefresh() }
+                }
+                if let failure = sync.lastFailureMessage {
+                    Text(failure)
+                        .font(.footnote)
+                        .foregroundStyle(theme.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                        .accessibilityIdentifier("sync.statusError")
+                }
+            }
+
+            SettingsSection(title: "同步设置", theme: theme) {
+                SettingsNavigationRow(
+                    title: "邮箱",
+                    value: sync.configuredEmail ?? "未设置",
+                    accessibilityIdentifier: "sync.emailSettings",
+                    theme: theme
+                ) {
+                    SyncEmailAddressView(store: store)
+                }
+                SettingsDivider(theme: theme)
+                SettingsNavigationRow(
+                    title: "当前设备",
+                    value: sync.currentDeviceName,
+                    accessibilityIdentifier: "sync.deviceNameSettings",
+                    theme: theme
+                ) {
+                    SyncDeviceNameView(store: store)
+                }
+                SettingsDivider(theme: theme)
                 SettingsNavigationRow(
                     title: "服务器地址",
                     value: sync.serverAddress,
@@ -20,98 +60,16 @@ struct SyncSettingsView: View {
                 }
             }
 
-            SettingsSection(title: "状态", theme: theme) {
+            SettingsSection(title: "同步设备管理", theme: theme) {
                 SettingsNavigationRow(
-                    title: "同步状态",
-                    value: sync.statusTitle,
-                    accessibilityIdentifier: "sync.accountSettings",
+                    title: "设备管理",
+                    value: nil,
+                    accessibilityIdentifier: "sync.devices",
                     theme: theme
                 ) {
-                    SyncAccountSettingsView(store: store)
-                }
-                if sync.isSyncEnabled {
-                    SettingsDivider(theme: theme)
-                    SyncValueRow(title: "邮箱", value: sync.email ?? "—", theme: theme)
-                    SettingsDivider(theme: theme)
-                    SyncValueRow(title: "当前设备", value: sync.currentDeviceName, theme: theme)
-                    SettingsDivider(theme: theme)
-                    SyncValueRow(title: "最后同步", value: lastSyncText, theme: theme)
+                    SyncDevicesView(store: store)
                 }
             }
-
-            if !sync.isServiceConfigured {
-                SettingsNote(
-                    text: "当前服务器地址无效，请修改后保存。本地书架和阅读功能不受影响。",
-                    theme: theme
-                )
-            } else if sync.isSyncEnabled {
-                SettingsSection(title: "同步管理", theme: theme) {
-                    SyncActionRow(
-                        title: sync.isWorking ? "正在刷新…" : "刷新云端状态",
-                        systemImage: "arrow.clockwise",
-                        theme: theme,
-                        disabled: sync.isWorking
-                    ) {
-                        Task { await sync.refreshRemoteStates() }
-                    }
-                    SettingsDivider(theme: theme)
-                    SettingsNavigationRow(
-                        title: "设备管理",
-                        value: nil,
-                        accessibilityIdentifier: "sync.devices",
-                        theme: theme
-                    ) {
-                        SyncDevicesView(store: store)
-                    }
-                    SettingsDivider(theme: theme)
-                    SyncActionRow(
-                        title: "关闭本机同步",
-                        systemImage: "rectangle.portrait.and.arrow.right",
-                        theme: theme
-                    ) {
-                        confirmation = .disableSync
-                    }
-                }
-
-                SettingsSection(title: "云端数据", theme: theme) {
-                    SyncActionRow(
-                        title: "删除云端阅读进度",
-                        systemImage: "trash",
-                        theme: theme,
-                        destructive: true
-                    ) {
-                        confirmation = .deleteProgress
-                    }
-                }
-                SettingsNote(text: "删除云端进度不会删除本机书籍和本机阅读位置。", theme: theme)
-            } else if !sync.isSyncEnabled {
-                SettingsNote(
-                    text: "同步只保存阅读时间和精确进度。TXT 文件、书架、目录和书签不会上传。",
-                    theme: theme
-                )
-            }
-
-            if let failure = sync.lastFailureMessage, sync.isSyncEnabled {
-                SettingsNote(text: failure, theme: theme)
-                    .accessibilityIdentifier("sync.statusMessage")
-            }
-        }
-        .confirmationDialog(
-            confirmation?.title ?? "确认操作",
-            isPresented: Binding(
-                get: { confirmation != nil },
-                set: { if !$0 { confirmation = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let confirmation {
-                Button(confirmation.actionTitle, role: confirmation.role) {
-                    perform(confirmation)
-                }
-                Button("取消", role: .cancel) { self.confirmation = nil }
-            }
-        } message: {
-            Text(confirmation?.message ?? "")
         }
     }
 
@@ -120,15 +78,6 @@ struct SyncSettingsView: View {
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
-    private func perform(_ confirmation: SyncSettingsConfirmation) {
-        self.confirmation = nil
-        switch confirmation {
-        case .disableSync:
-            Task { await sync.disableSync() }
-        case .deleteProgress:
-            Task { _ = await sync.deleteCloudProgress() }
-        }
-    }
 }
 
 private struct SyncServerAddressView: View {
@@ -204,52 +153,18 @@ private struct SyncServerAddressView: View {
     }
 }
 
-private enum SyncSettingsConfirmation {
-    case disableSync
-    case deleteProgress
-
-    var title: String {
-        switch self {
-        case .disableSync: "关闭本机同步？"
-        case .deleteProgress: "删除全部云端阅读进度？"
-        }
-    }
-
-    var actionTitle: String {
-        switch self {
-        case .disableSync: "关闭同步"
-        case .deleteProgress: "删除云端进度"
-        }
-    }
-
-    var message: String {
-        switch self {
-        case .disableSync: "本机将删除同步 Token 并停止同步，其他设备和云端进度不受影响。"
-        case .deleteProgress: "此操作只删除服务器上的阅读进度，无法撤销。"
-        }
-    }
-
-    var role: ButtonRole? {
-        switch self {
-        case .disableSync: nil
-        case .deleteProgress: .destructive
-        }
-    }
-}
-
-private struct SyncAccountSettingsView: View {
+private struct SyncEmailAddressView: View {
     @Bindable var store: SettingsStore
     @Environment(ProgressSyncCoordinator.self) private var sync
     @Environment(\.dismiss) private var dismiss
     @State private var email = ""
-    @State private var deviceName = ""
     @State private var localError: String?
     @FocusState private var emailIsFocused: Bool
 
     private var theme: AppTheme { store.settings.theme }
 
     var body: some View {
-        SettingsPage(title: "同步账户", theme: theme) {
+        SettingsPage(title: "邮箱", theme: theme) {
             SettingsSection(title: "账户信息", theme: theme) {
                 TextField("邮箱", text: $email)
                     .keyboardType(.emailAddress)
@@ -257,72 +172,45 @@ private struct SyncAccountSettingsView: View {
                     .autocorrectionDisabled()
                     .textContentType(.emailAddress)
                     .focused($emailIsFocused)
-                    .submitLabel(.go)
-                    .onSubmit { submit() }
-                    .frame(maxWidth: .infinity, minHeight: 58)
-                    .foregroundStyle(theme.text)
-                    .accessibilityIdentifier("sync.email")
-
-                SettingsDivider(theme: theme)
-
-                TextField("设备名称", text: $deviceName)
-                    .textInputAutocapitalization(.sentences)
-                    .autocorrectionDisabled()
-                    .textContentType(.name)
                     .submitLabel(.done)
-                    .onSubmit { submit() }
+                    .onSubmit { save() }
                     .frame(maxWidth: .infinity, minHeight: 58)
                     .foregroundStyle(theme.text)
-                    .accessibilityIdentifier("sync.deviceName")
+                    .accessibilityIdentifier("sync.emailField")
             }
-
-            if let message = localError ?? sync.lastFailureMessage {
-                SettingsNote(text: message, theme: theme)
-                    .accessibilityIdentifier("sync.authError")
+            if let localError {
+                SettingsNote(text: localError, theme: theme)
+                    .accessibilityIdentifier("sync.emailError")
             }
-
-            Button {
-                submit()
-            } label: {
+            Button { save() } label: {
                 HStack(spacing: 8) {
                     if sync.isWorking { ProgressView().tint(theme.surface) }
-                    Text(sync.isWorking ? "正在保存…" : "保存")
-                        .font(.headline)
+                    Text(sync.isWorking ? "正在保存…" : "保存").font(.headline)
                 }
                 .frame(maxWidth: .infinity, minHeight: 52)
             }
             .buttonStyle(XLPrimaryButtonStyle(theme: theme))
-            .disabled(!canSubmit || sync.isWorking)
-            .opacity(!canSubmit || sync.isWorking ? 0.55 : 1)
-            .accessibilityIdentifier("sync.settingsSave")
-
-            SettingsNote(
-                text: "服务端会为邮箱创建或返回已有同步 Token，设备名称用于区分不同设备。",
-                theme: theme
-            )
+            .disabled(!Self.isValidEmail(email))
+            .opacity(!Self.isValidEmail(email) ? 0.55 : 1)
+            .accessibilityIdentifier("sync.emailSave")
+            SettingsNote(text: "保存后请返回同步设置页启动同步。", theme: theme)
         }
         .onAppear {
-            email = sync.email ?? ""
-            deviceName = sync.currentDeviceName
+            email = sync.configuredEmail ?? ""
             emailIsFocused = true
         }
     }
 
-    private var canSubmit: Bool {
-        Self.isValidEmail(email)
-            && !deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func submit() {
-        guard canSubmit else {
-            localError = "请输入有效的邮箱地址和设备名称。"
+    private func save() {
+        guard Self.isValidEmail(email) else {
+            localError = "请输入有效的邮箱地址。"
             return
         }
         localError = nil
-        Task {
-            if await sync.startSync(email: email, deviceName: deviceName) {
-                dismiss()
-            }
+        if sync.saveConfiguredEmail(email) {
+            dismiss()
+        } else {
+            localError = "邮箱无法保存。"
         }
     }
 
@@ -334,44 +222,153 @@ private struct SyncAccountSettingsView: View {
     }
 }
 
+private struct SyncDeviceNameView: View {
+    @Bindable var store: SettingsStore
+    @Environment(ProgressSyncCoordinator.self) private var sync
+    @Environment(\.dismiss) private var dismiss
+    @State private var deviceName = ""
+    @State private var localError: String?
+    @FocusState private var deviceNameIsFocused: Bool
+
+    private var theme: AppTheme { store.settings.theme }
+
+    var body: some View {
+        SettingsPage(title: "设备名称", theme: theme) {
+            SettingsSection(title: "本机设备", theme: theme) {
+                TextField("设备名称", text: $deviceName)
+                    .textInputAutocapitalization(.sentences)
+                    .autocorrectionDisabled()
+                    .textContentType(.name)
+                    .focused($deviceNameIsFocused)
+                    .submitLabel(.done)
+                    .onSubmit { save() }
+                    .onChange(of: deviceName) { _, value in
+                        if value.count > ProgressSyncCoordinator.maximumDeviceNameLength {
+                            deviceName = String(value.prefix(ProgressSyncCoordinator.maximumDeviceNameLength))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 58)
+                    .foregroundStyle(theme.text)
+                    .accessibilityIdentifier("sync.deviceNameField")
+            }
+            if let localError {
+                SettingsNote(text: localError, theme: theme)
+                    .accessibilityIdentifier("sync.deviceNameError")
+            }
+            Button { save() } label: {
+                HStack(spacing: 8) {
+                    if sync.isWorking { ProgressView().tint(theme.surface) }
+                    Text(sync.isWorking ? "正在保存…" : "保存").font(.headline)
+                }
+                .frame(maxWidth: .infinity, minHeight: 52)
+            }
+            .buttonStyle(XLPrimaryButtonStyle(theme: theme))
+            .disabled(deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .opacity(deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1)
+            .accessibilityIdentifier("sync.deviceNameSave")
+            SettingsNote(text: "设备名称最多 20 个字符。保存后请返回同步设置页启动同步。", theme: theme)
+        }
+        .onAppear {
+            deviceName = sync.currentDeviceName
+            deviceNameIsFocused = true
+        }
+    }
+
+    private func save() {
+        guard !deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            localError = "请输入设备名称。"
+            return
+        }
+        guard deviceName.count <= ProgressSyncCoordinator.maximumDeviceNameLength else {
+            localError = "设备名称不能超过20个字符。"
+            return
+        }
+        if sync.saveDeviceName(deviceName) {
+            dismiss()
+        } else {
+            localError = "设备名称无法保存。"
+        }
+    }
+}
+
 private struct SyncDevicesView: View {
     @Bindable var store: SettingsStore
     @Environment(ProgressSyncCoordinator.self) private var sync
+    @State private var removingDeviceID: UUID?
+    @State private var removalError: String?
     private var theme: AppTheme { store.settings.theme }
 
     var body: some View {
         SettingsPage(title: "设备管理", theme: theme) {
             SettingsSection(title: "同步设备", theme: theme) {
-                if sync.devices.isEmpty {
-                    SyncValueRow(title: "设备", value: sync.isWorking ? "正在加载…" : "暂无设备", theme: theme)
-                } else {
-                    ForEach(Array(sync.devices.enumerated()), id: \.element.id) { index, device in
-                        HStack(spacing: 12) {
-                            Image(systemName: device.platform == "ios" ? "iphone" : "smartphone")
-                                .foregroundStyle(theme.accent)
-                                .frame(width: 24)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(device.deviceName).foregroundStyle(theme.text)
-                                Text(device.deviceId == sync.currentDeviceID ? "当前设备" : device.platform.uppercased())
-                                    .font(.caption)
-                                    .foregroundStyle(theme.secondaryText)
-                            }
-                            Spacer()
-                            if device.deviceId != sync.currentDeviceID {
-                                Button("移除", role: .destructive) {
-                                    Task { await sync.removeDevice(device) }
-                                }
-                                .buttonStyle(.borderless)
-                            }
+                ForEach(Array(displayedDevices.enumerated()), id: \.element.id) { index, device in
+                    HStack(spacing: 12) {
+                        Image(systemName: device.platform == "ios" ? "iphone" : "smartphone")
+                            .foregroundStyle(theme.accent)
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(device.deviceName).foregroundStyle(theme.text)
+                            Text(device.deviceId == sync.currentDeviceID ? "当前设备" : device.platform.uppercased())
+                                .font(.caption)
+                                .foregroundStyle(theme.secondaryText)
                         }
-                        .frame(minHeight: 58)
-                        if index < sync.devices.count - 1 { SettingsDivider(theme: theme) }
+                        Spacer()
+                        if sync.isSyncEnabled, device.deviceId != sync.currentDeviceID {
+                            Button {
+                                remove(device)
+                            } label: {
+                                if removingDeviceID == device.deviceId {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Text("移除")
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                            .tint(theme.danger)
+                            .disabled(removingDeviceID != nil)
+                            .accessibilityIdentifier("sync.removeDevice.\(device.deviceId.uuidString.lowercased())")
+                        }
                     }
+                    .frame(minHeight: 58)
+                    if index < displayedDevices.count - 1 { SettingsDivider(theme: theme) }
                 }
             }
-            SettingsNote(text: "移除设备会停止该设备使用同步服务，不删除阅读进度。再次输入邮箱即可重新启用。", theme: theme)
+            if sync.isSyncEnabled {
+                SettingsNote(text: "移除设备会停止该设备使用同步服务，不删除阅读进度。", theme: theme)
+            }
+            if let removalError {
+                Text(removalError)
+                    .font(.footnote)
+                    .foregroundStyle(theme.danger)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .task { await sync.loadDevices() }
+    }
+
+    private var displayedDevices: [SyncDevice] {
+        let current = SyncDevice(
+            deviceId: sync.currentDeviceID,
+            deviceName: sync.currentDeviceName,
+            platform: "ios"
+        )
+        guard sync.isSyncEnabled else { return [current] }
+        return sync.devices.contains(where: { $0.deviceId == current.deviceId })
+            ? sync.devices
+            : [current] + sync.devices
+    }
+
+    private func remove(_ device: SyncDevice) {
+        removingDeviceID = device.deviceId
+        removalError = nil
+        Task {
+            let removed = await sync.removeDevice(device)
+            if !removed, device.deviceId != sync.currentDeviceID {
+                removalError = sync.lastFailureMessage ?? "无法移除该设备，请稍后重试。"
+            }
+            removingDeviceID = nil
+        }
     }
 }
 
@@ -417,5 +414,26 @@ private struct SyncActionRow: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.55 : 1)
+    }
+}
+
+private struct SyncCenteredActionRow: View {
+    let title: String
+    let theme: AppTheme
+    var disabled = false
+    var accessibilityIdentifier = ""
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .foregroundStyle(theme.text)
+                .frame(maxWidth: .infinity, minHeight: 58)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.55 : 1)
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 }

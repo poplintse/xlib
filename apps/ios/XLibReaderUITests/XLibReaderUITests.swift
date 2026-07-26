@@ -47,7 +47,7 @@ final class XLibReaderUITests: XCTestCase {
         let serverAddress = app.buttons["sync.serverAddress"]
         XCTAssertTrue(serverAddress.waitForExistence(timeout: 5))
         XCTAssertEqual(serverAddress.value as? String, "https://xunit.cc/xlib/backend")
-        XCTAssertTrue(app.staticTexts["未开启"].exists)
+        XCTAssertTrue(app.staticTexts["未同步"].exists)
         XCTAssertFalse(app.staticTexts["服务未配置"].exists)
         serverAddress.tap()
 
@@ -59,27 +59,49 @@ final class XLibReaderUITests: XCTestCase {
     }
 
     @MainActor
-    func testProgressSyncSettingsContainEmailAndDeviceName() {
+    func testProgressSyncUsesStatusAndCombinedSettingsCards() {
         let app = XCUIApplication()
         app.launch()
         XCTAssertTrue(app.staticTexts["我的书架"].waitForExistence(timeout: 5))
 
         app.buttons["常规设置"].tap()
         app.buttons["settings.progressSync"].tap()
-        app.buttons["sync.accountSettings"].tap()
-        XCTAssertTrue(app.textFields["sync.email"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.textFields["sync.deviceName"].exists)
-        XCTAssertTrue(app.staticTexts["同步账户"].exists)
-        XCTAssertTrue(app.buttons["sync.settingsSave"].exists)
+        let status = app.staticTexts["同步状态"]
+        let serverAddress = app.buttons["sync.serverAddress"]
+        let emailSettings = app.buttons["sync.emailSettings"]
+        let deviceNameSettings = app.buttons["sync.deviceNameSettings"]
+        let startStop = app.buttons["sync.startStop"]
+        let devices = app.buttons["sync.devices"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["最后同步"].exists)
+        XCTAssertTrue(startStop.exists)
+        XCTAssertTrue(serverAddress.exists)
+        XCTAssertTrue(emailSettings.exists)
+        XCTAssertTrue(deviceNameSettings.exists)
+        XCTAssertTrue(devices.exists)
+        XCTAssertLessThan(status.frame.minY, emailSettings.frame.minY)
+        XCTAssertLessThan(emailSettings.frame.minY, deviceNameSettings.frame.minY)
+        XCTAssertLessThan(deviceNameSettings.frame.minY, serverAddress.frame.minY)
+        XCTAssertLessThan(serverAddress.frame.minY, devices.frame.minY)
         XCTAssertFalse(app.secureTextFields.firstMatch.exists)
         XCTAssertFalse(app.segmentedControls.firstMatch.exists)
 
-        let email = app.textFields["sync.email"]
-        let deviceName = app.textFields["sync.deviceName"]
-        XCTAssertGreaterThanOrEqual(email.frame.minX, app.frame.minX)
-        XCTAssertLessThanOrEqual(email.frame.maxX, app.frame.maxX)
-        XCTAssertGreaterThanOrEqual(deviceName.frame.minX, app.frame.minX)
-        XCTAssertLessThanOrEqual(deviceName.frame.maxX, app.frame.maxX)
+        emailSettings.tap()
+        XCTAssertTrue(app.staticTexts["邮箱"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["sync.emailField"].exists)
+        XCTAssertTrue(app.buttons["sync.emailSave"].exists)
+
+        edgeSwipeBack(in: app)
+        XCTAssertTrue(deviceNameSettings.waitForExistence(timeout: 5))
+        deviceNameSettings.tap()
+        XCTAssertTrue(app.staticTexts["设备名称"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["sync.deviceNameField"].exists)
+        XCTAssertTrue(app.buttons["sync.deviceNameSave"].exists)
+
+        edgeSwipeBack(in: app)
+        XCTAssertTrue(devices.waitForExistence(timeout: 5))
+        devices.tap()
+        XCTAssertTrue(app.staticTexts["当前设备"].waitForExistence(timeout: 5))
     }
 
     @MainActor

@@ -262,9 +262,12 @@ struct PageSlidingWindow: Sendable {
     static let warmPagesPerSide = 8
     static let targetPagesPerSide = 16
     static let maximumPages = 33
+    private static let maximumHistoryPages = 64
 
     private(set) var pages: [ReaderPageDescriptor] = []
     private(set) var currentPageID: Int64?
+    private var backwardHistory: [ReaderPageDescriptor] = []
+    private var forwardHistory: [ReaderPageDescriptor] = []
 
     init() {}
 
@@ -298,10 +301,37 @@ struct PageSlidingWindow: Sendable {
     }
 
     mutating func move(_ direction: ReaderDirection) -> Bool {
-        guard let currentIndex else { return false }
+        guard let currentIndex, let currentPage else { return false }
+        switch direction {
+        case .forward:
+            if let historicalPage = forwardHistory.popLast() {
+                guard selectHistoricalPage(historicalPage, direction: direction) else {
+                    forwardHistory.append(historicalPage)
+                    return false
+                }
+                remember(currentPage, in: &backwardHistory)
+                return true
+            }
+        case .backward:
+            if let historicalPage = backwardHistory.popLast() {
+                guard selectHistoricalPage(historicalPage, direction: direction) else {
+                    backwardHistory.append(historicalPage)
+                    return false
+                }
+                remember(currentPage, in: &forwardHistory)
+                return true
+            }
+        }
+
         let destination = direction == .forward ? currentIndex + 1 : currentIndex - 1
         guard pages.indices.contains(destination) else { return false }
         currentPageID = pages[destination].id
+        switch direction {
+        case .forward:
+            remember(currentPage, in: &backwardHistory)
+        case .backward:
+            remember(currentPage, in: &forwardHistory)
+        }
         return true
     }
 
@@ -340,6 +370,44 @@ struct PageSlidingWindow: Sendable {
     private static func isContinuous(_ values: [ReaderPageDescriptor]) -> Bool {
         zip(values, values.dropFirst()).allSatisfy { previous, next in
             previous.endOffset == next.startOffset
+        }
+    }
+
+    private mutating func selectHistoricalPage(
+        _ historicalPage: ReaderPageDescriptor,
+        direction: ReaderDirection
+    ) -> Bool {
+        guard let currentIndex, let currentPage else { return false }
+        if let historicalIndex = pages.firstIndex(where: { $0.id == historicalPage.id }) {
+            let isAdjacent = direction == .forward
+                ? historicalIndex == currentIndex + 1
+                : historicalIndex == currentIndex - 1
+            guard isAdjacent else { return false }
+            currentPageID = historicalPage.id
+            return true
+        }
+
+        switch direction {
+        case .forward:
+            guard currentPage.endOffset == historicalPage.startOffset else { return false }
+            pages.removeSubrange((currentIndex + 1)..<pages.endIndex)
+            pages.append(historicalPage)
+        case .backward:
+            guard historicalPage.endOffset == currentPage.startOffset else { return false }
+            pages.removeSubrange(pages.startIndex..<currentIndex)
+            pages.insert(historicalPage, at: pages.startIndex)
+        }
+        currentPageID = historicalPage.id
+        return true
+    }
+
+    private func remember(
+        _ page: ReaderPageDescriptor,
+        in history: inout [ReaderPageDescriptor]
+    ) {
+        history.append(page)
+        if history.count > Self.maximumHistoryPages {
+            history.removeFirst(history.count - Self.maximumHistoryPages)
         }
     }
 }

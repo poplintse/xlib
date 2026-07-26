@@ -19,7 +19,7 @@ final class ReaderCoreTests: XCTestCase {
         )
 
         XCTAssertEqual(controller.view.backgroundColor, .systemBackground)
-        XCTAssertEqual(ReaderSoftPageTurnStyle.duration, 0.32, accuracy: 0.001)
+        XCTAssertEqual(ReaderSoftPageTurnStyle.duration, 0.36, accuracy: 0.001)
         XCTAssertEqual(ReaderSoftPageTurnStyle.maximumAngle, .pi / 2, accuracy: 0.001)
         XCTAssertEqual(
             ReaderSoftPageTurnStyle.anchorPoint(for: .forward),

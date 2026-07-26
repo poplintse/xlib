@@ -148,7 +148,7 @@ final class ReaderPageContentViewController: UIViewController {
 }
 
 enum ReaderSoftPageTurnStyle {
-    static let duration: TimeInterval = 0.32
+    static let duration: TimeInterval = 0.36
     static let perspectiveDistance: CGFloat = 900
     static let maximumAngle: CGFloat = .pi / 2
 

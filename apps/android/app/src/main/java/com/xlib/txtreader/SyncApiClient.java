@@ -183,13 +183,8 @@ final class SyncApiClient {
             connection.setRequestProperty("Accept", "application/json");
             if (token != null) connection.setRequestProperty("Authorization", "Bearer " + token);
             if (deviceId != null) connection.setRequestProperty("X-Device-Id", deviceId);
-            // Some Android HTTP implementations attach a form media type to an empty DELETE.
-            // Declare JSON explicitly so the Fastify API accepts the request before auth runs.
-            if (body == null && "DELETE".equals(method)) {
-                connection.setRequestProperty("Content-Type", "application/json");
-            }
-            if (body != null) {
-                byte[] encoded = body.toString().getBytes(StandardCharsets.UTF_8);
+            byte[] encoded = encodedRequestBody(method, body);
+            if (encoded != null) {
                 connection.setDoOutput(true);
                 connection.setFixedLengthStreamingMode(encoded.length);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
@@ -205,6 +200,15 @@ final class SyncApiClient {
         } finally {
             connection.disconnect();
         }
+    }
+
+    static byte[] encodedRequestBody(String method, JSONObject body) {
+        if (body != null) {
+            return body.toString().getBytes(StandardCharsets.UTF_8);
+        }
+        // HttpURLConnection may otherwise identify an empty DELETE as form data. Sending a
+        // valid empty JSON object also avoids Fastify rejecting an empty application/json body.
+        return "DELETE".equals(method) ? "{}".getBytes(StandardCharsets.UTF_8) : null;
     }
 
     private byte[] readLimited(InputStream input) throws Exception {

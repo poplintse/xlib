@@ -54,8 +54,32 @@ final class XLibReaderUITests: XCTestCase {
         let addressField = app.textFields["sync.serverAddressField"]
         XCTAssertTrue(addressField.waitForExistence(timeout: 5))
         XCTAssertEqual(addressField.value as? String, "https://xunit.cc/xlib/backend")
-        XCTAssertTrue(app.buttons["sync.serverAddressSave"].exists)
+        XCTAssertFalse(app.buttons["sync.serverAddressSave"].exists)
         XCTAssertFalse(app.secureTextFields.firstMatch.exists)
+    }
+
+    @MainActor
+    func testSyncEmailAutoSavesWhenLeavingField() {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["常规设置"].tap()
+        app.buttons["settings.progressSync"].tap()
+
+        let emailSettings = app.buttons["sync.emailSettings"]
+        XCTAssertTrue(emailSettings.waitForExistence(timeout: 5))
+        emailSettings.tap()
+
+        let emailField = app.textFields["sync.emailField"]
+        XCTAssertTrue(emailField.waitForExistence(timeout: 5))
+        emailField.tap()
+        emailField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 100))
+        emailField.typeText("autosave@example.com")
+
+        edgeSwipeBack(in: app)
+        XCTAssertTrue(emailSettings.waitForExistence(timeout: 5))
+        let savedEmail = NSPredicate(format: "value == %@", "autosave@example.com")
+        expectation(for: savedEmail, evaluatedWith: emailSettings)
+        waitForExpectations(timeout: 5)
     }
 
     @MainActor
@@ -89,14 +113,14 @@ final class XLibReaderUITests: XCTestCase {
         emailSettings.tap()
         XCTAssertTrue(app.staticTexts["邮箱"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textFields["sync.emailField"].exists)
-        XCTAssertTrue(app.buttons["sync.emailSave"].exists)
+        XCTAssertFalse(app.buttons["sync.emailSave"].exists)
 
         edgeSwipeBack(in: app)
         XCTAssertTrue(deviceNameSettings.waitForExistence(timeout: 5))
         deviceNameSettings.tap()
         XCTAssertTrue(app.staticTexts["设备名称"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textFields["sync.deviceNameField"].exists)
-        XCTAssertTrue(app.buttons["sync.deviceNameSave"].exists)
+        XCTAssertFalse(app.buttons["sync.deviceNameSave"].exists)
 
         edgeSwipeBack(in: app)
         XCTAssertTrue(devices.waitForExistence(timeout: 5))

@@ -17,6 +17,7 @@ final class ProgressSyncCoordinator {
     private var api: SyncAPIClient
     private let vault: SyncCredentialVault
     private let stateStore: SyncStateStore
+    private let libraryStore: LibraryStore?
     private let connectivity: SyncConnectivityMonitor
     private let defaults: UserDefaults
     private let managesLiveAPI: Bool
@@ -47,6 +48,7 @@ final class ProgressSyncCoordinator {
         api: SyncAPIClient? = nil,
         vault: SyncCredentialVault = .live(),
         stateStore: SyncStateStore = SyncStateStore(),
+        libraryStore: LibraryStore? = nil,
         connectivity: SyncConnectivityMonitor = SyncConnectivityMonitor(),
         defaults: UserDefaults = .standard,
         syncInterval: Duration = .seconds(20),
@@ -64,6 +66,7 @@ final class ProgressSyncCoordinator {
         }
         self.vault = vault
         self.stateStore = stateStore
+        self.libraryStore = libraryStore
         self.connectivity = connectivity
         self.defaults = defaults
         self.syncInterval = syncInterval
@@ -116,17 +119,25 @@ final class ProgressSyncCoordinator {
                 defaults.set(serverAddress, forKey: SyncServerConfiguration.credentialServerKey)
             }
         }
-        guard credentials != nil else { return }
-        guard connectivity.isOnline() else {
-            availability = .offline
-            return
+        if credentials != nil {
+            defaults.set(true, forKey: Self.hasStartedSyncKey)
         }
-        await pullOnly()
+        if credentials != nil {
+            guard connectivity.isOnline() else {
+                availability = .offline
+                startSyncTimerIfNeeded()
+                return
+            }
+            await pullOnly()
+        }
+        startSyncTimerIfNeeded()
     }
 
     func appBecameActive() async {
         appIsActive = true
-        guard started, credentials != nil else { return }
+        guard started else { return }
+        startSyncTimerIfNeeded()
+        guard credentials != nil else { return }
         guard connectivity.isOnline() else {
             availability = .offline
             return
@@ -182,9 +193,12 @@ final class ProgressSyncCoordinator {
             defaults.set(response.credentials.email, forKey: Self.emailKey)
             await vault.save(response.credentials)
             defaults.set(serverAddress, forKey: SyncServerConfiguration.credentialServerKey)
+            defaults.set(true, forKey: Self.hasStartedSyncKey)
             availability = .available
             freshPullCompleted = false
             await pullOnly()
+            await prepareCurrentSessionAfterPull()
+            startSyncTimerIfNeeded()
             return true
         } catch is CancellationError {
             return false
@@ -195,7 +209,7 @@ final class ProgressSyncCoordinator {
     }
 
     @discardableResult
-    func saveConfiguredEmail(_ value: String) -> Bool {
+    func saveConfiguredEmail(_ value: String) async -> Bool {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let parts = normalized.split(separator: "@", omittingEmptySubsequences: false)
         guard parts.count == 2,
@@ -203,17 +217,27 @@ final class ProgressSyncCoordinator {
               parts[1].contains("."),
               !parts[1].hasPrefix("."),
               !parts[1].hasSuffix(".") else { return false }
+        let changed = normalized != configuredEmailValue
         configuredEmailValue = normalized
         defaults.set(normalized, forKey: Self.emailKey)
+        if changed {
+            await clearSyncInformationAfterConfigurationChange()
+            startSyncTimerIfNeeded()
+        }
         return true
     }
 
     @discardableResult
-    func saveDeviceName(_ value: String) -> Bool {
+    func saveDeviceName(_ value: String) async -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= Self.maximumDeviceNameLength else { return false }
+        let changed = trimmed != deviceRegistration.deviceName
         deviceRegistration.deviceName = trimmed
         defaults.set(trimmed, forKey: Self.deviceNameKey)
+        if changed {
+            await clearSyncInformationAfterConfigurationChange()
+            startSyncTimerIfNeeded()
+        }
         return true
     }
 
@@ -226,10 +250,19 @@ final class ProgressSyncCoordinator {
     }
 
     func disableSync() async {
+        await clearSyncInformation()
+    }
+
+    private func clearSyncInformationAfterConfigurationChange() async {
+        guard defaults.bool(forKey: Self.hasStartedSyncKey) || credentials != nil else { return }
+        await clearSyncInformation()
+    }
+
+    private func clearSyncInformation() async {
         syncTimerTask?.cancel()
         healthProbeTask?.cancel()
         credentials = nil
-        currentSession = nil
+        currentSession?.comparisonState = .pending
         jumpSuggestion = nil
         devices = []
         freshPullCompleted = false
@@ -238,6 +271,7 @@ final class ProgressSyncCoordinator {
         await vault.clear()
         defaults.removeObject(forKey: SyncServerConfiguration.credentialServerKey)
         availability = .available
+        lastSuccessAt = nil
         lastFailureMessage = nil
     }
 
@@ -252,12 +286,13 @@ final class ProgressSyncCoordinator {
             return true
         }
 
-        await disableSync()
+        await clearSyncInformation()
         serverAddress = normalized
         defaults.set(normalized, forKey: SyncServerConfiguration.storageKey)
         if managesLiveAPI { api = .live(address: normalized) }
         lastSuccessAt = nil
         lastFailureMessage = nil
+        startSyncTimerIfNeeded()
         return true
     }
 
@@ -455,14 +490,67 @@ final class ProgressSyncCoordinator {
     private func startSyncTimerIfNeeded() {
         syncTimerTask?.cancel()
         guard appIsActive,
-              credentials != nil,
-              currentSession?.comparisonState == .completed else { return }
+              defaults.bool(forKey: Self.hasStartedSyncKey),
+              api.isConfigured,
+              configuredEmail != nil,
+              !currentDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         syncTimerTask = Task { [weak self, syncInterval] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: syncInterval) } catch { return }
-                guard !Task.isCancelled else { return }
-                await self?.syncCurrentProgress(forceLatest: false)
+                guard let self, !Task.isCancelled else { return }
+                await self.performScheduledSync()
             }
+        }
+    }
+
+    private func performScheduledSync() async {
+        guard appIsActive,
+              api.isConfigured,
+              configuredEmail != nil,
+              !currentDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard connectivity.isOnline() else {
+            availability = .offline
+            return
+        }
+        if credentials == nil {
+            _ = await startConfiguredSync()
+            return
+        }
+        if currentSession != nil {
+            await syncCurrentProgress(forceLatest: true)
+        } else {
+            await syncStoredReadingProgress()
+        }
+    }
+
+    private func syncStoredReadingProgress() async {
+        guard let libraryStore else { return }
+        guard let books = try? await libraryStore.load() else { return }
+        var items: [ProgressSyncRequest.Item] = []
+        for book in books {
+            let fileURL = await libraryStore.url(for: book)
+            guard let identity = try? await stateStore.identity(for: book, fileURL: fileURL) else { continue }
+            items.append(.init(
+                bookHash: identity.key.bookHash,
+                fileSize: identity.key.fileSize,
+                offset: book.offset,
+                readAtMs: Self.milliseconds(book.updatedAt)
+            ))
+        }
+        guard !items.isEmpty else { return }
+        do {
+            let response = try await authorized { authorization in
+                try await self.api.syncProgress(.init(items: items), authorization)
+            }
+            for result in response.results { remoteByKey[result.state.key] = result.state }
+            try? await stateStore.replaceRemote(Array(remoteByKey.values))
+            availability = .available
+            lastSuccessAt = now()
+            lastFailureMessage = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            handle(error)
         }
     }
 
@@ -552,11 +640,13 @@ final class ProgressSyncCoordinator {
         }
         guard credentials != nil else {
             availability = .available
+            startSyncTimerIfNeeded()
             return
         }
         availability = .available
         await pullOnly()
         await prepareCurrentSessionAfterPull()
+        startSyncTimerIfNeeded()
     }
 
     private func authorized<T>(_ operation: (SyncAuthorization) async throws -> T) async throws -> T {
@@ -646,6 +736,7 @@ final class ProgressSyncCoordinator {
 
     private static let deviceNameKey = "sync.device.name.v1"
     private static let emailKey = "sync.email.v1"
+    private static let hasStartedSyncKey = "sync.has.started.v1"
     static let maximumDeviceNameLength = 20
 
     private static func loadConfiguredEmail(defaults: UserDefaults) -> String? {

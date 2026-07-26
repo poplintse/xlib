@@ -83,10 +83,10 @@ struct SyncSettingsView: View {
 private struct SyncServerAddressView: View {
     @Bindable var store: SettingsStore
     @Environment(ProgressSyncCoordinator.self) private var sync
-    @Environment(\.dismiss) private var dismiss
     @State private var address = ""
     @State private var localError: String?
     @State private var isSaving = false
+    @State private var didSave = false
     @FocusState private var addressIsFocused: Bool
 
     private var theme: AppTheme { store.settings.theme }
@@ -101,7 +101,14 @@ private struct SyncServerAddressView: View {
                     .textContentType(.URL)
                     .focused($addressIsFocused)
                     .submitLabel(.done)
-                    .onSubmit { save() }
+                    .onSubmit { saveIfNeeded() }
+                    .onChange(of: addressIsFocused) { _, isFocused in
+                        if !isFocused { saveIfNeeded() }
+                    }
+                    .onChange(of: address) { _, value in
+                        if value != sync.serverAddress { didSave = false }
+                        localError = nil
+                    }
                     .frame(minHeight: 58)
                     .foregroundStyle(theme.text)
                     .accessibilityIdentifier("sync.serverAddressField")
@@ -112,22 +119,16 @@ private struct SyncServerAddressView: View {
                     .accessibilityIdentifier("sync.serverAddressError")
             }
 
-            Button { save() } label: {
-                HStack(spacing: 8) {
-                    if isSaving { ProgressView().tint(theme.surface) }
-                    Text(isSaving ? "正在保存…" : "保存")
-                        .font(.headline)
-                }
-                .frame(maxWidth: .infinity, minHeight: 52)
+            if isSaving {
+                SettingsNote(text: "正在保存…", theme: theme)
+            } else if didSave {
+                SettingsNote(text: "已保存", theme: theme)
+                    .accessibilityIdentifier("sync.serverAddressSaved")
             }
-            .buttonStyle(XLPrimaryButtonStyle(theme: theme))
-            .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
-            .opacity(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving ? 0.55 : 1)
-            .accessibilityIdentifier("sync.serverAddressSave")
 
             SettingsNote(
                 text: sync.isSyncEnabled
-                    ? "修改服务器后，本机同步 Token 会被清除，需要重新输入邮箱开启同步。"
+                    ? "修改服务器后会移除当前同步信息，点击同步刷新将按最新配置重新同步。"
                     : "默认地址为 \(SyncServerConfiguration.defaultAddress)，只支持 HTTPS。",
                 theme: theme
             )
@@ -136,15 +137,18 @@ private struct SyncServerAddressView: View {
             address = sync.serverAddress
             addressIsFocused = true
         }
+        .onDisappear { saveIfNeeded() }
     }
 
-    private func save() {
+    private func saveIfNeeded() {
         guard !isSaving else { return }
+        guard address != sync.serverAddress else { return }
         isSaving = true
         localError = nil
         Task {
             if await sync.saveServerAddress(address) {
-                dismiss()
+                address = sync.serverAddress
+                didSave = true
             } else {
                 localError = sync.lastFailureMessage ?? "服务器地址无法保存。"
             }
@@ -156,9 +160,10 @@ private struct SyncServerAddressView: View {
 private struct SyncEmailAddressView: View {
     @Bindable var store: SettingsStore
     @Environment(ProgressSyncCoordinator.self) private var sync
-    @Environment(\.dismiss) private var dismiss
     @State private var email = ""
     @State private var localError: String?
+    @State private var didSave = false
+    @State private var isSaving = false
     @FocusState private var emailIsFocused: Bool
 
     private var theme: AppTheme { store.settings.theme }
@@ -173,7 +178,15 @@ private struct SyncEmailAddressView: View {
                     .textContentType(.emailAddress)
                     .focused($emailIsFocused)
                     .submitLabel(.done)
-                    .onSubmit { save() }
+                    .onSubmit { saveIfNeeded() }
+                    .onChange(of: emailIsFocused) { _, isFocused in
+                        if !isFocused { saveIfNeeded() }
+                    }
+                    .onChange(of: email) { _, value in
+                        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        if normalized != (sync.configuredEmail ?? "") { didSave = false }
+                        localError = nil
+                    }
                     .frame(maxWidth: .infinity, minHeight: 58)
                     .foregroundStyle(theme.text)
                     .accessibilityIdentifier("sync.emailField")
@@ -182,35 +195,39 @@ private struct SyncEmailAddressView: View {
                 SettingsNote(text: localError, theme: theme)
                     .accessibilityIdentifier("sync.emailError")
             }
-            Button { save() } label: {
-                HStack(spacing: 8) {
-                    if sync.isWorking { ProgressView().tint(theme.surface) }
-                    Text(sync.isWorking ? "正在保存…" : "保存").font(.headline)
-                }
-                .frame(maxWidth: .infinity, minHeight: 52)
+            if isSaving {
+                SettingsNote(text: "正在保存…", theme: theme)
+            } else if didSave {
+                SettingsNote(text: "已保存", theme: theme)
+                    .accessibilityIdentifier("sync.emailSaved")
             }
-            .buttonStyle(XLPrimaryButtonStyle(theme: theme))
-            .disabled(!Self.isValidEmail(email))
-            .opacity(!Self.isValidEmail(email) ? 0.55 : 1)
-            .accessibilityIdentifier("sync.emailSave")
-            SettingsNote(text: "保存后请返回同步设置页启动同步。", theme: theme)
+            SettingsNote(text: "输入完成后会自动保存。", theme: theme)
         }
         .onAppear {
             email = sync.configuredEmail ?? ""
             emailIsFocused = true
         }
+        .onDisappear { saveIfNeeded() }
     }
 
-    private func save() {
+    private func saveIfNeeded() {
+        let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !isSaving else { return }
+        guard normalized != (sync.configuredEmail ?? "") else { return }
         guard Self.isValidEmail(email) else {
             localError = "请输入有效的邮箱地址。"
             return
         }
         localError = nil
-        if sync.saveConfiguredEmail(email) {
-            dismiss()
-        } else {
-            localError = "邮箱无法保存。"
+        isSaving = true
+        Task {
+            if await sync.saveConfiguredEmail(email) {
+                email = sync.configuredEmail ?? normalized
+                didSave = true
+            } else {
+                localError = "邮箱无法保存。"
+            }
+            isSaving = false
         }
     }
 
@@ -225,9 +242,10 @@ private struct SyncEmailAddressView: View {
 private struct SyncDeviceNameView: View {
     @Bindable var store: SettingsStore
     @Environment(ProgressSyncCoordinator.self) private var sync
-    @Environment(\.dismiss) private var dismiss
     @State private var deviceName = ""
     @State private var localError: String?
+    @State private var didSave = false
+    @State private var isSaving = false
     @FocusState private var deviceNameIsFocused: Bool
 
     private var theme: AppTheme { store.settings.theme }
@@ -241,11 +259,18 @@ private struct SyncDeviceNameView: View {
                     .textContentType(.name)
                     .focused($deviceNameIsFocused)
                     .submitLabel(.done)
-                    .onSubmit { save() }
+                    .onSubmit { saveIfNeeded() }
+                    .onChange(of: deviceNameIsFocused) { _, isFocused in
+                        if !isFocused { saveIfNeeded() }
+                    }
                     .onChange(of: deviceName) { _, value in
                         if value.count > ProgressSyncCoordinator.maximumDeviceNameLength {
                             deviceName = String(value.prefix(ProgressSyncCoordinator.maximumDeviceNameLength))
                         }
+                        if value.trimmingCharacters(in: .whitespacesAndNewlines) != sync.currentDeviceName {
+                            didSave = false
+                        }
+                        localError = nil
                     }
                     .frame(maxWidth: .infinity, minHeight: 58)
                     .foregroundStyle(theme.text)
@@ -255,26 +280,25 @@ private struct SyncDeviceNameView: View {
                 SettingsNote(text: localError, theme: theme)
                     .accessibilityIdentifier("sync.deviceNameError")
             }
-            Button { save() } label: {
-                HStack(spacing: 8) {
-                    if sync.isWorking { ProgressView().tint(theme.surface) }
-                    Text(sync.isWorking ? "正在保存…" : "保存").font(.headline)
-                }
-                .frame(maxWidth: .infinity, minHeight: 52)
+            if isSaving {
+                SettingsNote(text: "正在保存…", theme: theme)
+            } else if didSave {
+                SettingsNote(text: "已保存", theme: theme)
+                    .accessibilityIdentifier("sync.deviceNameSaved")
             }
-            .buttonStyle(XLPrimaryButtonStyle(theme: theme))
-            .disabled(deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .opacity(deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1)
-            .accessibilityIdentifier("sync.deviceNameSave")
-            SettingsNote(text: "设备名称最多 20 个字符。保存后请返回同步设置页启动同步。", theme: theme)
+            SettingsNote(text: "设备名称最多 20 个字符，输入完成后会自动保存。", theme: theme)
         }
         .onAppear {
             deviceName = sync.currentDeviceName
             deviceNameIsFocused = true
         }
+        .onDisappear { saveIfNeeded() }
     }
 
-    private func save() {
+    private func saveIfNeeded() {
+        let trimmed = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isSaving else { return }
+        guard trimmed != sync.currentDeviceName else { return }
         guard !deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             localError = "请输入设备名称。"
             return
@@ -283,10 +307,15 @@ private struct SyncDeviceNameView: View {
             localError = "设备名称不能超过20个字符。"
             return
         }
-        if sync.saveDeviceName(deviceName) {
-            dismiss()
-        } else {
-            localError = "设备名称无法保存。"
+        isSaving = true
+        Task {
+            if await sync.saveDeviceName(deviceName) {
+                deviceName = sync.currentDeviceName
+                didSave = true
+            } else {
+                localError = "设备名称无法保存。"
+            }
+            isSaving = false
         }
     }
 }

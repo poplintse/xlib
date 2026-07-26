@@ -116,9 +116,12 @@ final class ProgressSyncTests: XCTestCase {
         let incomplete = await coordinator.syncRefresh()
         XCTAssertFalse(incomplete)
         XCTAssertEqual(coordinator.lastFailureMessage, "请先完成同步配置。")
-        XCTAssertTrue(coordinator.saveConfiguredEmail("  Reader@Example.COM "))
-        XCTAssertFalse(coordinator.saveDeviceName(String(repeating: "a", count: 21)))
-        XCTAssertTrue(coordinator.saveDeviceName("  我的 iPhone  "))
+        let emailConfigured = await coordinator.saveConfiguredEmail("  Reader@Example.COM ")
+        let longDeviceNameSaved = await coordinator.saveDeviceName(String(repeating: "a", count: 21))
+        let deviceNameSaved = await coordinator.saveDeviceName("  我的 iPhone  ")
+        XCTAssertTrue(emailConfigured)
+        XCTAssertFalse(longDeviceNameSaved)
+        XCTAssertTrue(deviceNameSaved)
         XCTAssertEqual(coordinator.configuredEmail, "reader@example.com")
         XCTAssertEqual(coordinator.currentDeviceName, "我的 iPhone")
 
@@ -222,6 +225,55 @@ final class ProgressSyncTests: XCTestCase {
     }
 
     @MainActor
+    func testChangingLocalSyncConfigurationClearsCurrentSyncInformation() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let vault = CredentialVaultSpy(initial: nil)
+        let cloud = Self.remote(
+            key: SyncBookKey(bookHash: "book", fileSize: 100),
+            offset: 20,
+            readAtMs: 1_000,
+            device: SyncDevice(deviceId: UUID(), deviceName: "iPad", platform: "ios"),
+            version: "v1"
+        )
+        let spy = SyncAPISpy(pullItems: [cloud], startCredentials: fixture.credentials)
+        let stateStore = SyncStateStore(root: fixture.stateRoot)
+        let coordinator = makeCoordinator(
+            fixture: fixture,
+            api: await spy.client(),
+            vault: await vault.client(),
+            stateStore: stateStore,
+            syncInterval: .milliseconds(20)
+        )
+
+        await coordinator.start()
+        let started = await coordinator.startSync(email: fixture.credentials.email)
+        XCTAssertTrue(started)
+        XCTAssertTrue(coordinator.isSyncEnabled)
+        let cachedBeforeConfigurationChange = await stateStore.cachedRemote()
+        XCTAssertFalse(cachedBeforeConfigurationChange.isEmpty)
+
+        let saved = await coordinator.saveConfiguredEmail("new@example.com")
+        XCTAssertTrue(saved)
+
+        XCTAssertEqual(coordinator.configuredEmail, "new@example.com")
+        XCTAssertFalse(coordinator.isSyncEnabled)
+        XCTAssertNil(coordinator.lastSuccessAt)
+        let cachedAfterConfigurationChange = await stateStore.cachedRemote()
+        let savedCredentials = await vault.saved()
+        XCTAssertTrue(cachedAfterConfigurationChange.isEmpty)
+        XCTAssertNil(savedCredentials)
+
+        try await Task.sleep(for: .milliseconds(80))
+
+        let calls = await spy.counts()
+        let automaticallyStartedEmail = await spy.startedEmail()
+        XCTAssertEqual(calls.start, 2)
+        XCTAssertTrue(coordinator.isSyncEnabled)
+        XCTAssertEqual(automaticallyStartedEmail, "new@example.com")
+    }
+
+    @MainActor
     func testCurrentBookComparesBeforeAnyUploadAndPromptsForNewerCloudProgress() async throws {
         let fixture = try makeFixture(fileByteCount: 100_000)
         defer { fixture.cleanup() }
@@ -258,8 +310,49 @@ final class ProgressSyncTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(80))
 
         let callsAfterReading = await spy.counts()
-        XCTAssertEqual(callsAfterReading.sync, 1)
+        XCTAssertGreaterThanOrEqual(callsAfterReading.sync, 2)
         await coordinator.endReading(bookID: fixture.book.id)
+    }
+
+    @MainActor
+    func testEnteringBackgroundUploadsUnchangedReadingProgress() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let spy = SyncAPISpy(pullItems: [])
+        let coordinator = makeCoordinator(
+            fixture: fixture,
+            api: await spy.client(),
+            syncInterval: .seconds(60)
+        )
+
+        await coordinator.start()
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL)
+        await coordinator.appEnteredBackground()
+
+        let calls = await spy.counts()
+        XCTAssertEqual(calls.sync, 1)
+    }
+
+    @MainActor
+    func testScheduledSyncUploadsStoredProgressWithoutAnActiveReader() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let libraryStore = LibraryStore(root: fixture.root.appending(path: "library"))
+        let book = try await libraryStore.importBook(from: fixture.fileURL)
+        try await libraryStore.saveProgress(bookID: book.id, offset: 42)
+        let spy = SyncAPISpy(pullItems: [])
+        let coordinator = makeCoordinator(
+            fixture: fixture,
+            api: await spy.client(),
+            libraryStore: libraryStore,
+            syncInterval: .milliseconds(20)
+        )
+
+        await coordinator.start()
+        try await Task.sleep(for: .milliseconds(60))
+
+        let calls = await spy.counts()
+        XCTAssertGreaterThanOrEqual(calls.sync, 1)
     }
 
     @MainActor
@@ -319,6 +412,7 @@ final class ProgressSyncTests: XCTestCase {
         api: SyncAPIClient,
         vault: SyncCredentialVault? = nil,
         stateStore: SyncStateStore? = nil,
+        libraryStore: LibraryStore? = nil,
         syncInterval: Duration = .seconds(20),
         healthProbeDelays: [Duration] = [.seconds(60)]
     ) -> ProgressSyncCoordinator {
@@ -326,6 +420,7 @@ final class ProgressSyncTests: XCTestCase {
             api: api,
             vault: vault ?? .constant(fixture.credentials),
             stateStore: stateStore ?? SyncStateStore(root: fixture.stateRoot),
+            libraryStore: libraryStore,
             connectivity: SyncConnectivityMonitor(started: false, initialOnline: true),
             defaults: fixture.defaults,
             syncInterval: syncInterval,

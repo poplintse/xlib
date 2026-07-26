@@ -12,7 +12,7 @@ struct XLibReaderApp: App {
         self.store = store
         _settings = State(initialValue: SettingsStore())
         _library = State(initialValue: LibraryModel(store: store))
-        _sync = State(initialValue: ProgressSyncCoordinator())
+        _sync = State(initialValue: ProgressSyncCoordinator(libraryStore: store))
     }
 
     var body: some Scene {

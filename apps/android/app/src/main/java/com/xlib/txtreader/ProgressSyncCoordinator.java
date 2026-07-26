@@ -224,8 +224,10 @@ final class ProgressSyncCoordinator {
                     }
                 }
                 availability = SyncAvailability.AVAILABLE;
-                pullRemote(false);
-                deliver(callback, SyncActionResult.success(null));
+                boolean refreshed = pullRemote(false);
+                deliver(callback, refreshed ? SyncActionResult.success(null)
+                        : SyncActionResult.failure(lastFailureCode == null
+                                ? "REFRESH_FAILED" : lastFailureCode));
             } catch (Exception error) {
                 handleFailure(error, null);
                 deliver(callback, SyncActionResult.failure(errorCode(error)));
@@ -238,6 +240,59 @@ final class ProgressSyncCoordinator {
 
     String deviceName() {
         return tokenStore.deviceName();
+    }
+
+    String configuredEmail() {
+        return tokenStore.configuredEmail();
+    }
+
+    String deviceId() {
+        return tokenStore.deviceId();
+    }
+
+    boolean configurationComplete() {
+        return isConfigurationComplete(tokenStore.configuredEmail(), tokenStore.deviceName(),
+                serverConfig.url());
+    }
+
+    void saveConfiguredEmail(String email, ActionCallback<Void> callback) {
+        serial.execute(() -> {
+            String normalized = SyncTokenStore.normalizeEmail(email);
+            if (!isValidEmail(normalized)) {
+                deliver(callback, SyncActionResult.failure("INVALID_EMAIL"));
+                return;
+            }
+            boolean invalidatesActiveSync = tokenStore.enabled()
+                    && !normalized.equals(tokenStore.email());
+            tokenStore.saveConfiguredEmail(normalized);
+            if (invalidatesActiveSync) invalidateSyncForConfigurationChange();
+            else publishState();
+            deliver(callback, SyncActionResult.success(null));
+        });
+    }
+
+    void saveDeviceName(String deviceName, ActionCallback<Void> callback) {
+        serial.execute(() -> {
+            String normalized = SyncTokenStore.normalizeDeviceName(deviceName);
+            if (!SyncTokenStore.isValidDeviceName(normalized)) {
+                deliver(callback, SyncActionResult.failure("INVALID_DEVICE_NAME"));
+                return;
+            }
+            String previous = tokenStore.deviceName();
+            tokenStore.saveDeviceName(normalized);
+            if (tokenStore.enabled() && !normalized.equals(previous)) {
+                invalidateSyncForConfigurationChange();
+            } else {
+                publishState();
+            }
+            deliver(callback, SyncActionResult.success(null));
+        });
+    }
+
+    SyncDevice localDevice(String configuredDeviceName) {
+        String normalized = SyncTokenStore.normalizeDeviceName(configuredDeviceName);
+        return new SyncDevice(tokenStore.deviceId(), normalized, "android",
+                System.currentTimeMillis(), false);
     }
 
     void disableSync(ActionCallback<Void> callback) {
@@ -279,30 +334,11 @@ final class ProgressSyncCoordinator {
             }
             api.setBaseUrl(serverConfig.url());
             boolean changed = !previousUrl.equals(serverConfig.url());
-            pullCompletedForLaunch = false;
-            cancelPeriodic();
-            cancelRecovery();
             if (changed) {
-                tokenStore.clear();
-                remoteStore.clear();
-                disabledBookKeys.clear();
-                cachedDevices = Collections.emptyList();
-                availability = SyncAvailability.AVAILABLE;
-                lastFailureCode = null;
-                if (session != null) session.comparisonState = ReaderComparisonState.PENDING;
+                invalidateSyncForConfigurationChange();
+            } else {
                 publishState();
-                deliver(callback, SyncActionResult.success(null));
-                return;
             }
-            boolean tokenRequired = availability == SyncAvailability.TOKEN_REQUIRED;
-            if (!tokenRequired) {
-                availability = networkAvailable ? SyncAvailability.AVAILABLE
-                        : SyncAvailability.OFFLINE;
-                lastFailureCode = null;
-            }
-            if (session != null) session.comparisonState = ReaderComparisonState.PENDING;
-            publishState();
-            if (tokenStore.enabled() && networkAvailable && !tokenRequired) pullRemote(false);
             deliver(callback, SyncActionResult.success(null));
         });
     }
@@ -337,7 +373,7 @@ final class ProgressSyncCoordinator {
     }
 
     void preloadDevices() {
-        loadDevices(null);
+        if (tokenStore.enabled()) loadDevices(null);
     }
 
     List<SyncDevice> cachedDevices() {
@@ -399,6 +435,24 @@ final class ProgressSyncCoordinator {
 
     SyncUiState state() {
         return uiState;
+    }
+
+    private void invalidateSyncForConfigurationChange() {
+        tokenStore.clear();
+        remoteStore.clear();
+        pullCompletedForLaunch = false;
+        disabledBookKeys.clear();
+        cachedDevices = Collections.emptyList();
+        cancelPeriodic();
+        cancelRecovery();
+        if (session != null) session.comparisonState = ReaderComparisonState.PENDING;
+        availability = networkAvailable
+                ? SyncAvailability.AVAILABLE : SyncAvailability.OFFLINE;
+        lastAttemptAtMs = 0L;
+        lastSuccessAtMs = 0L;
+        lastFailureCode = null;
+        busy = false;
+        publishState();
     }
 
     private void resolveHash(long generation, long localBookId, File file) {
@@ -695,6 +749,12 @@ final class ProgressSyncCoordinator {
         int at = email.indexOf('@');
         return at > 0 && at == email.lastIndexOf('@') && at < email.length() - 3
                 && email.indexOf('.', at) > at + 1 && email.length() <= 254;
+    }
+
+    static boolean isConfigurationComplete(String email, String deviceName, String serverUrl) {
+        return isValidEmail(SyncTokenStore.normalizeEmail(email))
+                && SyncTokenStore.isValidDeviceName(deviceName)
+                && SyncServerConfig.isValid(serverUrl);
     }
 
     private static final class ReaderSession {

@@ -18,12 +18,14 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.text.Editable;
 import android.text.Layout;
 import android.text.InputFilter;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.TextPaint;
+import android.text.TextWatcher;
 import android.text.style.BackgroundColorSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -211,6 +213,10 @@ public class MainActivity extends Activity {
     private ScrollView settingsScroll;
     private LinearLayout settingsContent;
     private EditText focusedSettingsInput;
+    private String syncEmailDraft;
+    private String syncDeviceDraft;
+    private String syncServerDraft;
+    private String syncSettingsError;
     private final Runnable hidePageIndicatorRunnable = () -> {
         if (pageIndicator != null) pageIndicator.animate().alpha(0f).setDuration(180L).start();
     };
@@ -268,7 +274,9 @@ public class MainActivity extends Activity {
                         syncUiState = state;
                         if (!activityDestroyed && settingsOpen
                                 && currentSettingsTab == SETTINGS_SYNC
-                                && settingsContent != null) {
+                                && settingsContent != null
+                                && (focusedSettingsInput == null
+                                        || !focusedSettingsInput.hasFocus())) {
                             renderSyncSettingsForCurrentTheme();
                         }
                     }
@@ -1943,161 +1951,250 @@ public class MainActivity extends Activity {
                                     int accentContainer) {
         if (settingsContent == null || settingsScroll == null || syncCoordinator == null) return;
         settingsContent.removeAllViews();
+        boolean dark = isDarkTheme(appTheme());
         int variant = isDarkTheme(appTheme())
                 ? UiKit.DARK_SURFACE_VARIANT : UiKit.LIGHT_SURFACE_VARIANT;
+        SyncUiState state = syncUiState == null ? syncCoordinator.state() : syncUiState;
+        if (syncEmailDraft == null) syncEmailDraft = syncCoordinator.configuredEmail();
+        if (syncDeviceDraft == null) syncDeviceDraft = syncCoordinator.deviceName();
+        if (syncServerDraft == null) syncServerDraft = syncCoordinator.serverUrl();
 
-        LinearLayout serverCard = makeSyncCard("同步服务器",
-                "仅支持 HTTPS。修改后会先从新服务器拉取云端状态。", surface, text, muted);
+        LinearLayout configurationCard = makeSyncCard("同步设置", "", surface, text, muted);
+        EditText emailInput = new EditText(this);
+        emailInput.setSingleLine(true);
+        emailInput.setHint("请输入同步邮箱");
+        emailInput.setText(syncEmailDraft);
+        styleSyncInput(emailInput, text, muted, variant,
+                android.text.InputType.TYPE_CLASS_TEXT
+                        | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        emailInput.setImeOptions(EditorInfo.IME_ACTION_NEXT);
+        makeSettingsInputKeyboardAware(emailInput);
+        trackSyncDraft(emailInput, value -> syncEmailDraft = value);
+        addSyncConfigurationField(configurationCard, "邮箱", null, emailInput,
+                text, muted, accent, accentContainer, () -> {
+                    String requested = emailInput.getText().toString();
+                    syncCoordinator.saveConfiguredEmail(requested, result -> {
+                        if (!result.isSuccess()) {
+                            emailInput.setError("请输入有效邮箱");
+                            return;
+                        }
+                        syncEmailDraft = SyncTokenStore.normalizeEmail(requested);
+                        syncSettingsError = null;
+                        Toast.makeText(this, "邮箱已保存", Toast.LENGTH_SHORT).show();
+                        renderSyncSettingsForCurrentTheme();
+                    });
+                });
+
+        EditText deviceInput = new EditText(this);
+        deviceInput.setSingleLine(true);
+        deviceInput.setHint("请输入当前设备名称");
+        deviceInput.setText(syncDeviceDraft);
+        styleSyncInput(deviceInput, text, muted, variant,
+                android.text.InputType.TYPE_CLASS_TEXT
+                        | android.text.InputType.TYPE_TEXT_VARIATION_NORMAL);
+        deviceInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(20)});
+        deviceInput.setImeOptions(EditorInfo.IME_ACTION_NEXT);
+        makeSettingsInputKeyboardAware(deviceInput);
+        trackSyncDraft(deviceInput, value -> syncDeviceDraft = value);
+        addSyncConfigurationField(configurationCard, "当前设备",
+                "设备名称最多 20 个字符，用于区分不同设备。", deviceInput,
+                text, muted, accent, accentContainer, () -> {
+                    String requested = deviceInput.getText().toString();
+                    syncCoordinator.saveDeviceName(requested, result -> {
+                        if (!result.isSuccess()) {
+                            deviceInput.setError("请输入设备名称（最多 20 个字符）");
+                            return;
+                        }
+                        syncDeviceDraft = SyncTokenStore.normalizeDeviceName(requested);
+                        syncSettingsError = null;
+                        Toast.makeText(this, "当前设备已保存", Toast.LENGTH_SHORT).show();
+                        renderSyncSettingsForCurrentTheme();
+                    });
+                });
+
         EditText serverInput = new EditText(this);
         serverInput.setSingleLine(true);
-        serverInput.setText(syncCoordinator.serverUrl());
-        serverInput.setTextColor(text);
-        serverInput.setHintTextColor(muted);
-        serverInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        serverInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
-                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
-        serverInput.setBackground(UiKit.rounded(this, variant, 12));
-        serverInput.setPadding(dp(12), 0, dp(12), 0);
+        serverInput.setHint("请输入 HTTPS 服务器地址");
+        serverInput.setText(syncServerDraft);
+        styleSyncInput(serverInput, text, muted, variant,
+                android.text.InputType.TYPE_CLASS_TEXT
+                        | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        serverInput.setImeOptions(EditorInfo.IME_ACTION_DONE);
         makeSettingsInputKeyboardAware(serverInput);
-        serverCard.addView(serverInput, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
-        Button saveServer = makeButton("保存服务器地址");
-        UiKit.styleButton(this, saveServer, accentContainer, accent, 14);
-        saveServer.setOnClickListener(v -> {
-            String previousUrl = syncCoordinator.serverUrl();
-            String requestedUrl = serverInput.getText().toString();
-            syncCoordinator.saveServerUrl(requestedUrl, result -> {
-                    if (!result.isSuccess()) {
-                        serverInput.setError("请输入不含查询参数的 HTTPS 地址");
-                    } else {
-                        boolean changed = !previousUrl.equals(
-                                SyncServerConfig.normalize(requestedUrl));
-                        Toast.makeText(this, changed
-                                        ? "地址已保存，请在新服务器上重新开启同步"
-                                        : "服务器地址已保存",
-                                Toast.LENGTH_LONG).show();
-                    }
-                });
-        });
-        LinearLayout.LayoutParams saveServerLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
-        saveServerLp.topMargin = dp(8);
-        serverCard.addView(saveServer, saveServerLp);
-        settingsContent.addView(serverCard, syncCardLayoutParams());
-
-        SyncUiState state = syncUiState == null ? syncCoordinator.state() : syncUiState;
-        boolean tokenRequired = state != null
-                && state.availability == SyncAvailability.TOKEN_REQUIRED;
-        if (state == null || !state.enabled || tokenRequired) {
-            LinearLayout enableCard = makeSyncCard("阅读进度同步",
-                    tokenRequired
-                            ? "同步凭据已失效，请重新输入账户信息开启。"
-                            : "输入账户信息后可在不同设备间同步阅读进度。",
-                    surface, text, muted);
-            TextView accountLabel = makeSyncFieldLabel("账户信息", text);
-            enableCard.addView(accountLabel);
-            EditText emailInput = new EditText(this);
-            emailInput.setSingleLine(true);
-            emailInput.setHint("邮箱");
-            if (tokenRequired) emailInput.setText(state.email);
-            styleSyncInput(emailInput, text, muted, variant,
-                    android.text.InputType.TYPE_CLASS_TEXT
-                            | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-            makeSettingsInputKeyboardAware(emailInput);
-            enableCard.addView(emailInput, syncFieldLayoutParams());
-            TextView deviceLabel = makeSyncFieldLabel("设备信息", text);
-            LinearLayout.LayoutParams deviceLabelLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            deviceLabelLp.topMargin = dp(10);
-            enableCard.addView(deviceLabel, deviceLabelLp);
-            TextView deviceHint = new TextView(this);
-            deviceHint.setText("设备名称最多 20 个字符，用于区分不同设备。");
-            deviceHint.setTextColor(muted);
-            deviceHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            deviceHint.setPadding(0, dp(3), 0, 0);
-            enableCard.addView(deviceHint);
-            EditText deviceInput = new EditText(this);
-            deviceInput.setSingleLine(true);
-            deviceInput.setHint("设备名称");
-            deviceInput.setText(syncCoordinator.deviceName());
-            styleSyncInput(deviceInput, text, muted, variant,
-                    android.text.InputType.TYPE_CLASS_TEXT
-                            | android.text.InputType.TYPE_TEXT_VARIATION_NORMAL);
-            deviceInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(20)});
-            makeSettingsInputKeyboardAware(deviceInput);
-            enableCard.addView(deviceInput, syncFieldLayoutParams());
-            Button enable = makeButton(state != null && state.busy ? "正在保存…" : "保存");
-            UiKit.styleButton(this, enable, accentContainer, accent, 14);
-            enable.setEnabled(state == null || !state.busy);
-            enable.setOnClickListener(v -> syncCoordinator.startSync(
-                    emailInput.getText().toString(), deviceInput.getText().toString(), result -> {
+        trackSyncDraft(serverInput, value -> syncServerDraft = value);
+        addSyncConfigurationField(configurationCard, "服务器地址", "仅支持 HTTPS 地址。",
+                serverInput, text, muted, accent, accentContainer, () -> {
+                    String requested = serverInput.getText().toString();
+                    syncCoordinator.saveServerUrl(requested, result -> {
                         if (!result.isSuccess()) {
-                            if ("INVALID_EMAIL".equals(result.errorCode)) {
-                                emailInput.setError("请输入有效邮箱");
-                            } else if ("INVALID_DEVICE_NAME".equals(result.errorCode)) {
-                                deviceInput.setError("请输入设备名称（最多 20 个字符）");
-                            } else {
-                                showSyncActionError(result.errorCode);
-                            }
-                        } else {
-                            Toast.makeText(this, "同步已开启", Toast.LENGTH_SHORT).show();
+                            serverInput.setError("请输入不含查询参数的 HTTPS 地址");
+                            return;
                         }
-                    }));
-            LinearLayout.LayoutParams enableLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
-            enableLp.topMargin = dp(8);
-            enableCard.addView(enable, enableLp);
-            TextView syncNote = new TextView(this);
-            syncNote.setText("服务端会为邮箱创建或返回已有同步 Token，设备名称用于区分不同设备。");
-            syncNote.setTextColor(muted);
-            syncNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            syncNote.setPadding(0, dp(10), 0, 0);
-            enableCard.addView(syncNote);
-            if (tokenRequired) {
-                Button disable = makeButton("关闭本机同步");
-                UiKit.styleButton(this, disable, variant, text, 14);
-                disable.setOnClickListener(v -> confirmDisableSync());
-                LinearLayout.LayoutParams disableLp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
-                disableLp.topMargin = dp(6);
-                enableCard.addView(disable, disableLp);
-            }
-            settingsContent.addView(enableCard, syncCardLayoutParams());
-            settingsScroll.scrollTo(0, 0);
-            return;
-        }
+                        syncServerDraft = SyncServerConfig.normalize(requested);
+                        syncSettingsError = null;
+                        Toast.makeText(this, "服务器地址已保存", Toast.LENGTH_SHORT).show();
+                        renderSyncSettingsForCurrentTheme();
+                    });
+                });
 
-        LinearLayout statusCard = makeSyncCard("同步状态",
-                syncAvailabilityText(state.availability), surface, text, muted);
-        addSyncDetail(statusCard, "邮箱", state.email, text, muted);
-        addSyncDetail(statusCard, "当前设备", state.deviceName, text, muted);
-        addSyncDetail(statusCard, "最后成功同步", formatSyncTime(state.lastSuccessAtMs),
+        LinearLayout statusCard = makeSyncCard("状态", "", surface, text, muted);
+        addSyncStatusRow(statusCard, "同步状态", syncStatusText(state), text, muted);
+        addSyncDivider(statusCard, variant);
+        addSyncStatusRow(statusCard, "最后同步",
+                state == null || state.lastSuccessAtMs <= 0L
+                        ? "尚未同步" : formatSyncTime(state.lastSuccessAtMs),
                 text, muted);
-        settingsContent.addView(statusCard, syncCardLayoutParams());
+        addSyncDivider(statusCard, variant);
+        if (!TextUtils.isEmpty(syncSettingsError)) {
+            TextView error = new TextView(this);
+            error.setText(syncSettingsError);
+            error.setTextColor(dark ? Color.rgb(255, 180, 178) : Color.rgb(150, 24, 27));
+            error.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            error.setPadding(0, dp(10), 0, 0);
+            statusCard.addView(error);
+        }
+        Button refresh = makeButton(state != null && state.busy ? "同步中…" : "同步刷新");
+        UiKit.styleButton(this, refresh, accentContainer, accent, 14);
+        refresh.setEnabled(state == null || !state.busy);
+        refresh.setOnClickListener(v -> {
+            String email = SyncTokenStore.normalizeEmail(emailInput.getText().toString());
+            String device = SyncTokenStore.normalizeDeviceName(
+                    deviceInput.getText().toString());
+            String server = SyncServerConfig.normalize(serverInput.getText().toString());
+            boolean savedConfigurationMatches = email.equals(syncCoordinator.configuredEmail())
+                    && device.equals(syncCoordinator.deviceName())
+                    && server.equals(syncCoordinator.serverUrl());
+            if (!syncCoordinator.configurationComplete() || !savedConfigurationMatches) {
+                syncSettingsError = "请先完成同步配置";
+                renderSyncSettingsForCurrentTheme();
+                return;
+            }
+            syncSettingsError = null;
+            refresh.setEnabled(false);
+            refresh.setText("同步中…");
+            ProgressSyncCoordinator.ActionCallback<Void> callback = result -> {
+                if (result.isSuccess()) {
+                    syncSettingsError = null;
+                    Toast.makeText(this, "同步状态已刷新", Toast.LENGTH_SHORT).show();
+                } else {
+                    syncSettingsError = syncActionErrorMessage(result.errorCode);
+                }
+                renderSyncSettingsForCurrentTheme();
+            };
+            SyncUiState current = syncCoordinator.state();
+            if (current != null && current.enabled
+                    && current.availability != SyncAvailability.TOKEN_REQUIRED) {
+                syncCoordinator.refreshRemote(callback);
+            } else {
+                syncCoordinator.startSync(email, device, callback);
+            }
+        });
+        LinearLayout.LayoutParams refreshLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        refreshLp.topMargin = dp(10);
+        statusCard.addView(refresh, refreshLp);
 
-        LinearLayout actions = makeSyncCard("", "", surface, text, muted);
-        addSyncActionButton(actions, "刷新同步状态", false, text, accent, accentContainer,
-                variant, () -> syncCoordinator.refreshRemote(result -> {
-                    if (result.isSuccess()) Toast.makeText(this, "同步状态已刷新",
-                            Toast.LENGTH_SHORT).show();
-                    else showSyncActionError(result.errorCode);
-                }));
-        addSyncActionButton(actions, "设备管理", false, text, accent, accentContainer,
-                variant, this::showSyncDevices);
-        addSyncActionButton(actions, "关闭本机同步", false, text, accent, accentContainer,
-                variant, this::confirmDisableSync);
-        addSyncActionButton(actions, "删除云端阅读进度", true, text, accent, accentContainer,
-                variant, this::confirmDeleteRemoteProgress);
-        settingsContent.addView(actions, syncCardLayoutParams());
+        LinearLayout devicesCard = makeSyncCard("同步设备管理", "", surface, text, muted);
+        Button devices = makeButton("设备管理");
+        UiKit.styleButton(this, devices, variant, text, 14);
+        devices.setOnClickListener(v -> showSyncDevices(deviceInput.getText().toString()));
+        devicesCard.addView(devices, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+
+        settingsContent.addView(statusCard, syncCardLayoutParams());
+        settingsContent.addView(configurationCard, syncCardLayoutParams());
+        settingsContent.addView(devicesCard, syncCardLayoutParams());
         settingsScroll.scrollTo(0, 0);
     }
 
-    private TextView makeSyncFieldLabel(String label, int text) {
-        TextView view = new TextView(this);
-        view.setText(label);
-        view.setTextColor(text);
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        return view;
+    private void addSyncConfigurationField(LinearLayout card, String label, String note,
+                                           EditText input, int text, int muted, int accent,
+                                           int accentContainer, Runnable saveAction) {
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        TextView title = new TextView(this);
+        title.setText(label);
+        title.setTextColor(text);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        labels.addView(title);
+        if (!TextUtils.isEmpty(note)) {
+            TextView description = new TextView(this);
+            description.setText(note);
+            description.setTextColor(muted);
+            description.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            description.setPadding(0, dp(2), 0, 0);
+            labels.addView(description);
+        }
+        heading.addView(labels, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button save = makeButton("保存");
+        UiKit.styleButton(this, save, accentContainer, accent, 12);
+        save.setOnClickListener(v -> saveAction.run());
+        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(dp(68), dp(36));
+        saveLp.leftMargin = dp(8);
+        heading.addView(save, saveLp);
+        LinearLayout.LayoutParams headingLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        headingLp.topMargin = card.getChildCount() > 1 ? dp(12) : dp(6);
+        card.addView(heading, headingLp);
+        card.addView(input, syncFieldLayoutParams());
+    }
+
+    private void addSyncStatusRow(LinearLayout parent, String label, String value,
+                                  int text, int muted) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = new TextView(this);
+        name.setText(label);
+        name.setTextColor(text);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        row.addView(name, new LinearLayout.LayoutParams(0, dp(52), 1));
+        TextView detail = new TextView(this);
+        detail.setText(value);
+        detail.setTextColor(muted);
+        detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        detail.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        detail.setSingleLine(true);
+        row.addView(detail, new LinearLayout.LayoutParams(0, dp(52), 1));
+        parent.addView(row);
+    }
+
+    private void addSyncDivider(LinearLayout parent, int color) {
+        View divider = new View(this);
+        divider.setBackgroundColor(UiKit.withAlpha(color, 150));
+        parent.addView(divider, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+    }
+
+    private String syncStatusText(SyncUiState state) {
+        if (state == null || !state.enabled) return "未同步";
+        if (state.busy) return "同步中";
+        if (state.availability == SyncAvailability.OFFLINE) return "离线";
+        if (state.availability == SyncAvailability.SERVICE_UNAVAILABLE) return "同步失败";
+        if (state.availability == SyncAvailability.TOKEN_REQUIRED) return "需要重新启动";
+        return state.lastSuccessAtMs > 0L ? "已同步" : "已启动";
+    }
+
+    private void trackSyncDraft(EditText input, SyncDraftListener listener) {
+        input.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence text, int start, int count,
+                                                    int after) {
+            }
+
+            @Override public void onTextChanged(CharSequence text, int start, int before,
+                                                int count) {
+            }
+
+            @Override public void afterTextChanged(Editable text) {
+                listener.onChanged(text.toString());
+            }
+        });
+    }
+
+    private interface SyncDraftListener {
+        void onChanged(String value);
     }
 
     private void styleSyncInput(EditText input, int text, int muted, int variant, int inputType) {
@@ -2270,6 +2367,10 @@ public class MainActivity extends Activity {
     }
 
     private void showSyncActionError(String code) {
+        Toast.makeText(this, syncActionErrorMessage(code), Toast.LENGTH_LONG).show();
+    }
+
+    private String syncActionErrorMessage(String code) {
         String message;
         if ("OFFLINE".equals(code) || "CONNECTION_FAILED".equals(code)) {
             message = "网络不可用，请稍后重试";
@@ -2278,6 +2379,13 @@ public class MainActivity extends Activity {
             message = "同步凭据已失效，请重新输入账户信息开启同步";
         } else if ("INVALID_SERVER_URL".equals(code)) {
             message = "服务器地址必须是有效的 HTTPS 地址";
+        } else if ("SERVICE_NOT_CONFIGURED".equals(code)) {
+            message = "请先配置可用的同步服务器地址";
+        } else if ("SERVICE_UNAVAILABLE".equals(code) || "SYNC_FAILED".equals(code)
+                || "REFRESH_FAILED".equals(code)) {
+            message = "同步服务暂不可用，请稍后重试";
+        } else if ("INTERNAL_ERROR".equals(code) || "internal_error".equals(code)) {
+            message = "同步服务内部错误，请稍后重试";
         } else if ("CURRENT_DEVICE".equals(code)) {
             message = "不能删除本机设备";
         } else if ("DEVICE_NOT_FOUND".equals(code)) {
@@ -2299,7 +2407,7 @@ public class MainActivity extends Activity {
         } else {
             message = "同步请求失败（" + code + "）";
         }
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        return message;
     }
 
     private void confirmDisableSync() {
@@ -2321,7 +2429,7 @@ public class MainActivity extends Activity {
                         }));
     }
 
-    private void showSyncDevices() {
+    private void showSyncDevices(String configuredDeviceName) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         dialog.setContentView(new FrameLayout(this));
@@ -2331,15 +2439,28 @@ public class MainActivity extends Activity {
             dialog.getWindow().setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.90f),
                     ViewGroup.LayoutParams.WRAP_CONTENT);
         }
+        SyncUiState state = syncCoordinator.state();
+        if (state == null || !state.enabled) {
+            List<SyncDevice> localDevices = new ArrayList<>();
+            localDevices.add(syncCoordinator.localDevice(configuredDeviceName));
+            renderSyncDevicesDialog(dialog, localDevices, false, null);
+            return;
+        }
         List<SyncDevice> cached = syncCoordinator.cachedDevices();
-        renderSyncDevicesDialog(dialog, cached, true, null);
+        List<SyncDevice> initialDevices = cached;
+        if (initialDevices.isEmpty()) {
+            initialDevices = new ArrayList<>();
+            initialDevices.add(syncCoordinator.localDevice(configuredDeviceName));
+        }
+        renderSyncDevicesDialog(dialog, initialDevices, true, null);
+        List<SyncDevice> fallbackDevices = initialDevices;
         syncCoordinator.loadDevices(result -> {
             if (!dialog.isShowing()) return;
             if (result.isSuccess()) {
                 renderSyncDevicesDialog(dialog, result.value, false, null);
                 return;
             }
-            renderSyncDevicesDialog(dialog, cached, false, result.errorCode);
+            renderSyncDevicesDialog(dialog, fallbackDevices, false, result.errorCode);
         });
     }
 
@@ -2361,7 +2482,13 @@ public class MainActivity extends Activity {
         title.setText("设备管理");
         card.addView(title);
         TextView subtitle = new TextView(this);
-        subtitle.setText(refreshing ? "正在读取设备信息…" : "本机不可删除，其他设备可移除同步权限。");
+        SyncUiState state = syncCoordinator.state();
+        boolean syncEnabled = state != null && state.enabled;
+        subtitle.setText(refreshing
+                ? "正在读取设备信息…"
+                : syncEnabled
+                        ? "本机不可删除，其他设备可移除同步权限。"
+                        : "尚未启动同步，仅显示同步设置中的当前设备。");
         subtitle.setTextColor(muted);
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         subtitle.setPadding(0, dp(8), 0, dp(4));
@@ -2373,7 +2500,7 @@ public class MainActivity extends Activity {
             error.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
             card.addView(error);
         }
-        String currentId = syncUiState == null ? "" : syncUiState.deviceId;
+        String currentId = syncCoordinator.deviceId();
         if (devices.isEmpty() && !refreshing) {
             TextView empty = new TextView(this);
             empty.setText("没有可管理的设备");
@@ -2404,7 +2531,7 @@ public class MainActivity extends Activity {
         row.setPadding(dp(12), dp(4), dp(6), dp(4));
         row.setBackground(UiKit.interactive(this, variant, 14, UiKit.withAlpha(accent, 28)));
         TextView name = new TextView(this);
-        name.setText(device.deviceName);
+        name.setText(TextUtils.isEmpty(device.deviceName) ? "未设置设备名称" : device.deviceName);
         name.setTextColor(text);
         name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         name.setSingleLine(true);

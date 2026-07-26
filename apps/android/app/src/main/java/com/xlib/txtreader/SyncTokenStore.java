@@ -22,6 +22,7 @@ final class SyncTokenStore {
     private static final String KEY_TOKEN_CIPHERTEXT = "sync_token_ciphertext";
     private static final String KEY_TOKEN_IV = "sync_token_iv";
     private static final String KEY_EMAIL = "sync_email";
+    private static final String KEY_CONFIGURED_EMAIL = "sync_configured_email";
     private static final String KEY_DEVICE_ID = "sync_device_id";
     private static final String KEY_DEVICE_NAME = "sync_device_name";
 
@@ -37,6 +38,7 @@ final class SyncTokenStore {
         byte[] encrypted = cipher.doFinal(token.getBytes(StandardCharsets.UTF_8));
         preferences.edit()
                 .putString(KEY_EMAIL, normalizeEmail(email))
+                .putString(KEY_CONFIGURED_EMAIL, normalizeEmail(email))
                 .putString(KEY_TOKEN_CIPHERTEXT,
                         Base64.encodeToString(encrypted, Base64.NO_WRAP))
                 .putString(KEY_TOKEN_IV,
@@ -66,6 +68,23 @@ final class SyncTokenStore {
 
     synchronized String email() {
         return preferences.getString(KEY_EMAIL, "");
+    }
+
+    synchronized String configuredEmail() {
+        if (preferences.contains(KEY_CONFIGURED_EMAIL)) {
+            return preferences.getString(KEY_CONFIGURED_EMAIL, "");
+        }
+        String existing = email();
+        if (!existing.isEmpty()) {
+            preferences.edit().putString(KEY_CONFIGURED_EMAIL, existing).apply();
+        }
+        return existing;
+    }
+
+    synchronized void saveConfiguredEmail(String email) {
+        preferences.edit()
+                .putString(KEY_CONFIGURED_EMAIL, normalizeEmail(email))
+                .apply();
     }
 
     synchronized void saveDeviceName(String deviceName) {
@@ -100,7 +119,7 @@ final class SyncTokenStore {
                 .startsWith(manufacturer.toLowerCase(Locale.ROOT))
                 ? model : manufacturer + " " + model;
         String value = combined.trim().isEmpty() ? "Android 设备" : combined.trim();
-        if (value.length() > 80) value = value.substring(0, 80);
+        value = normalizeDeviceName(value);
         preferences.edit().putString(KEY_DEVICE_NAME, value).apply();
         return value;
     }

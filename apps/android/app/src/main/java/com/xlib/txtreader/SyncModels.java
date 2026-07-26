@@ -122,11 +122,13 @@ final class SyncUiState {
     final long lastAttemptAtMs;
     final long lastSuccessAtMs;
     final String lastFailureCode;
+    final boolean configurationChanged;
     final boolean busy;
 
     SyncUiState(boolean enabled, boolean serviceConfigured, String email, String deviceName,
                 String deviceId, SyncAvailability availability, long lastAttemptAtMs,
-                long lastSuccessAtMs, String lastFailureCode, boolean busy) {
+                long lastSuccessAtMs, String lastFailureCode, boolean configurationChanged,
+                boolean busy) {
         this.enabled = enabled;
         this.serviceConfigured = serviceConfigured;
         this.email = email;
@@ -136,6 +138,7 @@ final class SyncUiState {
         this.lastAttemptAtMs = lastAttemptAtMs;
         this.lastSuccessAtMs = lastSuccessAtMs;
         this.lastFailureCode = lastFailureCode;
+        this.configurationChanged = configurationChanged;
         this.busy = busy;
     }
 }

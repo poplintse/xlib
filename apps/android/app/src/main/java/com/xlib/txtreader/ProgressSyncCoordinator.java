@@ -85,6 +85,7 @@ final class ProgressSyncCoordinator {
             }
         });
         remoteStore.open(tokenStore.email());
+        tokenStore.ensureActiveConfiguration(serverConfig.url());
         networkAvailable = true;
         publishState();
     }
@@ -96,7 +97,7 @@ final class ProgressSyncCoordinator {
     void onForeground() {
         serial.execute(() -> {
             foreground = true;
-            if (!tokenStore.enabled()) {
+            if (!tokenStore.enabled() || hasConfigurationChanged()) {
                 publishState();
                 return;
             }
@@ -212,6 +213,8 @@ final class ProgressSyncCoordinator {
                 String previousEmail = tokenStore.email();
                 tokenStore.saveDeviceName(normalizedDeviceName);
                 tokenStore.save(response.email, response.token);
+                tokenStore.saveActiveConfiguration(response.email, normalizedDeviceName,
+                        serverConfig.url());
                 if (!response.email.equals(previousEmail)) remoteStore.clear();
                 remoteStore.open(response.email);
                 pullCompletedForLaunch = false;
@@ -250,11 +253,6 @@ final class ProgressSyncCoordinator {
         return tokenStore.deviceId();
     }
 
-    boolean configurationComplete() {
-        return isConfigurationComplete(tokenStore.configuredEmail(), tokenStore.deviceName(),
-                serverConfig.url());
-    }
-
     void saveConfiguredEmail(String email, ActionCallback<Void> callback) {
         serial.execute(() -> {
             String normalized = SyncTokenStore.normalizeEmail(email);
@@ -262,11 +260,9 @@ final class ProgressSyncCoordinator {
                 deliver(callback, SyncActionResult.failure("INVALID_EMAIL"));
                 return;
             }
-            boolean invalidatesActiveSync = tokenStore.enabled()
-                    && !normalized.equals(tokenStore.email());
             tokenStore.saveConfiguredEmail(normalized);
-            if (invalidatesActiveSync) invalidateSyncForConfigurationChange();
-            else publishState();
+            updateSyncForSavedConfiguration();
+            publishState();
             deliver(callback, SyncActionResult.success(null));
         });
     }
@@ -278,13 +274,9 @@ final class ProgressSyncCoordinator {
                 deliver(callback, SyncActionResult.failure("INVALID_DEVICE_NAME"));
                 return;
             }
-            String previous = tokenStore.deviceName();
             tokenStore.saveDeviceName(normalized);
-            if (tokenStore.enabled() && !normalized.equals(previous)) {
-                invalidateSyncForConfigurationChange();
-            } else {
-                publishState();
-            }
+            updateSyncForSavedConfiguration();
+            publishState();
             deliver(callback, SyncActionResult.success(null));
         });
     }
@@ -327,18 +319,32 @@ final class ProgressSyncCoordinator {
 
     void saveServerUrl(String serverUrl, ActionCallback<Void> callback) {
         serial.execute(() -> {
-            String previousUrl = serverConfig.url();
             if (!serverConfig.save(serverUrl)) {
                 deliver(callback, SyncActionResult.failure("INVALID_SERVER_URL"));
                 return;
             }
             api.setBaseUrl(serverConfig.url());
-            boolean changed = !previousUrl.equals(serverConfig.url());
-            if (changed) {
-                invalidateSyncForConfigurationChange();
-            } else {
-                publishState();
+            updateSyncForSavedConfiguration();
+            publishState();
+            deliver(callback, SyncActionResult.success(null));
+        });
+    }
+
+    void saveConfiguration(String email, String deviceName, String serverUrl,
+                           ActionCallback<Void> callback) {
+        serial.execute(() -> {
+            String normalizedEmail = SyncTokenStore.normalizeEmail(email);
+            String normalizedDeviceName = SyncTokenStore.normalizeDeviceName(deviceName);
+            if (!isConfigurationComplete(normalizedEmail, normalizedDeviceName, serverUrl)) {
+                deliver(callback, SyncActionResult.failure("INCOMPLETE_CONFIGURATION"));
+                return;
             }
+            tokenStore.saveConfiguredEmail(normalizedEmail);
+            tokenStore.saveDeviceName(normalizedDeviceName);
+            serverConfig.save(serverUrl);
+            api.setBaseUrl(serverConfig.url());
+            updateSyncForSavedConfiguration();
+            publishState();
             deliver(callback, SyncActionResult.success(null));
         });
     }
@@ -373,7 +379,7 @@ final class ProgressSyncCoordinator {
     }
 
     void preloadDevices() {
-        if (tokenStore.enabled()) loadDevices(null);
+        if (tokenStore.enabled() && !hasConfigurationChanged()) loadDevices(null);
     }
 
     List<SyncDevice> cachedDevices() {
@@ -437,22 +443,20 @@ final class ProgressSyncCoordinator {
         return uiState;
     }
 
-    private void invalidateSyncForConfigurationChange() {
-        tokenStore.clear();
-        remoteStore.clear();
-        pullCompletedForLaunch = false;
-        disabledBookKeys.clear();
-        cachedDevices = Collections.emptyList();
+    private boolean hasConfigurationChanged() {
+        return tokenStore.enabled() && !tokenStore.activeConfigurationMatches(serverConfig.url());
+    }
+
+    private void updateSyncForSavedConfiguration() {
+        if (!hasConfigurationChanged()) {
+            schedulePeriodicIfAllowed();
+            return;
+        }
         cancelPeriodic();
         cancelRecovery();
-        if (session != null) session.comparisonState = ReaderComparisonState.PENDING;
-        availability = networkAvailable
-                ? SyncAvailability.AVAILABLE : SyncAvailability.OFFLINE;
-        lastAttemptAtMs = 0L;
-        lastSuccessAtMs = 0L;
-        lastFailureCode = null;
-        busy = false;
-        publishState();
+        if (session != null && session.comparisonState == ReaderComparisonState.COMPLETED) {
+            session.comparisonState = ReaderComparisonState.PENDING;
+        }
     }
 
     private void resolveHash(long generation, long localBookId, File file) {
@@ -476,7 +480,7 @@ final class ProgressSyncCoordinator {
                         finalResult.bookHash, finalResult.fileSize);
                     session.bookKey = local == null ? null : local.bookKey();
                     if (session.bookKey == null || disabledBookKeys.contains(session.bookKey)) return;
-                    if (!tokenStore.enabled()) return;
+                    if (!tokenStore.enabled() || hasConfigurationChanged()) return;
                     if (!networkAvailable) {
                         session.comparisonState = ReaderComparisonState.UNAVAILABLE;
                         return;
@@ -492,6 +496,11 @@ final class ProgressSyncCoordinator {
 
     private boolean pullRemote(boolean syncAfterPull) {
         if (!tokenStore.enabled()) return false;
+        if (hasConfigurationChanged()) {
+            cancelPeriodic();
+            publishState();
+            return false;
+        }
         if (!api.configured()) {
             availability = SyncAvailability.SERVICE_UNAVAILABLE;
             lastFailureCode = "SERVICE_NOT_CONFIGURED";
@@ -606,7 +615,7 @@ final class ProgressSyncCoordinator {
 
     private boolean canCallBusinessApi() {
         return tokenStore.enabled() && api.configured() && networkAvailable
-                && availability == SyncAvailability.AVAILABLE;
+                && availability == SyncAvailability.AVAILABLE && !hasConfigurationChanged();
     }
 
     private void handleConnectivity(boolean available) {
@@ -622,7 +631,8 @@ final class ProgressSyncCoordinator {
             publishState();
             return;
         }
-        if (!tokenStore.enabled() || availability == SyncAvailability.TOKEN_REQUIRED) {
+        if (!tokenStore.enabled() || hasConfigurationChanged()
+                || availability == SyncAvailability.TOKEN_REQUIRED) {
             publishState();
             return;
         }
@@ -673,7 +683,8 @@ final class ProgressSyncCoordinator {
 
     private void scheduleHealthProbe() {
         cancelRecovery();
-        if (!foreground || !networkAvailable || !tokenStore.enabled()) return;
+        if (!foreground || !networkAvailable || !tokenStore.enabled()
+                || hasConfigurationChanged()) return;
         long delay = SyncRules.healthBackoffMs(healthAttempt++);
         recoveryFuture = serial.schedule(() -> {
             try {
@@ -691,7 +702,8 @@ final class ProgressSyncCoordinator {
 
     private void schedulePullRecovery(long delayMs) {
         cancelRecovery();
-        if (!foreground || !networkAvailable || !tokenStore.enabled()) return;
+        if (!foreground || !networkAvailable || !tokenStore.enabled()
+                || hasConfigurationChanged()) return;
         recoveryFuture = serial.schedule(() -> pullRemote(true), delayMs, TimeUnit.MILLISECONDS);
     }
 
@@ -714,16 +726,18 @@ final class ProgressSyncCoordinator {
 
     private void publishState() {
         boolean enabled = tokenStore.enabled();
+        boolean configurationChanged = enabled && hasConfigurationChanged();
         SyncAvailability stateAvailability = enabled ? availability : SyncAvailability.AVAILABLE;
         SyncUiState state = new SyncUiState(enabled, api.configured(), tokenStore.email(),
                 tokenStore.deviceName(), tokenStore.deviceId(), stateAvailability,
-                lastAttemptAtMs, lastSuccessAtMs, lastFailureCode, busy);
+                lastAttemptAtMs, lastSuccessAtMs, lastFailureCode, configurationChanged, busy);
         uiState = state;
         mainHandler.post(() -> listener.onSyncStateChanged(state));
     }
 
     private String stateErrorCode() {
         if (!tokenStore.enabled()) return "TOKEN_REQUIRED";
+        if (hasConfigurationChanged()) return "CONFIGURATION_CHANGED";
         if (!api.configured()) return "SERVICE_NOT_CONFIGURED";
         if (!networkAvailable) return "OFFLINE";
         return lastFailureCode == null ? "SERVICE_UNAVAILABLE" : lastFailureCode;

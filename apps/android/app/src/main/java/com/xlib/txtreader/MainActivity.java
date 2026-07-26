@@ -111,6 +111,7 @@ public class MainActivity extends Activity {
     private static final int SETTINGS_READING = 1;
     private static final int SETTINGS_SYNC = 2;
     private static final boolean SHOW_PAGE_OFFSET_INDICATOR = false;
+    private static final long SYNC_CONFIGURATION_SAVE_DELAY_MS = 700L;
 
     private final List<Book> books = new ArrayList<>();
     private final Set<Long> selectedBookIds = new HashSet<>();
@@ -216,7 +217,13 @@ public class MainActivity extends Activity {
     private String syncEmailDraft;
     private String syncDeviceDraft;
     private String syncServerDraft;
+    private String syncEmailSaveStatus;
+    private String syncDeviceSaveStatus;
+    private String syncServerSaveStatus;
     private String syncSettingsError;
+    private Runnable pendingSyncEmailSave;
+    private Runnable pendingSyncDeviceSave;
+    private Runnable pendingSyncServerSave;
     private final Runnable hidePageIndicatorRunnable = () -> {
         if (pageIndicator != null) pageIndicator.animate().alpha(0f).setDuration(180L).start();
     };
@@ -1958,6 +1965,9 @@ public class MainActivity extends Activity {
         if (syncEmailDraft == null) syncEmailDraft = syncCoordinator.configuredEmail();
         if (syncDeviceDraft == null) syncDeviceDraft = syncCoordinator.deviceName();
         if (syncServerDraft == null) syncServerDraft = syncCoordinator.serverUrl();
+        if (syncEmailSaveStatus == null) syncEmailSaveStatus = "已保存";
+        if (syncDeviceSaveStatus == null) syncDeviceSaveStatus = "已保存";
+        if (syncServerSaveStatus == null) syncServerSaveStatus = "已保存";
 
         LinearLayout configurationCard = makeSyncCard("同步设置", "", surface, text, muted);
         EditText emailInput = new EditText(this);
@@ -1969,21 +1979,16 @@ public class MainActivity extends Activity {
                         | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
         emailInput.setImeOptions(EditorInfo.IME_ACTION_NEXT);
         makeSettingsInputKeyboardAware(emailInput);
-        trackSyncDraft(emailInput, value -> syncEmailDraft = value);
+        trackSyncDraft(emailInput, value -> {
+            syncEmailDraft = value;
+            scheduleSyncEmailSave(emailInput, value, SYNC_CONFIGURATION_SAVE_DELAY_MS);
+        });
+        emailInput.setOnEditorActionListener((view, actionId, event) -> {
+            scheduleSyncEmailSave(emailInput, emailInput.getText().toString(), 0L);
+            return false;
+        });
         addSyncConfigurationField(configurationCard, "邮箱", null, emailInput,
-                text, muted, accent, accentContainer, () -> {
-                    String requested = emailInput.getText().toString();
-                    syncCoordinator.saveConfiguredEmail(requested, result -> {
-                        if (!result.isSuccess()) {
-                            emailInput.setError("请输入有效邮箱");
-                            return;
-                        }
-                        syncEmailDraft = SyncTokenStore.normalizeEmail(requested);
-                        syncSettingsError = null;
-                        Toast.makeText(this, "邮箱已保存", Toast.LENGTH_SHORT).show();
-                        renderSyncSettingsForCurrentTheme();
-                    });
-                });
+                syncEmailSaveStatus, text, muted, accent);
 
         EditText deviceInput = new EditText(this);
         deviceInput.setSingleLine(true);
@@ -1995,22 +2000,17 @@ public class MainActivity extends Activity {
         deviceInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(20)});
         deviceInput.setImeOptions(EditorInfo.IME_ACTION_NEXT);
         makeSettingsInputKeyboardAware(deviceInput);
-        trackSyncDraft(deviceInput, value -> syncDeviceDraft = value);
+        trackSyncDraft(deviceInput, value -> {
+            syncDeviceDraft = value;
+            scheduleSyncDeviceSave(deviceInput, value, SYNC_CONFIGURATION_SAVE_DELAY_MS);
+        });
+        deviceInput.setOnEditorActionListener((view, actionId, event) -> {
+            scheduleSyncDeviceSave(deviceInput, deviceInput.getText().toString(), 0L);
+            return false;
+        });
         addSyncConfigurationField(configurationCard, "当前设备",
                 "设备名称最多 20 个字符，用于区分不同设备。", deviceInput,
-                text, muted, accent, accentContainer, () -> {
-                    String requested = deviceInput.getText().toString();
-                    syncCoordinator.saveDeviceName(requested, result -> {
-                        if (!result.isSuccess()) {
-                            deviceInput.setError("请输入设备名称（最多 20 个字符）");
-                            return;
-                        }
-                        syncDeviceDraft = SyncTokenStore.normalizeDeviceName(requested);
-                        syncSettingsError = null;
-                        Toast.makeText(this, "当前设备已保存", Toast.LENGTH_SHORT).show();
-                        renderSyncSettingsForCurrentTheme();
-                    });
-                });
+                syncDeviceSaveStatus, text, muted, accent);
 
         EditText serverInput = new EditText(this);
         serverInput.setSingleLine(true);
@@ -2021,21 +2021,16 @@ public class MainActivity extends Activity {
                         | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         serverInput.setImeOptions(EditorInfo.IME_ACTION_DONE);
         makeSettingsInputKeyboardAware(serverInput);
-        trackSyncDraft(serverInput, value -> syncServerDraft = value);
+        trackSyncDraft(serverInput, value -> {
+            syncServerDraft = value;
+            scheduleSyncServerSave(serverInput, value, SYNC_CONFIGURATION_SAVE_DELAY_MS);
+        });
+        serverInput.setOnEditorActionListener((view, actionId, event) -> {
+            scheduleSyncServerSave(serverInput, serverInput.getText().toString(), 0L);
+            return false;
+        });
         addSyncConfigurationField(configurationCard, "服务器地址", "仅支持 HTTPS 地址。",
-                serverInput, text, muted, accent, accentContainer, () -> {
-                    String requested = serverInput.getText().toString();
-                    syncCoordinator.saveServerUrl(requested, result -> {
-                        if (!result.isSuccess()) {
-                            serverInput.setError("请输入不含查询参数的 HTTPS 地址");
-                            return;
-                        }
-                        syncServerDraft = SyncServerConfig.normalize(requested);
-                        syncSettingsError = null;
-                        Toast.makeText(this, "服务器地址已保存", Toast.LENGTH_SHORT).show();
-                        renderSyncSettingsForCurrentTheme();
-                    });
-                });
+                serverInput, syncServerSaveStatus, text, muted, accent);
 
         LinearLayout statusCard = makeSyncCard("状态", "", surface, text, muted);
         addSyncStatusRow(statusCard, "同步状态", syncStatusText(state), text, muted);
@@ -2061,10 +2056,7 @@ public class MainActivity extends Activity {
             String device = SyncTokenStore.normalizeDeviceName(
                     deviceInput.getText().toString());
             String server = SyncServerConfig.normalize(serverInput.getText().toString());
-            boolean savedConfigurationMatches = email.equals(syncCoordinator.configuredEmail())
-                    && device.equals(syncCoordinator.deviceName())
-                    && server.equals(syncCoordinator.serverUrl());
-            if (!syncCoordinator.configurationComplete() || !savedConfigurationMatches) {
+            if (!ProgressSyncCoordinator.isConfigurationComplete(email, device, server)) {
                 syncSettingsError = "请先完成同步配置";
                 renderSyncSettingsForCurrentTheme();
                 return;
@@ -2081,13 +2073,26 @@ public class MainActivity extends Activity {
                 }
                 renderSyncSettingsForCurrentTheme();
             };
-            SyncUiState current = syncCoordinator.state();
-            if (current != null && current.enabled
-                    && current.availability != SyncAvailability.TOKEN_REQUIRED) {
-                syncCoordinator.refreshRemote(callback);
-            } else {
-                syncCoordinator.startSync(email, device, callback);
-            }
+            syncCoordinator.saveConfiguration(email, device, server, saved -> {
+                if (!saved.isSuccess()) {
+                    syncSettingsError = "请先完成同步配置";
+                    renderSyncSettingsForCurrentTheme();
+                    return;
+                }
+                syncEmailDraft = email;
+                syncDeviceDraft = device;
+                syncServerDraft = server;
+                syncEmailSaveStatus = "已保存";
+                syncDeviceSaveStatus = "已保存";
+                syncServerSaveStatus = "已保存";
+                SyncUiState current = syncCoordinator.state();
+                if (current != null && current.enabled && !current.configurationChanged
+                        && current.availability != SyncAvailability.TOKEN_REQUIRED) {
+                    syncCoordinator.refreshRemote(callback);
+                } else {
+                    syncCoordinator.startSync(email, device, callback);
+                }
+            });
         });
         LinearLayout.LayoutParams refreshLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
@@ -2108,8 +2113,8 @@ public class MainActivity extends Activity {
     }
 
     private void addSyncConfigurationField(LinearLayout card, String label, String note,
-                                           EditText input, int text, int muted, int accent,
-                                           int accentContainer, Runnable saveAction) {
+                                           EditText input, String saveStatus, int text,
+                                           int muted, int accent) {
         LinearLayout heading = new LinearLayout(this);
         heading.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout labels = new LinearLayout(this);
@@ -2129,12 +2134,15 @@ public class MainActivity extends Activity {
         }
         heading.addView(labels, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        Button save = makeButton("保存");
-        UiKit.styleButton(this, save, accentContainer, accent, 12);
-        save.setOnClickListener(v -> saveAction.run());
-        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(dp(68), dp(36));
-        saveLp.leftMargin = dp(8);
-        heading.addView(save, saveLp);
+        TextView status = new TextView(this);
+        status.setText(saveStatus);
+        status.setTextColor("已保存".equals(saveStatus) ? accent : muted);
+        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        status.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(dp(72), dp(36));
+        statusLp.leftMargin = dp(8);
+        heading.addView(status, statusLp);
+        input.setTag(status);
         LinearLayout.LayoutParams headingLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         headingLp.topMargin = card.getChildCount() > 1 ? dp(12) : dp(6);
@@ -2171,10 +2179,94 @@ public class MainActivity extends Activity {
     private String syncStatusText(SyncUiState state) {
         if (state == null || !state.enabled) return "未同步";
         if (state.busy) return "同步中";
+        if (state.configurationChanged) return "需重新启动";
         if (state.availability == SyncAvailability.OFFLINE) return "离线";
         if (state.availability == SyncAvailability.SERVICE_UNAVAILABLE) return "同步失败";
         if (state.availability == SyncAvailability.TOKEN_REQUIRED) return "需要重新启动";
         return state.lastSuccessAtMs > 0L ? "已同步" : "已启动";
+    }
+
+    private void scheduleSyncEmailSave(EditText input, String value, long delayMs) {
+        if (pendingSyncEmailSave != null) mainHandler.removeCallbacks(pendingSyncEmailSave);
+        syncEmailSaveStatus = "正在保存…";
+        updateSyncSaveStatus(input, syncEmailSaveStatus);
+        pendingSyncEmailSave = () -> {
+            if (!value.equals(syncEmailDraft)) return;
+            syncCoordinator.saveConfiguredEmail(value, result -> {
+                if (!value.equals(syncEmailDraft)) return;
+                if (result.isSuccess()) {
+                    syncEmailDraft = SyncTokenStore.normalizeEmail(value);
+                    syncEmailSaveStatus = "已保存";
+                    syncSettingsError = null;
+                } else {
+                    syncEmailSaveStatus = "未保存";
+                }
+                updateSyncSaveStatus(input, syncEmailSaveStatus);
+                refreshSyncSettingsAfterAutoSave(input);
+            });
+        };
+        mainHandler.postDelayed(pendingSyncEmailSave, delayMs);
+    }
+
+    private void scheduleSyncDeviceSave(EditText input, String value, long delayMs) {
+        if (pendingSyncDeviceSave != null) mainHandler.removeCallbacks(pendingSyncDeviceSave);
+        syncDeviceSaveStatus = "正在保存…";
+        updateSyncSaveStatus(input, syncDeviceSaveStatus);
+        pendingSyncDeviceSave = () -> {
+            if (!value.equals(syncDeviceDraft)) return;
+            syncCoordinator.saveDeviceName(value, result -> {
+                if (!value.equals(syncDeviceDraft)) return;
+                if (result.isSuccess()) {
+                    syncDeviceDraft = SyncTokenStore.normalizeDeviceName(value);
+                    syncDeviceSaveStatus = "已保存";
+                    syncSettingsError = null;
+                } else {
+                    syncDeviceSaveStatus = "未保存";
+                }
+                updateSyncSaveStatus(input, syncDeviceSaveStatus);
+                refreshSyncSettingsAfterAutoSave(input);
+            });
+        };
+        mainHandler.postDelayed(pendingSyncDeviceSave, delayMs);
+    }
+
+    private void scheduleSyncServerSave(EditText input, String value, long delayMs) {
+        if (pendingSyncServerSave != null) mainHandler.removeCallbacks(pendingSyncServerSave);
+        syncServerSaveStatus = "正在保存…";
+        updateSyncSaveStatus(input, syncServerSaveStatus);
+        pendingSyncServerSave = () -> {
+            if (!value.equals(syncServerDraft)) return;
+            syncCoordinator.saveServerUrl(value, result -> {
+                if (!value.equals(syncServerDraft)) return;
+                if (result.isSuccess()) {
+                    syncServerDraft = SyncServerConfig.normalize(value);
+                    syncServerSaveStatus = "已保存";
+                    syncSettingsError = null;
+                } else {
+                    syncServerSaveStatus = "未保存";
+                }
+                updateSyncSaveStatus(input, syncServerSaveStatus);
+                refreshSyncSettingsAfterAutoSave(input);
+            });
+        };
+        mainHandler.postDelayed(pendingSyncServerSave, delayMs);
+    }
+
+    private void updateSyncSaveStatus(EditText input, String value) {
+        Object tag = input.getTag();
+        if (!(tag instanceof TextView)) return;
+        TextView status = (TextView) tag;
+        status.setText(value);
+        int theme = appTheme();
+        status.setTextColor("已保存".equals(value)
+                ? (isDarkTheme(theme) ? UiKit.DARK_ACCENT : UiKit.LIGHT_ACCENT)
+                : (isDarkTheme(theme) ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED));
+    }
+
+    private void refreshSyncSettingsAfterAutoSave(EditText input) {
+        if (input.hasFocus() || activityDestroyed || !settingsOpen
+                || currentSettingsTab != SETTINGS_SYNC) return;
+        renderSyncSettingsForCurrentTheme();
     }
 
     private void trackSyncDraft(EditText input, SyncDraftListener listener) {
@@ -2381,6 +2473,8 @@ public class MainActivity extends Activity {
             message = "服务器地址必须是有效的 HTTPS 地址";
         } else if ("SERVICE_NOT_CONFIGURED".equals(code)) {
             message = "请先配置可用的同步服务器地址";
+        } else if ("CONFIGURATION_CHANGED".equals(code)) {
+            message = "同步配置已修改，请点击同步刷新重新启动同步";
         } else if ("SERVICE_UNAVAILABLE".equals(code) || "SYNC_FAILED".equals(code)
                 || "REFRESH_FAILED".equals(code)) {
             message = "同步服务暂不可用，请稍后重试";

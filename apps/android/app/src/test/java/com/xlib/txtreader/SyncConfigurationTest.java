@@ -26,6 +26,22 @@ public class SyncConfigurationTest {
                 "reader@example.com", repeat('a', 21), "https://sync.example.com"));
     }
 
+    @Test
+    public void changingAnyAppliedConfigurationValueRequiresRestart() {
+        assertTrue(SyncTokenStore.configurationMatches(
+                "reader@example.com", "Pixel 9", "https://sync.example.com/",
+                "READER@example.com", "Pixel 9", "https://sync.example.com"));
+        assertFalse(SyncTokenStore.configurationMatches(
+                "other@example.com", "Pixel 9", "https://sync.example.com",
+                "reader@example.com", "Pixel 9", "https://sync.example.com"));
+        assertFalse(SyncTokenStore.configurationMatches(
+                "reader@example.com", "Tablet", "https://sync.example.com",
+                "reader@example.com", "Pixel 9", "https://sync.example.com"));
+        assertFalse(SyncTokenStore.configurationMatches(
+                "reader@example.com", "Pixel 9", "https://other.example.com",
+                "reader@example.com", "Pixel 9", "https://sync.example.com"));
+    }
+
     private static String repeat(char value, int count) {
         StringBuilder result = new StringBuilder(count);
         for (int index = 0; index < count; index++) result.append(value);

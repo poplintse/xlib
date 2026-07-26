@@ -23,6 +23,9 @@ final class SyncTokenStore {
     private static final String KEY_TOKEN_IV = "sync_token_iv";
     private static final String KEY_EMAIL = "sync_email";
     private static final String KEY_CONFIGURED_EMAIL = "sync_configured_email";
+    private static final String KEY_ACTIVE_EMAIL = "sync_active_email";
+    private static final String KEY_ACTIVE_DEVICE_NAME = "sync_active_device_name";
+    private static final String KEY_ACTIVE_SERVER_URL = "sync_active_server_url";
     private static final String KEY_DEVICE_ID = "sync_device_id";
     private static final String KEY_DEVICE_NAME = "sync_device_name";
 
@@ -87,6 +90,29 @@ final class SyncTokenStore {
                 .apply();
     }
 
+    synchronized void saveActiveConfiguration(String email, String deviceName,
+                                              String serverUrl) {
+        preferences.edit()
+                .putString(KEY_ACTIVE_EMAIL, normalizeEmail(email))
+                .putString(KEY_ACTIVE_DEVICE_NAME, normalizeDeviceName(deviceName))
+                .putString(KEY_ACTIVE_SERVER_URL, SyncServerConfig.normalize(serverUrl))
+                .apply();
+    }
+
+    synchronized void ensureActiveConfiguration(String serverUrl) {
+        if (!enabled() || preferences.contains(KEY_ACTIVE_EMAIL)) return;
+        saveActiveConfiguration(email(), deviceName(), serverUrl);
+    }
+
+    synchronized boolean activeConfigurationMatches(String serverUrl) {
+        if (!enabled()) return false;
+        if (!preferences.contains(KEY_ACTIVE_EMAIL)) return true;
+        return configurationMatches(configuredEmail(), deviceName(), serverUrl,
+                preferences.getString(KEY_ACTIVE_EMAIL, ""),
+                preferences.getString(KEY_ACTIVE_DEVICE_NAME, ""),
+                preferences.getString(KEY_ACTIVE_SERVER_URL, ""));
+    }
+
     synchronized void saveDeviceName(String deviceName) {
         String normalized = normalizeDeviceName(deviceName);
         if (!normalized.isEmpty()) {
@@ -99,6 +125,9 @@ final class SyncTokenStore {
                 .remove(KEY_EMAIL)
                 .remove(KEY_TOKEN_CIPHERTEXT)
                 .remove(KEY_TOKEN_IV)
+                .remove(KEY_ACTIVE_EMAIL)
+                .remove(KEY_ACTIVE_DEVICE_NAME)
+                .remove(KEY_ACTIVE_SERVER_URL)
                 .apply();
     }
 
@@ -156,5 +185,15 @@ final class SyncTokenStore {
         if (deviceName == null) return false;
         String normalized = deviceName.trim();
         return !normalized.isEmpty() && normalized.length() <= 20;
+    }
+
+    static boolean configurationMatches(String configuredEmail, String configuredDeviceName,
+                                        String configuredServerUrl, String activeEmail,
+                                        String activeDeviceName, String activeServerUrl) {
+        return normalizeEmail(configuredEmail).equals(normalizeEmail(activeEmail))
+                && normalizeDeviceName(configuredDeviceName).equals(
+                        normalizeDeviceName(activeDeviceName))
+                && SyncServerConfig.normalize(configuredServerUrl).equals(
+                        SyncServerConfig.normalize(activeServerUrl));
     }
 }

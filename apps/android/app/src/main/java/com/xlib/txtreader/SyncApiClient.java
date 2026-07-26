@@ -183,6 +183,11 @@ final class SyncApiClient {
             connection.setRequestProperty("Accept", "application/json");
             if (token != null) connection.setRequestProperty("Authorization", "Bearer " + token);
             if (deviceId != null) connection.setRequestProperty("X-Device-Id", deviceId);
+            // Some Android HTTP implementations attach a form media type to an empty DELETE.
+            // Declare JSON explicitly so the Fastify API accepts the request before auth runs.
+            if (body == null && "DELETE".equals(method)) {
+                connection.setRequestProperty("Content-Type", "application/json");
+            }
             if (body != null) {
                 byte[] encoded = body.toString().getBytes(StandardCharsets.UTF_8);
                 connection.setDoOutput(true);

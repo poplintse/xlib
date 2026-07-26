@@ -2250,8 +2250,9 @@ public class MainActivity extends Activity {
         String message;
         if ("OFFLINE".equals(code) || "CONNECTION_FAILED".equals(code)) {
             message = "网络不可用，请稍后重试";
-        } else if ("TOKEN_REQUIRED".equals(code)) {
-            message = "同步凭据已失效，请重新开启";
+        } else if ("TOKEN_REQUIRED".equals(code) || "INVALID_SYNC_TOKEN".equals(code)
+                || "AUTH_REQUIRED".equals(code)) {
+            message = "同步凭据已失效，请重新输入账户信息开启同步";
         } else if ("INVALID_SERVER_URL".equals(code)) {
             message = "服务器地址必须是有效的 HTTPS 地址";
         } else if ("CURRENT_DEVICE".equals(code)) {
@@ -2262,8 +2263,18 @@ public class MainActivity extends Activity {
             message = "当前设备没有删除权限，请重新开启同步后重试";
         } else if ("RATE_LIMITED".equals(code)) {
             message = "操作过于频繁，请稍后重试";
+        } else if ("HTTP_401".equals(code)) {
+            message = "同步服务拒绝了当前凭据（HTTP 401）";
+        } else if ("HTTP_403".equals(code)) {
+            message = "同步服务拒绝删除请求（HTTP 403）";
+        } else if ("HTTP_404".equals(code) || "NOT_FOUND".equals(code)) {
+            message = "当前同步服务未找到删除设备接口（HTTP 404）";
+        } else if ("HTTP_405".equals(code)) {
+            message = "当前同步服务不允许删除设备请求（HTTP 405）";
+        } else if ("INVALID_RESPONSE".equals(code)) {
+            message = "同步服务返回了无法识别的响应";
         } else {
-            message = "同步服务暂不可用，请稍后重试";
+            message = "同步请求失败（" + code + "）";
         }
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }

@@ -1,10 +1,32 @@
 import AppleShared
 import CoreFoundation
+import CoreText
 import UIKit
 import XCTest
 @testable import XLibReader
 
 final class ReaderCoreTests: XCTestCase {
+    func testReaderTextUsesJustifiedParagraphAlignment() {
+        let attributed = ReaderLayoutService.makeAttributedString(
+            text: "两端对齐的阅读正文。",
+            spec: ReaderLayoutSpec(width: 320, height: 540)
+        )
+        let paragraph = attributed.attribute(
+            NSAttributedString.Key(kCTParagraphStyleAttributeName as String),
+            at: 0,
+            effectiveRange: nil
+        ) as! CTParagraphStyle
+        var alignment = CTTextAlignment.natural
+
+        XCTAssertTrue(CTParagraphStyleGetValueForSpecifier(
+            paragraph,
+            .alignment,
+            MemoryLayout<CTTextAlignment>.size,
+            &alignment
+        ))
+        XCTAssertEqual(alignment, .justified)
+    }
+
     func testAppVersionDisplayIncludesMarketingAndBuildNumbers() {
         XCTAssertEqual(
             AppVersion.displayText(version: "0.2.1", build: "42"),

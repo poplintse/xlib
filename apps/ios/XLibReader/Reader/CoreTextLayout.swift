@@ -170,13 +170,23 @@ actor ReaderLayoutService {
     nonisolated static func makeAttributedString(text: String, spec: ReaderLayoutSpec) -> NSAttributedString {
         let font = CTFontCreateWithName(spec.fontName as CFString, spec.fontSize, nil)
         var spacing = CGFloat(spec.lineSpacing)
-        let paragraph = withUnsafePointer(to: &spacing) { pointer in
-            var setting = CTParagraphStyleSetting(
-                spec: .lineSpacingAdjustment,
-                valueSize: MemoryLayout<CGFloat>.size,
-                value: pointer
-            )
-            return CTParagraphStyleCreate(&setting, 1)
+        var alignment = CTTextAlignment.justified
+        let paragraph = withUnsafePointer(to: &spacing) { spacingPointer in
+            withUnsafePointer(to: &alignment) { alignmentPointer in
+                var settings = [
+                    CTParagraphStyleSetting(
+                        spec: .lineSpacingAdjustment,
+                        valueSize: MemoryLayout<CGFloat>.size,
+                        value: spacingPointer
+                    ),
+                    CTParagraphStyleSetting(
+                        spec: .alignment,
+                        valueSize: MemoryLayout<CTTextAlignment>.size,
+                        value: alignmentPointer
+                    ),
+                ]
+                return CTParagraphStyleCreate(&settings, settings.count)
+            }
         }
         let attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,

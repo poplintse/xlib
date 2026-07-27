@@ -12,7 +12,7 @@ components:
   ios:
     status: active
     marketing_version: 0.9.1
-    build_number: 33
+    build_number: 34
   backend:
     status: active
     version: 0.9.0

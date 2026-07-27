@@ -1,0 +1,26 @@
+release: 0.9.4
+channel: alpha
+status: draft
+contract:
+  version: v1
+  file: contracts/openapi.yaml
+components:
+  android:
+    status: active
+    version_name: 0.9.4
+    version_code: 64
+  ios:
+    status: active
+    marketing_version: 0.9.1
+    build_number: 33
+  backend:
+    status: active
+    version: 0.9.0
+  macos:
+    status: planned
+checks:
+  - contract
+  - backend
+  - apple-shared
+  - android
+  - ios

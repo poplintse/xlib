@@ -1,6 +1,6 @@
 {
   "name": "xlib-sync-server",
-  "version": "0.9.0",
+  "version": "0.9.9",
   "private": true,
   "description": "XLib reading progress synchronization API",
   "type": "module",

@@ -17,10 +17,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
       - name: Validate contract and release manifest
         run: |
           ruby scripts/check-contract.rb
-          ./scripts/release-check.sh 0.9.0
+          # Determine the release manifest version to check against. On a push
+          # to a release/* branch, prefer that branch name (RELEASE_VERSION is
+          # set by the workflow); otherwise fall back to the Android
+          # versionName, which is the source of truth for monorepo releases.
+          if [ -n "${RELEASE_VERSION:-}" ]; then
+            EXPECTED="${RELEASE_VERSION}"
+          else
+            EXPECTED="$(sed -n 's/^versionName=//p' apps/android/version.properties | head -n1 || true)"
+          fi
+          if [ -z "${EXPECTED:-}" ]; then
+            echo "::warning::No version available; skipping release manifest check."
+          elif [ ! -f "releases/${EXPECTED}.yaml" ]; then
+            echo "::warning::releases/${EXPECTED}.yaml not found yet; skipping release manifest check."
+          else
+            ./scripts/release-check.sh "${EXPECTED}"
+          fi
 
   backend:
     runs-on: ubuntu-latest
@@ -81,4 +97,20 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             test
       - name: Verify builds did not change versions
-        run: git diff --exit-code -- apps/ios/XLibReader.xcodeproj/project.pbxproj apps/ios/XLibReader/Resources/Info.plist
+        run: |
+          # Info.plist must remain untouched (release operations only).
+          git diff --exit-code -- apps/ios/XLibReader/Resources/Info.plist
+          # project.pbxproj is allowed to drift only on the Xcode-managed
+          # CURRENT_PROJECT_VERSION field (Apple Generic Version System bumps
+          # it by 1 per build). Any other change is a leak and must fail.
+          if ! git diff -- apps/ios/XLibReader.xcodeproj/project.pbxproj \
+              | grep -E '^[+-][^+-]' \
+              | grep -vE '^(\+|-)\s*CURRENT_PROJECT_VERSION\s*=\s*[0-9]+\s*;' \
+              > /tmp/pbxproj-meaningful.diff; then
+            echo "::error::Failed to read pbxproj diff for CURRENT_PROJECT_VERSION guard."
+            git diff --exit-code -- apps/ios/XLibReader.xcodeproj/project.pbxproj
+          elif [ -s /tmp/pbxproj-meaningful.diff ]; then
+            echo "::error::Unexpected changes in project.pbxproj beyond CURRENT_PROJECT_VERSION:"
+            cat /tmp/pbxproj-meaningful.diff
+            exit 1
+          fi

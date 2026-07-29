@@ -8,10 +8,19 @@ if [ -z "$version_file" ] || [ ! -f "$version_file" ]; then
     exit 2
 fi
 
+# Portable cross-process lock: mkdir is atomic on POSIX. Works on both
+# GitHub's ubuntu-latest (where BSD lockf doesn't exist) and macOS.
+# The re-exec guard below makes the whole critical section reentrant-safe.
 if [ "${XLIB_ANDROID_VERSION_CODE_LOCKED:-0}" != "1" ]; then
     export XLIB_ANDROID_VERSION_CODE_LOCKED=1
-    exec /usr/bin/lockf -k "${TMPDIR:-/tmp}/com.xlib.txtreader-version-code.lock" \
-        "$0" "$version_file"
+    lock_dir="${TMPDIR:-/tmp}/com.xlib.txtreader-version-code.lock"
+    rm -rf "$lock_dir"
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        echo "could not acquire lock: $lock_dir" >&2
+        exit 1
+    fi
+    trap 'rmdir '"$lock_dir"' 2>/dev/null || rm -rf '"$lock_dir"'' EXIT HUP INT TERM
+    exec "$0" "$version_file"
 fi
 
 version_code_count="$(

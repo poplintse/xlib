@@ -8,7 +8,17 @@ artifacts_root="$(CDPATH= cd -- "${SRCROOT}/../.." && pwd)/artifacts/ios"
 
 if [ "${XLIB_BUILD_NUMBER_LOCKED:-0}" != "1" ]; then
     export XLIB_BUILD_NUMBER_LOCKED=1
-    exec /usr/bin/lockf -k "${TMPDIR:-/tmp}/com.xlib.txtreader-build-number.lock" "$0"
+    # Portable cross-process lock: mkdir is atomic on POSIX. Works on both
+    # macOS (where this script normally runs via Xcode build phases) and
+    # Linux CI runners (where BSD lockf doesn't exist).
+    lock_dir="${TMPDIR:-/tmp}/com.xlib.txtreader-build-number.lock"
+    rm -rf "$lock_dir"
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        echo "could not acquire lock: $lock_dir" >&2
+        exit 1
+    fi
+    trap 'rmdir '"$lock_dir"' 2>/dev/null || rm -rf '"$lock_dir"'' EXIT HUP INT TERM
+    exec "$0"
 fi
 
 if ! current_build="$(

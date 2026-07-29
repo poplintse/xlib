@@ -103,14 +103,15 @@ jobs:
           # project.pbxproj is allowed to drift only on the Xcode-managed
           # CURRENT_PROJECT_VERSION field (Apple Generic Version System bumps
           # it by 1 per build). Any other change is a leak and must fail.
-          if ! git diff -- apps/ios/XLibReader.xcodeproj/project.pbxproj \
+          # NOTE: use POSIX character classes (BSD grep on macOS runners
+          # does not support \s) and swallow grep -v's exit-1 (no matches
+          # is the desired success path) so we only fail on actual drift.
+          meaningful="$(git diff -- apps/ios/XLibReader.xcodeproj/project.pbxproj \
               | grep -E '^[+-][^+-]' \
-              | grep -vE '^(\+|-)\s*CURRENT_PROJECT_VERSION\s*=\s*[0-9]+\s*;' \
-              > /tmp/pbxproj-meaningful.diff; then
-            echo "::error::Failed to read pbxproj diff for CURRENT_PROJECT_VERSION guard."
-            git diff --exit-code -- apps/ios/XLibReader.xcodeproj/project.pbxproj
-          elif [ -s /tmp/pbxproj-meaningful.diff ]; then
+              | grep -vE '^(\+|-)[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*;' \
+              || true)"
+          if [ -n "$meaningful" ]; then
             echo "::error::Unexpected changes in project.pbxproj beyond CURRENT_PROJECT_VERSION:"
-            cat /tmp/pbxproj-meaningful.diff
+            echo "$meaningful"
             exit 1
           fi

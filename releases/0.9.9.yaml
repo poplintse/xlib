@@ -8,11 +8,11 @@ components:
   android:
     status: active
     version_name: 0.9.9
-    version_code: 64
+    version_code: 65
   ios:
     status: active
     marketing_version: 0.9.9
-    build_number: 34
+    build_number: 37
   backend:
     status: active
     version: 0.9.9

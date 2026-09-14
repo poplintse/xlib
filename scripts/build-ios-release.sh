@@ -89,6 +89,7 @@ set +e
         -configuration Release \
         -destination "generic/platform=iOS" \
         -derivedDataPath "$derived_data" \
+        -allowProvisioningUpdates \
         clean build
 
     source_app="$derived_data/Build/Products/Release-iphoneos/XLibReader.app"

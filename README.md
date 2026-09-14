@@ -71,6 +71,7 @@ cp .env.example .env
 - [API](docs/API.md)
 - [Alpha 标准](docs/ALPHA.md)
 - [决策记录](docs/DECISIONS.md)
+- [iOS 当前功能与运行逻辑](docs/features/ios.md)
 - [功能文档](docs/features/)
 
 迁移前本地恢复副本存放在 `backup/`，该目录被 Git 忽略，不应提交或发布。

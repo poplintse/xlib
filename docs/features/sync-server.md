@@ -1,6 +1,6 @@
 # XLib 阅读进度同步服务端设计
 
-> 状态：当前有效规范。本文只设计可选的阅读进度同步服务，不改变 XLib 无账号也可完整使用的产品边界。客户端行为见 [`sync-client.md`](sync-client.md)。
+> 状态：当前有效服务端规范。本文只设计可选的阅读进度同步服务，不改变 XLib 无账号也可完整使用的产品边界。Android 与跨端客户端目标见 [`sync-client.md`](sync-client.md)，iOS 的实际客户端行为见 [`ios.md`](ios.md)。
 
 ## 1. 目标与边界
 

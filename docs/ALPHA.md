@@ -20,4 +20,4 @@ Alpha 0.9.0 包含 Android、iOS、同步 Backend、OpenAPI v1 和 Apple 共享�
 
 Android 与 iOS 至少完成一次：导入大 TXT、连续翻页、退出恢复、搜索跳转、目录跳转、书签、设置切换、离线阅读、开启同步、跨设备进度比较和破坏性删除确认。
 
-详细交互清单见 [features/reader.md](features/reader.md)，同步完成标准见 [features/sync-client.md](features/sync-client.md)。
+详细交互清单按平台区分：Android 见 [features/reader.md](features/reader.md)，iOS 见 [features/ios.md](features/ios.md)。Android 与跨端同步目标见 [features/sync-client.md](features/sync-client.md)。

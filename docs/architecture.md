@@ -1,7 +1,8 @@
 # XLib 架构
 
-本文记录当前实现的稳定边界。产品交互以
-[`features/reader.md`](features/reader.md) 为准；本文重点说明阅读器的数据归属、阅读定位、缓存、目录、书签和运行状态如何协作。
+本文记录当前实现的稳定边界。Android 产品交互以
+[`features/reader.md`](features/reader.md) 为准，iOS 当前行为以
+[`features/ios.md`](features/ios.md) 为准；本文重点说明阅读器的数据归属、阅读定位、缓存、目录、书签和运行状态如何协作。
 
 ## 0. Monorepo 边界
 
@@ -11,7 +12,7 @@
 - `contracts/openapi.yaml` 是 Backend、Android 与 iOS 之间的 HTTP 合同。
 - 客户端只同步 TXT 哈希、文件大小、阅读 offset、时间和设备元数据，不上传正文、书名或本地路径。
 
-下面第 1–7 节记录当前 Android 阅读器实现；iOS 迁移设计和同步边界分别见
+下面第 1–7 节记录当前 Android 阅读器实现；iOS 当前功能与同步边界分别见
 [`features/ios.md`](features/ios.md)、[`features/sync-client.md`](features/sync-client.md)
 和 [`features/sync-server.md`](features/sync-server.md)。
 
@@ -36,7 +37,7 @@
 
 - 设置页根布局同时处理系统栏、显示缺口和 IME Insets；Android 15 edge-to-edge 下以 `WindowInsets.Type.ime()` 的实际底部范围缩小内容可用区，旧版本由 `adjustResize` 兼容；
 - 输入框定位使用其在 ScrollView 内容坐标中的完整矩形，不能用被 IME 裁切后的全局可见矩形计算滚动距离；
-- 同步页进入时预加载设备列表；设备管理弹窗先渲染内存缓存，再异步刷新并原位更新；
+- 仅在同步会话已启动且当前配置与已应用配置一致时，进入同步页才预加载设备列表；设备管理弹窗先渲染内存缓存或本机信息，再异步刷新并原位更新；未同步时只显示同步设置中的当前设备名称，不访问服务端；
 - 确认弹窗统一由主题化 `Dialog` 卡片构建，不依赖会在不同系统版本和主题下退化为旧式白框的默认 AlertDialog 样式。
 
 ## 2. 持久化模型

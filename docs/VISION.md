@@ -10,4 +10,4 @@ XLib 的目标是提供在 Android、iOS 和未来 macOS 上一致、可靠的�
 4. 各平台使用原生界面，共享的只是经验证的平台无关核心和 HTTP 合同。
 5. 构建、测试和发布必须可重复；普通构建不能修改版本或源文件。
 
-完整的阅读器交互和验收规范见 [features/reader.md](features/reader.md)。
+完整交互与验收规范按平台区分：Android 见 [features/reader.md](features/reader.md)，iOS 当前实现见 [features/ios.md](features/ios.md)。

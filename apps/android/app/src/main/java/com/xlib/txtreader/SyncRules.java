@@ -43,8 +43,7 @@ final class SyncRules {
         if (local == null || local.bookHash == null) return false;
         if (remote == null || !local.bookHash.equals(remote.bookHash)
                 || local.fileSize != remote.fileSize) return true;
-        return local.offset > remote.offset
-                || (local.offset == remote.offset && local.readAtMs > remote.readAtMs);
+        return local.readAtMs > remote.readAtMs;
     }
 
     static long healthBackoffMs(int attempt) {

@@ -192,14 +192,10 @@ final class ReaderPagePaginator {
     private static CharSequence highlightedText(String text, String query, int color) {
         if (query == null || query.isEmpty() || text.isEmpty()) return text;
         SpannableString highlighted = new SpannableString(text);
-        int from = 0;
-        while (from < text.length()) {
-            int match = text.indexOf(query, from);
-            if (match < 0) break;
-            int end = match + query.length();
-            highlighted.setSpan(new BackgroundColorSpan(color), match, end,
+        java.util.regex.Matcher matches = SearchTextRules.pattern(query).matcher(text);
+        while (matches.find()) {
+            highlighted.setSpan(new BackgroundColorSpan(color), matches.start(), matches.end(),
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            from = end;
         }
         return highlighted;
     }

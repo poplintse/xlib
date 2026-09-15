@@ -67,8 +67,8 @@ public class ReaderTextSearchTest {
 
         assertEquals(List.of(0L), first.offsets);
         assertFalse(first.reachedBoundary);
-        assertEquals(1L, first.nextOffset);
-        assertEquals(List.of(1L, 2L, 3L), second.offsets);
+        assertEquals(2L, first.nextOffset);
+        assertEquals(List.of(2L), second.offsets);
     }
 
     @Test
@@ -79,6 +79,31 @@ public class ReaderTextSearchTest {
                 file, "UTF-8", "🙂", 0L, file.length(), 5, 20);
 
         assertEquals(List.of(0L, 4L), batch.offsets);
+    }
+
+    @Test public void caseInsensitiveNonOverlappingAcrossEverySegmentSize() throws Exception {
+        File file = write("case.txt", "哈哈哈哈哈 HeLLoHELLO hello", StandardCharsets.UTF_8);
+        for (int size = 4; size < 30; size++) {
+            assertEquals(List.of(0L, 6L), ReaderTextSearch.find(file, "UTF-8", "哈哈", 0,
+                    file.length(), size, 200).offsets);
+            assertEquals(List.of(16L, 21L, 27L), ReaderTextSearch.find(file, "UTF-8", "hello", 0,
+                    file.length(), size, 200).offsets);
+        }
+    }
+
+    @Test public void moreThanTwoHundredAndManualWrapPartitionDoNotOverlap() throws Exception {
+        File file = write("many.txt", "Aa".repeat(450), StandardCharsets.UTF_8);
+        ReaderTextSearch.Batch first = ReaderTextSearch.find(file, "UTF-8", "aa", 100, file.length(), 7, 200);
+        ReaderTextSearch.Batch second = ReaderTextSearch.find(file, "UTF-8", "aa", first.nextOffset,
+                file.length(), 7, 200);
+        ReaderTextSearch.Batch wrapped = ReaderTextSearch.find(file, "UTF-8", "aa", 0, 100, 7, 200);
+        assertEquals(200, first.offsets.size());
+        assertEquals(200, second.offsets.size());
+        assertEquals(50, wrapped.offsets.size());
+        assertEquals(Long.valueOf(498), first.offsets.get(199));
+        assertEquals(Long.valueOf(500), second.offsets.get(0));
+        assertTrue(second.reachedBoundary);
+        assertTrue(wrapped.reachedBoundary);
     }
 
     private File write(String name, String text, Charset charset) throws Exception {

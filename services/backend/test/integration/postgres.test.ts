@@ -192,16 +192,32 @@ integration("PostgreSQL service integration", () => {
     expect(starts[0]?.user.userId).toBe(starts[1]?.user.userId);
   });
 
-  it("deletes progress and sync identity using only the fixed token authorization", async () => {
-    const first = await authService.authenticate(
-      `Bearer ${firstStart.token}`,
-      firstStart.device.deviceId,
-    );
-    await progressService.deleteAll(first);
-    expect((await progressService.list(first)).items).toEqual([]);
-    await authService.deleteAccount(first);
-    await expect(
-      authService.authenticate(`Bearer ${firstStart.token}`, firstStart.device.deviceId),
-    ).rejects.toMatchObject({ statusCode: 401 });
+  it("deletes only the selected book and keeps other books, identities and devices", async () => {
+    const first = await authService.authenticate(`Bearer ${firstStart.token}`, firstStart.device.deviceId);
+    const otherStart = await authService.startSync({
+      email: "delete-isolation@example.com",
+      device: { deviceId: "60000000-0000-0000-0000-000000000000", deviceName: "Other",
+        platform: "ios", appVersion: "1.0.0" },
+    });
+    const other = await authService.authenticate(`Bearer ${otherStart.token}`, otherStart.device.deviceId);
+    const book = { bookHash: "a".repeat(64), fileSize: 100 };
+    const sibling = { bookHash: "a".repeat(64), fileSize: 101 };
+    const differentHash = { bookHash: "b".repeat(64), fileSize: 100 };
+    await progressService.sync(first, { items: [book, sibling, differentHash].map(key =>
+      ({ ...key, offset: 10, readAtMs: 1000 })) });
+    await progressService.sync(other, { items: [{ ...book, offset: 20, readAtMs: 1000 }] });
+    const devicesBefore = (await authService.listDevices(first)).items.length;
+    await progressService.deleteBook(first, book);
+    await progressService.deleteBook(first, book);
+    const remaining = (await progressService.list(first)).items;
+    expect(remaining.some(item => item.bookHash === book.bookHash && item.fileSize === 100)).toBe(false);
+    expect(remaining).toEqual(expect.arrayContaining([
+      expect.objectContaining(sibling), expect.objectContaining(differentHash),
+    ]));
+    expect((await progressService.list(other)).items).toEqual([expect.objectContaining(book)]);
+    expect((await authService.listDevices(first)).items).toHaveLength(devicesBefore);
+    await expect(authService.authenticate(`Bearer ${firstStart.token}`, firstStart.device.deviceId)).resolves.toMatchObject({ userId: first.userId });
+    await authService.revokeDevice(other, other.deviceId);
+    await expect(progressService.deleteBook(other, book)).rejects.toMatchObject({ statusCode: 403 });
   });
 });

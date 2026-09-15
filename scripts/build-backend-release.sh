@@ -34,22 +34,7 @@ if ! printf '%s\n' "$actual" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.
     fail "invalid backend version: $actual"
 fi
 if [ -n "$requested" ] && [ "$requested" != "$actual" ]; then
-    staged_package_json="$package_json.tmp.$$"
-    trap 'rm -f "$staged_package_json"' EXIT HUP INT TERM
-    if ! ruby -e '
-      source, previous, requested, output = ARGV
-      text = File.read(source)
-      current = %("version": "#{previous}")
-      replacement = %("version": "#{requested}")
-      abort "package version entry was not found" unless text.include?(current)
-      File.write(output, text.sub(current, replacement))
-    ' "$package_json" "$actual" "$requested" "$staged_package_json" 2>>"$log"; then
-        fail "could not update backend package version to $requested"
-    fi
-    mv "$staged_package_json" "$package_json"
-    trap - EXIT HUP INT TERM
-    printf 'Backend package version: %s -> %s\n' "$actual" "$requested" >>"$log"
-    actual="$requested"
+    fail "VERSION must match the prepared component version; builds do not edit version files" 2
 fi
 
 if ! command -v node >/dev/null 2>&1; then

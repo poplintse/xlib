@@ -57,11 +57,13 @@ public class SyncRulesTest {
     }
 
     @Test
-    public void localProgressAheadIsUploadedAfterComparison() {
+    public void newerReadTimeWinsEvenWhenOffsetMovesBackward() {
         LocalProgressSnapshot local = new LocalProgressSnapshot(
                 1L, HASH, 100_000L, 200L, 100L, 2L);
-        assertTrue(SyncRules.shouldUploadLocal(local,
+        assertFalse(SyncRules.shouldUploadLocal(local,
                 remote(HASH, 100_000L, 100L, 200L, "2", "other", "launch")));
+        assertTrue(SyncRules.shouldUploadLocal(local,
+                remote(HASH, 100_000L, 300L, 50L, "2", "other", "launch")));
         assertFalse(SyncRules.shouldUploadLocal(local,
                 remote(HASH, 100_000L, 200L, 100L, "2", "other", "launch")));
     }

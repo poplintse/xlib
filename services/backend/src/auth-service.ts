@@ -224,17 +224,6 @@ export class AuthService {
     });
   }
 
-  async deleteAccount(auth: AuthContext): Promise<void> {
-    await this.database.transaction(async (client) => {
-      await this.lockActiveRequester(client, auth);
-      await client.query(
-        "update users set status = 'deleting', updated_at = now() where id = $1",
-        [auth.userId],
-      );
-      await client.query("delete from users where id = $1", [auth.userId]);
-    });
-  }
-
   private async lockActiveRequester(client: PoolClient, auth: AuthContext): Promise<void> {
     const requester = await client.query<{ id: string }>(
       `select u.id

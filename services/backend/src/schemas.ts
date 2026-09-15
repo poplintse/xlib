@@ -37,6 +37,14 @@ export const startSyncSchema = z
 export const deviceIdParamsSchema = z.object({ deviceId: uuid }).strict();
 export const deviceIdHeaderSchema = uuid;
 
+export const progressBookParamsSchema = z.object({
+  bookHash: z.string().regex(/^[0-9a-f]{64}$/),
+  fileSize: z.string().regex(/^[1-9][0-9]*$/).transform(Number)
+    .pipe(z.number().int().safe().positive()),
+}).strict();
+
+export type ProgressBookKey = z.infer<typeof progressBookParamsSchema>;
+
 const progressItemSchema = z
   .object({
     bookHash: z.string().regex(/^[0-9a-f]{64}$/),

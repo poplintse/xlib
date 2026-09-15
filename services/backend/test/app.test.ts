@@ -1,7 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { testConfig } from "./config-fixture.js";
+
+import { AuthService } from "../src/auth-service.js";
+import { ProgressService } from "../src/progress-service.js";
 
 let app: FastifyInstance;
 
@@ -11,6 +14,7 @@ describe("HTTP contract without a database connection", () => {
   });
 
   afterAll(async () => app.close());
+  afterEach(() => vi.restoreAllMocks());
 
   it("returns the unified error shape and request headers for malformed JSON", async () => {
     const response = await app.inject({
@@ -84,4 +88,44 @@ describe("HTTP contract without a database connection", () => {
       expect(response.statusCode).toBe(404);
     },
   );
+  it.each(["/v1/account", "/v1/progress", "/v1/progress/" + "a".repeat(64)])(
+    "does not expose unscoped deletion at %s", async (url) => {
+      const response = await app.inject({ method: "DELETE", url });
+      expect(response.statusCode).toBe(404);
+    },
+  );
+
+  it("requires authentication for single-book deletion", async () => {
+    const response = await app.inject({
+      method: "DELETE", url: `/v1/progress/${"a".repeat(64)}/100`,
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("passes only the authenticated identity and exact book key to deletion", async () => {
+    const auth = { userId: "1", userPublicId: "user", email: "reader@example.com",
+      deviceDbId: "2", deviceId: "device", deviceName: "Reader", platform: "ios" as const };
+    vi.spyOn(AuthService.prototype, "authenticate").mockResolvedValue(auth);
+    const deletion = vi.spyOn(ProgressService.prototype, "deleteBook").mockResolvedValue();
+    const bookHash = "a".repeat(64);
+    const response = await app.inject({
+      method: "DELETE", url: `/v1/progress/${bookHash}/100`,
+    });
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe("");
+    expect(deletion).toHaveBeenCalledExactlyOnceWith(auth, { bookHash, fileSize: 100 });
+  });
+
+  it.each(["0", "-1", "1.5", "1e3", "01", "9007199254740992"])(
+    "rejects an invalid file size %s without deleting", async (fileSize) => {
+      vi.spyOn(AuthService.prototype, "authenticate").mockResolvedValue({} as never);
+      const deletion = vi.spyOn(ProgressService.prototype, "deleteBook").mockResolvedValue();
+      const response = await app.inject({
+        method: "DELETE", url: `/v1/progress/${"a".repeat(64)}/${fileSize}`,
+      });
+      expect(response.statusCode).toBe(422);
+      expect(deletion).not.toHaveBeenCalled();
+    },
+  );
+
 });

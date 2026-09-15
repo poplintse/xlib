@@ -2,7 +2,7 @@
 
 ## 范围
 
-Alpha 0.9.0 包含 Android、iOS、同步 Backend、OpenAPI v1 和 Apple 共享核心。macOS 标记为 planned，不属于本次可交付范围。
+当前 Alpha 开发清单为 [0.9.9（draft）](../releases/0.9.9.yaml)，包含 Android、iOS、同步 Backend、OpenAPI v1 和 Apple 共享核心。macOS 标记为 planned，不属于本次可交付范围。
 
 ## 必须通过
 
@@ -19,5 +19,7 @@ Alpha 0.9.0 包含 Android、iOS、同步 Backend、OpenAPI v1 和 Apple 共享�
 ## 人工验收
 
 Android 与 iOS 至少完成一次：导入大 TXT、连续翻页、退出恢复、搜索跳转、目录跳转、书签、设置切换、离线阅读、开启同步、跨设备进度比较和破坏性删除确认。
+
+发布前必须关闭 [CURRENT](CURRENT.md) 中对应范围的实现缺口；不能把协议层通过当作客户端能力完成。
 
 详细交互清单按平台区分：Android 见 [features/reader.md](features/reader.md)，iOS 见 [features/ios.md](features/ios.md)。Android 与跨端同步目标见 [features/sync-client.md](features/sync-client.md)。

@@ -474,6 +474,29 @@ final class ProgressSyncTests: XCTestCase {
         )
     }
 
+    func testBookDeletionTargetsOnlyTheExactBook() async throws {
+        DeleteRequestURLProtocol.store.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DeleteRequestURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let client = SyncAPIClient.live(address: "https://sync.example.com", session: session)
+        let key = SyncBookKey(bookHash: String(repeating: "a", count: 64), fileSize: 100)
+        let authorization = SyncAuthorization(token: "test-token", deviceID: UUID())
+        try await client.deleteBookProgress(key, authorization)
+        let request = try XCTUnwrap(DeleteRequestURLProtocol.store.request)
+        XCTAssertEqual(request.httpMethod, "DELETE")
+        XCTAssertEqual(request.url?.path, "/v1/progress/\(key.bookHash)/100")
+        XCTAssertEqual(DeleteRequestURLProtocol.store.body, Data("{}".utf8))
+        DeleteRequestURLProtocol.store.reset()
+        do {
+            try await client.deleteBookProgress(.init(bookHash: "../account", fileSize: 100), authorization)
+            XCTFail("Invalid identity must not send a deletion")
+        } catch {
+            XCTAssertNil(DeleteRequestURLProtocol.store.request)
+        }
+    }
+
     private static func remote(
         key: SyncBookKey,
         offset: Int64,
@@ -621,7 +644,7 @@ private actor SyncAPISpy {
                 guard let self else { throw CancellationError() }
                 return try await self.sync(request)
             },
-            deleteProgress: { _ in },
+            deleteBookProgress: { _, _ in },
             listDevices: { [weak self] _ in
                 guard let self else { throw CancellationError() }
                 return await self.listDevices()

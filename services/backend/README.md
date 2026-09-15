@@ -1,6 +1,6 @@
 # XLib Sync Server
 
-可独立部署的 XLib 阅读进度同步 API。实现以 [`contracts/openapi.yaml`](../../contracts/openapi.yaml) 和 [`docs/features/sync-server.md`](../../docs/features/sync-server.md) 的第一阶段语义为准；服务只保存规范化邮箱、同步 Token、设备元数据和 TXT 的哈希/文件大小/阅读 offset，不接收原文件、书名、正文或本地路径。
+可独立部署的 XLib 阅读进度同步 API。实现以 [`contracts/openapi.yaml`](../../contracts/openapi.yaml) 和 [`docs/features/sync-server.md`](../../docs/features/sync-server.md) 的当前语义为准；服务只保存规范化邮箱、同步 Token、设备元数据和 TXT 的哈希/文件大小/阅读 offset，不接收原文件、书名、正文或本地路径。
 
 ## 认证边界
 
@@ -10,37 +10,25 @@
 - 已有邮箱解密并返回完全相同的 Token；
 - 同一邮箱的所有设备共享该 Token；
 - Token 摘要用于 Bearer 校验，AES-256-GCM 密文用于同邮箱恢复，数据库不保存明文；
-- 除 `start-sync` 和 `/health` 外，客户端请求同时携带 `Authorization: Bearer <token>` 与 `X-Device-Id: <uuid>`。
+- 除 `start-sync` 外的 `/v1` 客户端请求同时携带 `Authorization: Bearer <token>` 与 `X-Device-Id: <uuid>`。
 
 仅凭邮箱即可恢复 Token 不是强身份认证，这是当前产品明确接受的简化风险。因此服务不保存 TXT 正文等敏感内容，`start-sync` 按 IP 和规范化邮箱限流，业务接口按 Token 与设备限流。
 
 ## 功能
 
 - 固定 Token 发放/恢复、设备登记、列表、撤销和重新启用。
-- PostgreSQL 条件 UPSERT 是唯一进度裁决点；时间相同时按公开 `deviceId` UUID 稳定排序。
+- PostgreSQL 条件 UPSERT 以最近有效阅读时间优先裁决（允许回读）；时间相同时按公开 `deviceId` UUID 稳定排序。
 - 单请求最多 100 条，单邮箱最多 10,000 本；批量完整校验后在短事务中稳定排序处理。
 - 未来超过五分钟的 `readAtMs` 收敛到服务端时间。
-- 云端进度删除和同步身份级联删除，不影响客户端本地书籍。
+- 仅按当前身份、bookHash 与 fileSize 删除单书云端进度，不提供全量清空或身份删除。
 - 统一错误格式、请求 ID、限流、结构化访问日志、健康检查和 Prometheus 指标。
 - Caddy HTTPS、受限数据库账号、迁移、备份和恢复演练脚本。
 
 ## 接口
 
-基础路径为 `/v1`：
+当前路由、单书删除参数和兼容性在 [docs/API.md](../../docs/API.md) 统一维护，字段以 [OpenAPI](../../contracts/openapi.yaml) 为准。旧全量删除与身份删除路由已经移除，旧客户端调用将收到 404。
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `POST` | `/auth/start-sync` | 按邮箱创建或恢复固定 Token，并登记/重新启用设备 |
-| `GET` | `/devices` | 列出当前邮箱的设备 |
-| `DELETE` | `/devices/{deviceId}` | 撤销目标设备，不改变共享 Token 或进度 |
-| `DELETE` | `/account` | 删除邮箱、Token、设备和全部云端进度 |
-| `GET` | `/progress` | 只读拉取全部云端进度 |
-| `POST` | `/progress/sync` | 原子裁决一至 100 条进度 |
-| `DELETE` | `/progress` | 删除当前邮箱的全部云端进度 |
-
-`DELETE /v1/account` 和 `DELETE /v1/progress` 不接收密码或 JSON 请求体，固定 Token 即授权凭据。客户端必须在调用前提供明确的破坏性确认。
-
-另有无需同步 Token 的 `GET /health`。`GET /metrics` 使用独立 `METRICS_TOKEN`，且默认被 Caddy 从公网阻断，仅供容器网络内监控采集。
+`GET /health` 无需同步凭据；`GET /metrics` 使用独立 METRICS_TOKEN，默认被 Caddy 从公网阻断。单书删除不创建永久禁写规则，客户端会话暂停与跨设备后续上传须按产品定义处理。
 
 ## 本地开发
 

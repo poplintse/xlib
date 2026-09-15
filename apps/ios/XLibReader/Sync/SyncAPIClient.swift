@@ -5,7 +5,7 @@ struct SyncAPIClient: Sendable {
     var startSync: @Sendable (SyncStartRequest) async throws -> SyncStartResponse
     var pullProgress: @Sendable (SyncAuthorization) async throws -> ProgressPullResponse
     var syncProgress: @Sendable (_ request: ProgressSyncRequest, _ authorization: SyncAuthorization) async throws -> ProgressSyncResponse
-    var deleteProgress: @Sendable (SyncAuthorization) async throws -> Void
+    var deleteBookProgress: @Sendable (SyncBookKey, SyncAuthorization) async throws -> Void
     var listDevices: @Sendable (SyncAuthorization) async throws -> [SyncDevice]
     var deleteDevice: @Sendable (_ deviceID: UUID, _ authorization: SyncAuthorization) async throws -> Void
     var health: @Sendable () async throws -> Bool
@@ -31,9 +31,14 @@ struct SyncAPIClient: Sendable {
                     method: "POST", path: "v1/progress/sync", body: request, authorization: authorization
                 )
             },
-            deleteProgress: { authorization in
+            deleteBookProgress: { book, authorization in
+                guard book.bookHash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+                      book.fileSize > 0, book.fileSize <= 9_007_199_254_740_991 else {
+                    throw SyncAPIError.invalidResponse
+                }
                 try await transport.sendWithoutResponse(
-                    method: "DELETE", path: "v1/progress", authorization: authorization
+                    method: "DELETE", path: "v1/progress/\(book.bookHash)/\(book.fileSize)",
+                    authorization: authorization
                 )
             },
             listDevices: { authorization in
@@ -61,7 +66,7 @@ struct SyncAPIClient: Sendable {
         startSync: { _ in throw SyncAPIError.notConfigured },
         pullProgress: { _ in throw SyncAPIError.notConfigured },
         syncProgress: { _, _ in throw SyncAPIError.notConfigured },
-        deleteProgress: { _ in throw SyncAPIError.notConfigured },
+        deleteBookProgress: { _, _ in throw SyncAPIError.notConfigured },
         listDevices: { _ in throw SyncAPIError.notConfigured },
         deleteDevice: { _, _ in throw SyncAPIError.notConfigured },
         health: { throw SyncAPIError.notConfigured }

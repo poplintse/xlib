@@ -12,6 +12,7 @@ import {
   deviceIdParamsSchema,
   firstValidationMessage,
   progressSyncSchema,
+  progressBookParamsSchema,
   startSyncSchema,
 } from "./schemas.js";
 import { hashToken } from "./security.js";
@@ -157,15 +158,6 @@ export async function buildApp(
     },
   );
 
-  app.delete(
-    "/v1/account",
-    { config: { rateLimit: businessLimit(10) } },
-    async (request, reply) => {
-      await authService.deleteAccount(await requireAuth(request, authService));
-      return reply.status(204).send();
-    },
-  );
-
   app.get(
     "/v1/progress",
     { config: { rateLimit: businessLimit(120) } },
@@ -182,10 +174,12 @@ export async function buildApp(
   );
 
   app.delete(
-    "/v1/progress",
+    "/v1/progress/:bookHash/:fileSize",
     { config: { rateLimit: businessLimit(10) } },
     async (request, reply) => {
-      await progressService.deleteAll(await requireAuth(request, authService));
+      const auth = await requireAuth(request, authService);
+      const book = parse(progressBookParamsSchema, request.params);
+      await progressService.deleteBook(auth, book);
       return reply.status(204).send();
     },
   );

@@ -43,6 +43,18 @@ final class BookmarkStore {
         save(remaining);
     }
 
+    void delete(Bookmark target) {
+        ArrayList<Bookmark> all = loadAll();
+        for (int i = 0; i < all.size(); i++) {
+            Bookmark item = all.get(i);
+            if (item.id == target.id && item.bookId == target.bookId && item.offset == target.offset) {
+                all.remove(i);
+                save(all);
+                return;
+            }
+        }
+    }
+
     private ArrayList<Bookmark> loadAll() {
         ArrayList<Bookmark> result = new ArrayList<>();
         try {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_TIMESTAMP_MS, progressSyncSchema, startSyncSchema } from "../src/schemas.js";
+import { MAX_TIMESTAMP_MS, progressBookParamsSchema, progressSyncSchema, startSyncSchema } from "../src/schemas.js";
 
 function item(overrides: Record<string, unknown> = {}) {
   return {
@@ -84,4 +84,15 @@ describe("request validation", () => {
     expect(progressSyncSchema.safeParse({ items: items.slice(0, 100) }).success).toBe(true);
     expect(progressSyncSchema.safeParse({ items }).success).toBe(false);
   });
+});
+
+
+describe("single-book deletion identity", () => {
+  it.each([{}, { bookHash: "a".repeat(64) }, { bookHash: "A".repeat(64), fileSize: "100" },
+    { bookHash: "a".repeat(63), fileSize: "100" },
+    { bookHash: "a".repeat(64), fileSize: "100", userId: "another-user" }])(
+    "rejects missing, invalid or extra identity fields", (input) => {
+      expect(progressBookParamsSchema.safeParse(input).success).toBe(false);
+    },
+  );
 });

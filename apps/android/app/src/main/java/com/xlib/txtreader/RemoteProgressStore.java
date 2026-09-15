@@ -71,6 +71,11 @@ final class RemoteProgressStore {
         preferences.edit().remove(KEY_EMAIL).remove(KEY_ITEMS).apply();
     }
 
+    synchronized void remove(BookKey key) {
+        snapshots.remove(key);
+        persist();
+    }
+
     private RemoteProgressSnapshot copyWithFreshness(RemoteProgressSnapshot item, long fetchedAt,
                                                      String launchId) {
         return new RemoteProgressSnapshot(item.bookHash, item.fileSize, item.offset,

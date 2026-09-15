@@ -38,21 +38,7 @@ if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z
     fail "invalid Android version: ${version:-missing}"
 fi
 if [ -n "$requested" ] && [ "$requested" != "$version" ]; then
-    staged_version_file="$version_file.tmp.$$"
-    trap 'rm -f "$staged_version_file"' EXIT HUP INT TERM
-    sed "s/^versionName=.*/versionName=$requested/" \
-        "$version_file" >"$staged_version_file"
-    staged_version="$(sed -n 's/^versionName=//p' "$staged_version_file")"
-    if [ "$staged_version" != "$requested" ]; then
-        fail "could not update Android versionName to $requested"
-    fi
-    mv "$staged_version_file" "$version_file"
-    trap - EXIT HUP INT TERM
-    printf 'Android versionName: %s -> %s\n' "$version" "$requested" >>"$log"
-    version="$requested"
-fi
-if ! "$root/scripts/prepare-android-version-code.sh" "$version_file" "$root/artifacts/android" >>"$log" 2>&1; then
-    fail "could not prepare a unique Android versionCode"
+    fail "VERSION must match the prepared component version; builds do not edit version files" 2
 fi
 version_code_count="$(
     awk '
@@ -96,10 +82,5 @@ after_build="$(shasum -a 256 "$version_file")"
 if [ "$before_build" != "$after_build" ]; then
     fail "build mutated version.properties"
 fi
-if ! "$root/scripts/increment-android-version-code.sh" "$version_file" >>"$log" 2>&1; then
-    fail "could not increment the Android versionCode"
-fi
-next_version_code="$(sed -n 's/^versionCode=//p' "$version_file")"
-
-printf 'OK Android Debug %s (build %s; next %s)\nartifact: %s\nlog: %s\n' \
-    "$version" "$version_code" "$next_version_code" "$artifact" "$log"
+printf 'OK Android Debug %s (build %s)\nartifact: %s\nlog: %s\n' \
+    "$version" "$version_code" "$artifact" "$log"

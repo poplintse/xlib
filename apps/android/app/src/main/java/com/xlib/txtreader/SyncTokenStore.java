@@ -28,6 +28,7 @@ final class SyncTokenStore {
     private static final String KEY_ACTIVE_SERVER_URL = "sync_active_server_url";
     private static final String KEY_DEVICE_ID = "sync_device_id";
     private static final String KEY_DEVICE_NAME = "sync_device_name";
+    private static final String KEY_STARTED = "sync_started";
 
     private final SharedPreferences preferences;
 
@@ -40,6 +41,7 @@ final class SyncTokenStore {
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey());
         byte[] encrypted = cipher.doFinal(token.getBytes(StandardCharsets.UTF_8));
         preferences.edit()
+                .putBoolean(KEY_STARTED, true)
                 .putString(KEY_EMAIL, normalizeEmail(email))
                 .putString(KEY_CONFIGURED_EMAIL, normalizeEmail(email))
                 .putString(KEY_TOKEN_CIPHERTEXT,
@@ -66,7 +68,13 @@ final class SyncTokenStore {
     }
 
     synchronized boolean enabled() {
-        return token() != null;
+        return preferences.getBoolean(KEY_STARTED, false) || token() != null;
+    }
+
+    synchronized void invalidateCredentials() {
+        boolean started = enabled();
+        clear();
+        preferences.edit().putBoolean(KEY_STARTED, started).apply();
     }
 
     synchronized String email() {
@@ -122,6 +130,7 @@ final class SyncTokenStore {
 
     synchronized void clear() {
         preferences.edit()
+                .remove(KEY_STARTED)
                 .remove(KEY_EMAIL)
                 .remove(KEY_TOKEN_CIPHERTEXT)
                 .remove(KEY_TOKEN_IV)

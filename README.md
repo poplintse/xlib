@@ -23,13 +23,13 @@ xlib/
 
 | 组件 | 状态 | 版本 |
 | --- | --- | --- |
-| Android | active | `0.9.0` / build `54` |
-| iOS | active | `0.9.0` / build `31` |
-| Backend | active | `0.9.0` |
+| Android | active | `0.9.9` / build `65` |
+| iOS | active | `0.9.9` / build `37` |
+| Backend | active | `0.9.9` |
 | macOS | planned | — |
 | API contract | active | `v1` |
 
-`releases/0.9.0.yaml` 是当前统一 Alpha 发布清单；它不重置各组件自己的版本。
+当前源码对应 `releases/0.9.9.yaml`，清单状态为 draft，不代表已发布；历史清单保留各版本事实，不作为当前能力需求。
 
 ## 快速开始
 
@@ -48,10 +48,10 @@ make test-apple-shared
 make build-android-debug
 make build-ios-debug
 make check-alpha
-make release-check RELEASE=0.9.0
+make release-check RELEASE=0.9.9
 ```
 
-Android 与 iOS 的普通构建不会修改版本文件。版本变化必须通过明确的发布准备流程完成。
+所有构建使用已准备的组件版本，不自动递增或重写版本文件。`VERSION` 只校验与源码版本一致；不同则拒绝构建。版本变化必须经过明确的发布准备。`make prepare-release` 只校验，不分配版本。
 
 ## 环境与安全
 
@@ -65,9 +65,10 @@ cp .env.example .env
 
 ## 文档
 
+- [产品能力与客户端实现体系](docs/product/README.md)
 - [产品愿景](docs/VISION.md)
 - [当前状态](docs/CURRENT.md)
-- [架构](docs/ARCHITECTURE.md)
+- [架构](docs/architecture.md)
 - [API](docs/API.md)
 - [Alpha 标准](docs/ALPHA.md)
 - [决策记录](docs/DECISIONS.md)

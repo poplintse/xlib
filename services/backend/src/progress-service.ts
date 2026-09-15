@@ -3,7 +3,7 @@ import { effectiveCandidate, progressRatio, type ProgressDecision } from "./arbi
 import type { AuthContext } from "./auth-service.js";
 import { Database } from "./database.js";
 import { ApiError } from "./errors.js";
-import type { ProgressItemInput, ProgressSyncInput } from "./schemas.js";
+import type { ProgressBookKey, ProgressItemInput, ProgressSyncInput } from "./schemas.js";
 
 const MAX_PROGRESS_PER_EMAIL = 10_000;
 
@@ -201,7 +201,7 @@ export class ProgressService {
     });
   }
 
-  async deleteAll(auth: AuthContext): Promise<void> {
+  async deleteBook(auth: AuthContext, book: ProgressBookKey): Promise<void> {
     await this.database.transaction(async (client) => {
       const activeDevice = await client.query<{ id: string }>(
         `select d.id
@@ -214,7 +214,10 @@ export class ProgressService {
       if (!activeDevice.rows[0]) {
         throw new ApiError(403, "DEVICE_FORBIDDEN", "sync identity or device is not available");
       }
-      await client.query("delete from reading_progress where user_id = $1", [auth.userId]);
+      await client.query(
+        "delete from reading_progress where user_id = $1 and book_hash = decode($2, 'hex') and file_size = $3",
+        [auth.userId, book.bookHash, String(book.fileSize)],
+      );
     });
   }
 }

@@ -1,5 +1,7 @@
 # 架构与产品决策
 
+产品能力分类及已发现的 D-007 / D-008 实现冲突见 [产品决策 0001](product/decisions/0001-capability-baseline-and-open-questions.md)。本文件保留历史决策；D-007 已由 [Decision 0002](product/decisions/0002-latest-reading-time-wins.md) 取代，D-008 已由 [Decision 0004](product/decisions/0004-sync-configuration-auto-apply.md) 取代。
+
 ## D-001 原始字节 offset 是阅读位置真值
 
 状态：accepted。
@@ -36,16 +38,12 @@ Alpha 允许通过规范化邮箱创建或恢复同一个固定 Token。这不�
 
 Debug、test 和普通 release build 都不得修改受 Git 管理的文件。版本变更只能通过明确的发布准备操作进行。
 
-## D-007 跨设备进度以绝对 offset 优先
+## D-007（已取代）
 
-状态：accepted。
+原决定采用最远位置优先，已由 [Decision 0002](product/decisions/0002-latest-reading-time-wins.md) 的最近阅读时间优先取代。原始字节 offset 仍是位置真值，但不是新旧裁决依据。
 
-同步比较和服务端裁决先比较同一 `bookHash + fileSize` 的绝对 byte offset：云端更靠后时客户端提示用户跳转，本地更靠后时更新云端。`readAtMs` 只在 offset 相同时用于去重和确定来源，不能让较新的时间戳覆盖更靠后的阅读位置。任何云端状态都不得未经用户确认自动改变当前阅读页。
+## D-008（已取代）
 
-## D-008 同步配置自动本地保存、手工应用到云端
+原决定要求配置修改后手动应用，已由 [Decision 0004](product/decisions/0004-sync-configuration-auto-apply.md) 的首次手动开启、后续有效配置自动应用取代。
 
-状态：accepted。
-
-邮箱、设备名称和服务器地址是低风险的本地配置，输入完成后可自动保存并显示保存状态；自动保存不得发起网络请求。同步启动、重启和刷新必须由“同步刷新”这一明确动作触发。
-
-已启动会话必须记录成功启动时的邮箱、设备名称和服务器地址。当前本地配置与该快照不一致时，客户端暂停后台同步，且不得将旧 Token 发送到新服务器；用户点击“同步刷新”后才可按新配置重新建立会话。
+产品决定的完整索引见 [product/decisions](product/decisions/README.md)。不再在本文件重复具体产品流程。

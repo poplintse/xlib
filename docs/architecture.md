@@ -1,8 +1,6 @@
 # XLib 架构
 
-本文记录当前实现的稳定边界。Android 产品交互以
-[`features/reader.md`](features/reader.md) 为准，iOS 当前行为以
-[`features/ios.md`](features/ios.md) 为准；本文重点说明阅读器的数据归属、阅读定位、缓存、目录、书签和运行状态如何协作。
+本文记录当前实现的稳定边界。共同业务语义以 [产品能力](product/README.md) 为准，客户端覆盖与差距见 [CURRENT](CURRENT.md)。第 1–7 节主要描述 Android 技术结构，不约束其他客户端界面，也不代表已完成最新业务规则的验收。
 
 ## 0. Monorepo 边界
 

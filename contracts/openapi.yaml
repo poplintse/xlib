@@ -84,24 +84,6 @@ paths:
           $ref: "#/components/responses/ApiError"
         "429":
           $ref: "#/components/responses/RateLimited"
-  /v1/account:
-    delete:
-      tags: [auth]
-      operationId: deleteAccount
-      summary: Permanently delete the sync identity, devices, and cloud progress.
-      description: Clients must present an explicit destructive confirmation before calling.
-      security:
-        - SyncToken: []
-          DeviceId: []
-      responses:
-        "204":
-          description: Account and associated cloud data deleted.
-        "401":
-          $ref: "#/components/responses/ApiError"
-        "403":
-          $ref: "#/components/responses/ApiError"
-        "429":
-          $ref: "#/components/responses/RateLimited"
   /v1/progress:
     get:
       tags: [progress]
@@ -123,20 +105,44 @@ paths:
           $ref: "#/components/responses/ApiError"
         "429":
           $ref: "#/components/responses/RateLimited"
+  /v1/progress/{bookHash}/{fileSize}:
     delete:
       tags: [progress]
-      operationId: deleteProgress
-      summary: Permanently delete all cloud progress for the sync identity.
-      description: Clients must present an explicit destructive confirmation before calling.
+      operationId: deleteBookProgress
+      summary: Delete cloud progress for exactly one book belonging to the authenticated identity.
+      description: |
+        Scoped by the authenticated identity, SHA-256 bookHash and fileSize.
+        Returns 204 also when that book has no cloud progress. Other books,
+        devices and local data are unaffected. No request body is required.
+        Clients confirm the selected book and suspend its uploads for the current
+        reading session after success; reopen and compare before resuming uploads.
       security:
         - SyncToken: []
           DeviceId: []
+      parameters:
+        - name: bookHash
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-f]{64}$"
+        - name: fileSize
+          in: path
+          required: true
+          description: Canonical positive decimal integer, at most 9007199254740991.
+          schema:
+            type: string
+            pattern: "^[1-9][0-9]*$"
       responses:
         "204":
-          description: All cloud progress deleted.
+          description: The selected book has no cloud progress; the identity and other books remain.
+        "400":
+          $ref: "#/components/responses/ApiError"
         "401":
           $ref: "#/components/responses/ApiError"
         "403":
+          $ref: "#/components/responses/ApiError"
+        "422":
           $ref: "#/components/responses/ApiError"
         "429":
           $ref: "#/components/responses/RateLimited"
@@ -145,6 +151,11 @@ paths:
       tags: [progress]
       operationId: syncProgress
       summary: Arbitrate and store one to 100 progress candidates.
+      description: |
+        The latest effective readAtMs wins, even when its offset is smaller.
+        Equal times are resolved by stable device ID ordering. Current reader
+        clients upload only the active formal reading book after comparison;
+        the transport batch limit is not authorization to upload an idle library.
       security:
         - SyncToken: []
           DeviceId: []

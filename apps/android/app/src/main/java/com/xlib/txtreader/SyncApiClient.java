@@ -120,8 +120,16 @@ final class SyncApiClient {
         requestNoContent("DELETE", "/v1/devices/" + targetDeviceId, token, deviceId);
     }
 
-    void deleteProgress(String token, String deviceId) throws Exception {
-        requestNoContent("DELETE", "/v1/progress", token, deviceId);
+    void deleteBookProgress(String token, String deviceId, BookKey book) throws Exception {
+        requestNoContent("DELETE", bookProgressPath(book), token, deviceId);
+    }
+
+    static String bookProgressPath(BookKey book) {
+        if (book == null || book.bookHash == null || !book.bookHash.matches("[0-9a-f]{64}")
+                || book.fileSize <= 0 || book.fileSize > 9_007_199_254_740_991L) {
+            throw new IllegalArgumentException("invalid book identity");
+        }
+        return "/v1/progress/" + book.bookHash + "/" + book.fileSize;
     }
 
     void health() throws Exception {

@@ -318,23 +318,6 @@ final class ProgressSyncCoordinator {
         return lastFailureMessage == nil
     }
 
-    func deleteCloudProgress() async -> Bool {
-        guard credentials != nil else { return false }
-        isWorking = true
-        defer { isWorking = false }
-        do {
-            try await authorized { authorization in try await self.api.deleteProgress(authorization) }
-            remoteByKey.removeAll()
-            freshPullCompleted = true
-            try? await stateStore.clearRemote()
-            lastSuccessAt = now()
-            return true
-        } catch {
-            handle(error)
-            return false
-        }
-    }
-
     func loadDevices() async {
         guard credentials != nil else { return }
         do {

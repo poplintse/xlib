@@ -26,6 +26,8 @@ final class ReaderTextSearch {
         ArrayList<Long> offsets = new ArrayList<>();
         String carry = "";
         long carryOffset = position;
+        long matchedThrough = position;
+        java.util.regex.Pattern pattern = SearchTextRules.pattern(query);
         while (position < boundary && offsets.size() < safeLimit) {
             CacheSegment segment = ReaderSegmentSource.read(file, position,
                     (int) Math.min(safeSegmentBytes, boundary - position), charset);
@@ -33,26 +35,24 @@ final class ReaderTextSearch {
             String searchable = carry + segment.text;
             long searchableOffset = carry.isEmpty() ? segment.offset : carryOffset;
             ByteOffsetMap searchableMap = ByteOffsetMap.create(searchable, charset);
-            int from = 0;
+            int from = searchableMap.charIndexForByteOffset(Math.max(0, matchedThrough - searchableOffset));
+            java.util.regex.Matcher matcher = pattern.matcher(searchable);
             while (from < searchable.length()) {
-                int match = searchable.indexOf(query, from);
-                if (match < 0) break;
+                if (!matcher.find(from)) break;
+                int match = matcher.start();
                 long offset = searchableOffset
                         + searchableMap.byteOffsetForCharIndex(match);
-                int matchEnd = match + query.length();
+                int matchEnd = matcher.end();
                 long end = searchableOffset
                         + searchableMap.byteOffsetForCharIndex(matchEnd);
                 if (offset >= startOffset && end <= boundary) {
                     offsets.add(offset);
+                    matchedThrough = end;
                     if (offsets.size() >= safeLimit) {
-                        int nextChar = match + Character.charCount(
-                                searchable.codePointAt(match));
-                        long nextOffset = searchableOffset
-                                + searchableMap.byteOffsetForCharIndex(nextChar);
-                        return new Batch(offsets, nextOffset, false);
+                        return new Batch(offsets, end, end >= boundary);
                     }
                 }
-                from = match + Character.charCount(searchable.codePointAt(match));
+                from = matchEnd;
             }
             position = segment.endOffset();
             int carryStart = Math.max(0, searchable.length() - query.length() + 1);

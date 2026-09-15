@@ -38,25 +38,7 @@ if ! printf '%s\n' "$actual" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.
     fail "invalid iOS version: $actual"
 fi
 if [ -n "$requested" ] && [ "$requested" != "$actual" ]; then
-    staged_project="$project.tmp.$$"
-    trap 'rm -f "$staged_project"' EXIT HUP INT TERM
-    if ! ruby -e '
-      source, previous, requested, output = ARGV
-      text = File.read(source)
-      current = "MARKETING_VERSION = #{previous};"
-      replacement = "MARKETING_VERSION = #{requested};"
-      abort "MARKETING_VERSION entry was not found" unless text.include?(current)
-      File.write(output, text.gsub(current, replacement))
-    ' "$project" "$actual" "$requested" "$staged_project" 2>>"$log"; then
-        fail "could not update iOS MARKETING_VERSION to $requested"
-    fi
-    mv "$staged_project" "$project"
-    trap - EXIT HUP INT TERM
-    printf 'iOS MARKETING_VERSION: %s -> %s\n' "$actual" "$requested" >>"$log"
-    actual="$requested"
-fi
-if ! SRCROOT="$ios" "$ios/Scripts/increment_build_number.sh" >>"$log" 2>&1; then
-    fail "could not increment the iOS build number"
+    fail "VERSION must match the prepared component version; builds do not edit version files" 2
 fi
 if ! build_number="$(
     ruby -e '

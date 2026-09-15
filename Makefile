@@ -6,7 +6,7 @@ SHELL := /bin/sh
 	build-macos-debug build-macos-release \
 	build-backend-release prepare-release release-check
 
-RELEASE ?= 0.9.0
+RELEASE ?= 0.9.9
 
 help:
 	@printf '%s\n' \

@@ -12,6 +12,10 @@ final class ReaderTextSearch {
     private ReaderTextSearch() {
     }
 
+    static long startOffset(boolean fromBeginning, long readingOffset, long fileSize) {
+        return fromBeginning ? 0L : Math.max(0L, Math.min(readingOffset, fileSize));
+    }
+
     static Batch find(File file, String encoding, String query, long startOffset,
                       long endOffset, int segmentBytes, int resultLimit) throws IOException {
         Charset charset = Charset.forName(encoding == null ? "UTF-8" : encoding);

@@ -158,6 +158,7 @@ public class MainActivity extends Activity {
     private boolean readerMenusOpen;
     private boolean seekTracking;
     private boolean searchOpen;
+    private boolean searchFromBeginning;
     private boolean settingsOpen;
     private boolean settingsOpenedFromLibrary;
     private int currentSettingsTab = SETTINGS_GENERAL;
@@ -204,6 +205,10 @@ public class MainActivity extends Activity {
     private LinearLayout readerRoot;
     private AccessibleScrollView readerScroll;
     private ReaderPageTextView readerText;
+    private LinearLayout libraryList;
+    private TextView librarySubtitle;
+    private final BookImportDeduplicator importDeduplicator = new BookImportDeduplicator();
+    private final List<PendingBookImport> pendingBookImports = new ArrayList<>();
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
     private TextView pageIndicator;
@@ -425,6 +430,7 @@ public class MainActivity extends Activity {
         subtitle.setTextColor(muted);
         subtitle.setPadding(0, dp(5), 0, 0);
         heading.addView(subtitle);
+        librarySubtitle = subtitle;
         header.addView(heading, new LinearLayout.LayoutParams(0, dp(68), 1));
 
         ImageButton add = makeIconButton();
@@ -457,7 +463,7 @@ public class MainActivity extends Activity {
         header.addView(settings, settingsLp);
         root.addView(header);
 
-        if (books.isEmpty()) {
+        if (books.isEmpty() && pendingBookImports.isEmpty()) {
             LinearLayout empty = new LinearLayout(this);
             empty.setOrientation(LinearLayout.VERTICAL);
             empty.setGravity(Gravity.CENTER);
@@ -502,11 +508,10 @@ public class MainActivity extends Activity {
             root.addView(empty, emptyLp);
         } else {
             LinearLayout list = new LinearLayout(this);
+            libraryList = list;
             list.setOrientation(LinearLayout.VERTICAL);
             list.setPadding(0, dp(18), 0, dp(8));
-            for (Book book : books) {
-                list.addView(makeBookRow(book));
-            }
+            renderLibraryBooks();
             ScrollView scroll = new ScrollView(this);
             scroll.addView(list);
             root.addView(scroll, new LinearLayout.LayoutParams(
@@ -537,6 +542,64 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
 
         setContentView(root);
+    }
+
+    private void renderLibraryBooks() {
+        if (libraryList == null) return;
+        libraryList.removeAllViews();
+        Set<Long> shown = new HashSet<>();
+        int unfinished = 0;
+        for (PendingBookImport entry : pendingBookImports) {
+            if (entry.canOpen() && books.contains(entry.book)) {
+                libraryList.addView(makeBookRow(entry.book));
+                shown.add(entry.book.id);
+            } else {
+                if (entry.isPending()) unfinished++;
+                libraryList.addView(makePendingImportRow(entry));
+            }
+        }
+        for (Book book : books) {
+            if (!shown.contains(book.id)) libraryList.addView(makeBookRow(book));
+        }
+        if (librarySubtitle != null) {
+            librarySubtitle.setText(books.size() + " 本本地书籍"
+                    + (unfinished > 0 ? " · " + unfinished + " 本待完成导入" : ""));
+        }
+    }
+
+    private View makePendingImportRow(PendingBookImport entry) {
+        boolean dark = isDarkTheme(appTheme());
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(18), dp(24), dp(18), dp(24));
+        UiKit.styleCard(this, row, dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE, 22, 1);
+        TextView title = new TextView(this);
+        title.setText(entry.title);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        UiKit.styleTitle(title, textColor(appTheme()), 18);
+        row.addView(title);
+        TextView status = new TextView(this);
+        status.setText(entry.statusText());
+        status.setTextColor(dark ? UiKit.DARK_MUTED : UiKit.LIGHT_MUTED);
+        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        status.setPadding(0, dp(8), 0, 0);
+        row.addView(status);
+        row.setAlpha(0.55f);
+        row.setEnabled(false);
+        row.setClickable(false);
+        row.setLongClickable(false);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(12);
+        row.setLayoutParams(lp);
+        return row;
+    }
+
+    private void refreshImportLibrary() {
+        if (activityDestroyed || currentBook != null || settingsOpen || searchOpen || catalogOpen) return;
+        if (libraryList != null && libraryList.isAttachedToWindow()) renderLibraryBooks();
+        else showLibrary();
     }
 
     private View makeBookRow(Book book) {
@@ -1021,6 +1084,7 @@ public class MainActivity extends Activity {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         startActivityForResult(intent, PICK_TXT_REQUEST);
     }
 
@@ -1028,33 +1092,94 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PICK_TXT_REQUEST && resultCode == RESULT_OK && data != null) {
-            addBookFromUri(data.getData());
+            List<Uri> selected = new ArrayList<>();
+            android.content.ClipData clips = data.getClipData();
+            if (clips != null) {
+                for (int i = 0; i < clips.getItemCount(); i++) selected.add(clips.getItemAt(i).getUri());
+            } else {
+                selected.add(data.getData());
+            }
+            try {
+                addBooksFromUris(BookImportPolicy.selection(selected));
+            } catch (IllegalArgumentException error) {
+                Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+            }
         }
     }
 
-    private void addBookFromUri(Uri uri) {
-        if (uri == null) return;
-        Toast.makeText(this, "正在导入 TXT…", Toast.LENGTH_SHORT).show();
+    private void addBooksFromUris(List<Uri> uris) {
+        if (uris.isEmpty()) return;
+        List<File> existingFiles = new ArrayList<>();
+        for (Book book : books) existingFiles.add(new File(book.path));
+        List<PendingBookImport> batch = new ArrayList<>();
+        for (int i = 0; i < uris.size(); i++) {
+            batch.add(new PendingBookImport("待导入书籍 " + (i + 1)));
+        }
+        pendingBookImports.addAll(0, batch);
+        refreshImportLibrary();
         libraryExecutor.execute(() -> {
-            Book imported = null;
-            Exception error = null;
-            try {
-                imported = prepareBookImport(uri);
-            } catch (Exception exception) {
-                error = exception;
-            }
-            Book readyBook = imported;
-            Exception finalError = error;
-            if (activityDestroyed) {
-                discardPreparedBook(readyBook);
-                return;
-            }
-            mainHandler.post(() -> {
-                if (activityDestroyed) {
-                    discardPreparedBook(readyBook);
-                    return;
+            int added = 0;
+            int duplicates = 0;
+            int failed = 0;
+            for (int i = 0; i < uris.size() && !activityDestroyed; i++) {
+                PendingBookImport entry = batch.get(i);
+                Uri uri = uris.get(i);
+                String title = null;
+                try { title = queryDisplayName(uri); } catch (Exception ignored) { }
+                String displayTitle = title;
+                mainHandler.post(() -> {
+                    if (!activityDestroyed) {
+                        entry.start(displayTitle);
+                        refreshImportLibrary();
+                    }
+                });
+                try {
+                    Book imported = prepareBookImport(uri, title, existingFiles);
+                    if (activityDestroyed) {
+                        discardPreparedBook(imported);
+                        return;
+                    }
+                    added++;
+                    Book readyBook = imported;
+                    mainHandler.post(() -> {
+                        if (activityDestroyed) {
+                            discardPreparedBook(readyBook);
+                            return;
+                        }
+                        books.add(0, readyBook);
+                        saveBooks();
+                        entry.complete(readyBook);
+                        if (isAutoTocEnabled()) generateTocInBackground(readyBook, false);
+                        refreshImportLibrary();
+                    });
+                } catch (BookImportDeduplicator.DuplicateBookException duplicate) {
+                    duplicates++;
+                    mainHandler.post(() -> {
+                        if (!activityDestroyed) {
+                            entry.skipDuplicate();
+                            refreshImportLibrary();
+                        }
+                    });
+                } catch (Exception error) {
+                    failed++;
+                    mainHandler.post(() -> {
+                        if (!activityDestroyed) {
+                            entry.complete(null);
+                            refreshImportLibrary();
+                        }
+                    });
                 }
-                finishBookImport(readyBook, finalError);
+            }
+            int totalAdded = added;
+            int totalDuplicates = duplicates;
+            int totalFailed = failed;
+            mainHandler.post(() -> {
+                if (!activityDestroyed) {
+                    pendingBookImports.removeAll(batch);
+                    refreshImportLibrary();
+                    Toast.makeText(this, "已添加 " + totalAdded + " 本，重复 " + totalDuplicates
+                            + " 本，失败 " + totalFailed + " 本", Toast.LENGTH_LONG).show();
+                }
             });
         });
     }
@@ -1064,12 +1189,11 @@ public class MainActivity extends Activity {
         boolean ignored = new File(book.path).delete();
     }
 
-    private Book prepareBookImport(Uri uri) throws Exception {
-        String title = queryDisplayName(uri);
+    private Book prepareBookImport(Uri uri, String title, List<File> existingFiles) throws Exception {
         if (title == null || title.trim().isEmpty()) {
             title = "book-" + System.currentTimeMillis() + ".txt";
         }
-        long id = System.currentTimeMillis();
+        long id = BookImportPolicy.nextId();
         File directory = new File(getFilesDir(), "books");
         if (!directory.exists() && !directory.mkdirs()) {
             throw new IllegalStateException("Cannot create book directory");
@@ -1088,6 +1212,9 @@ public class MainActivity extends Activity {
                 }
                 output.flush();
             }
+            if (importDeduplicator.isDuplicate(temporary, existingFiles)) {
+                throw new BookImportDeduplicator.DuplicateBookException();
+            }
             if (!temporary.renameTo(target)) {
                 throw new IOException("Cannot publish imported TXT file");
             }
@@ -1103,27 +1230,18 @@ public class MainActivity extends Activity {
         book.author = "";
         book.path = target.getAbsolutePath();
         book.fileSize = target.length();
-        book.encoding = detectEncoding(target);
+        try {
+            book.encoding = detectEncoding(target);
+        } catch (Exception error) {
+            boolean ignored = target.delete();
+            throw error;
+        }
         book.offset = 0L;
         book.progress = 0f;
         book.pageMode = true;
         book.updatedAt = System.currentTimeMillis();
+        importDeduplicator.accepted(target);
         return book;
-    }
-
-    private void finishBookImport(Book book, Exception error) {
-        if (error != null || book == null) {
-            String message = error == null ? "未知错误" : error.getMessage();
-            Toast.makeText(this, "添加失败：" + message, Toast.LENGTH_LONG).show();
-            return;
-        }
-        books.add(0, book);
-        saveBooks();
-        if (isAutoTocEnabled()) generateTocInBackground(book, false);
-        if (currentBook == null && !settingsOpen && !searchOpen && !catalogOpen) {
-            showLibrary();
-        }
-        Toast.makeText(this, "已添加：" + book.title, Toast.LENGTH_SHORT).show();
     }
 
     private void openBook(Book book) {
@@ -1276,6 +1394,7 @@ public class MainActivity extends Activity {
         applyReaderSafePadding(readingFontSize());
 
         readerText = new ReaderPageTextView(this);
+        readerText.setOnSelectionStarted(this::disableAutoPage);
         readerText.setTextColor(fg);
         readerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, readingFontSize());
         readerText.setTypeface(readerTypeface(readingFontFamily()));
@@ -1304,6 +1423,7 @@ public class MainActivity extends Activity {
                 }
                 return true;
             }
+            if (readerText.handleSelectionTouch(event, v)) return true;
             if (action == MotionEvent.ACTION_DOWN) {
                 touchStartX = event.getX();
                 touchStartY = event.getY();
@@ -1575,6 +1695,7 @@ public class MainActivity extends Activity {
         searchOpen = true;
         temporarySearchReading = false;
         searchSession = null;
+        searchFromBeginning = false;
         showSearchPage();
     }
 
@@ -3156,20 +3277,6 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(bg);
         root.setPadding(dp(20), statusBarHeight() + dp(16), dp(20), navigationBarHeight() + dp(12));
 
-        TextView pageTitle = new TextView(this);
-        pageTitle.setText("书内搜索");
-        UiKit.styleTitle(pageTitle, fg, 28);
-        root.addView(pageTitle);
-
-        TextView pageSubtitle = new TextView(this);
-        pageSubtitle.setText(book.title);
-        pageSubtitle.setSingleLine(true);
-        pageSubtitle.setEllipsize(TextUtils.TruncateAt.END);
-        pageSubtitle.setTextColor(muted);
-        pageSubtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        pageSubtitle.setPadding(0, dp(6), 0, dp(18));
-        root.addView(pageSubtitle);
-
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
         ImageButton back = makeIconButton();
@@ -3208,8 +3315,16 @@ public class MainActivity extends Activity {
         top.addView(submit, submitLp);
         root.addView(top);
 
+        LinearLayout scope = new LinearLayout(this);
+        scope.setPadding(dp(3), dp(3), dp(3), dp(3));
+        scope.setBackground(UiKit.rounded(this, surfaceVariant, 16));
+        LinearLayout.LayoutParams scopeLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        scopeLp.topMargin = dp(12);
+        root.addView(scope, scopeLp);
+
         TextView status = new TextView(this);
-        status.setText("输入关键词后，从当前阅读位置开始向后搜索");
+        status.setText(searchScopeHint());
         status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         status.setTextColor(muted);
         status.setPadding(0, dp(10), 0, dp(8));
@@ -3228,6 +3343,35 @@ public class MainActivity extends Activity {
         resultScroll.addView(results);
         root.addView(resultScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        Button[] scopeButtons = {makeButton("从当前页面往后"), makeButton("从头开始")};
+        Runnable renderScope = () -> {
+            for (int i = 0; i < scopeButtons.length; i++) {
+                boolean selected = searchFromBeginning == (i == 1);
+                Button button = scopeButtons[i];
+                button.setContentDescription(button.getText() + (selected ? "，已选择" : "，未选择"));
+                UiKit.styleButton(this, button, selected ? accentContainer : Color.TRANSPARENT,
+                        selected ? accent : fg, 14);
+            }
+        };
+        for (int i = 0; i < scopeButtons.length; i++) {
+            boolean fromBeginning = i == 1;
+            Button button = scopeButtons[i];
+            button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            scope.addView(button, new LinearLayout.LayoutParams(0, dp(48), 1));
+            button.setOnClickListener(v -> {
+                if (searchFromBeginning == fromBeginning) return;
+                searchFromBeginning = fromBeginning;
+                searchRequestId++;
+                searchSession = null;
+                results.removeAllViews();
+                continueFromStart.setVisibility(View.GONE);
+                resultScroll.scrollTo(0, 0);
+                status.setText(searchScopeHint());
+                renderScope.run();
+            });
+        }
+        renderScope.run();
 
         View.OnClickListener runSearch = v -> startBookSearch(
                 input.getText().toString(), results, status, continueFromStart, book);
@@ -3274,10 +3418,16 @@ public class MainActivity extends Activity {
             continueFromStart.setVisibility(View.GONE);
             return;
         }
-        long startOffset = Math.max(0L, Math.min(book.offset, book.fileSize));
+        long startOffset = ReaderTextSearch.startOffset(searchFromBeginning,
+                book.offset, book.fileSize);
         searchSession = new SearchSession(book, keyword, startOffset, book.fileSize);
         results.removeAllViews();
         loadNextSearchBatch(results, status, continueFromStart);
+    }
+
+    private String searchScopeHint() {
+        return searchFromBeginning ? "输入关键词后，从书籍开头开始搜索"
+                : "输入关键词后，从当前页面开始向后搜索";
     }
 
     private void continueSearchFromBeginning(LinearLayout results, TextView status,

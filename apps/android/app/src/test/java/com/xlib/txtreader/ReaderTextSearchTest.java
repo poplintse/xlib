@@ -19,6 +19,27 @@ public class ReaderTextSearchTest {
     public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void selectsAndClampsSearchOrigin() {
+        assertEquals(0L, ReaderTextSearch.startOffset(true, 50L, 100L));
+        assertEquals(50L, ReaderTextSearch.startOffset(false, 50L, 100L));
+        assertEquals(100L, ReaderTextSearch.startOffset(false, 150L, 100L));
+        assertEquals(0L, ReaderTextSearch.startOffset(false, -1L, 100L));
+    }
+
+    @Test
+    public void beginningIncludesEarlierMatchesWhileCurrentPageExcludesThem() throws Exception {
+        File file = write("scope.txt", "目标前文目标后文目标", StandardCharsets.UTF_8);
+        long current = "目标前文".getBytes(StandardCharsets.UTF_8).length;
+        long last = "目标前文目标后文".getBytes(StandardCharsets.UTF_8).length;
+        ReaderTextSearch.Batch forward = ReaderTextSearch.find(file, "UTF-8", "目标",
+                ReaderTextSearch.startOffset(false, current, file.length()), file.length(), 7, 20);
+        ReaderTextSearch.Batch beginning = ReaderTextSearch.find(file, "UTF-8", "目标",
+                0L, file.length(), 7, 20);
+        assertEquals(List.of(current, last), forward.offsets);
+        assertEquals(List.of(0L, current, last), beginning.offsets);
+    }
+
+    @Test
     public void findsQueryAcrossDecodedSegmentBoundary() throws Exception {
         File file = write("cross.txt", "0123目标内容89", StandardCharsets.UTF_8);
         long expected = "0123".getBytes(StandardCharsets.UTF_8).length;

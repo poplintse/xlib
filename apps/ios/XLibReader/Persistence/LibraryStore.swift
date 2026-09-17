@@ -1,6 +1,11 @@
 import AppleShared
 import Foundation
 
+enum BookmarkError: LocalizedError {
+    case duplicatePosition
+    var errorDescription: String? { "当前位置已有书签" }
+}
+
 actor LibraryStore {
     struct Paths: Sendable {
         let root: URL
@@ -112,6 +117,9 @@ actor LibraryStore {
 
     func addBookmark(bookID: UUID, offset: Int64, excerpt: String) throws -> Bookmark {
         try prepareIfNeeded()
+        guard !bookmarkSnapshot.bookmarks.contains(where: { $0.bookID == bookID && $0.offset == offset }) else {
+            throw BookmarkError.duplicatePosition
+        }
         let bookmark = Bookmark(id: UUID(), bookID: bookID, offset: offset, excerpt: excerpt, createdAt: .now)
         bookmarkSnapshot.bookmarks.append(bookmark)
         try persistBookmarks()

@@ -174,6 +174,8 @@ final class ReaderCoordinator {
     var errorMessage: String?
     var menuVisible = false
     var autoPaging = false
+    var interactionEnabled = true
+    var readingBook: Book { book }
     private(set) var lastTurnDirection: ReaderDirection = .forward
     private(set) var completedPageTurns = 0
     private let engine = ReaderEngine()
@@ -217,12 +219,16 @@ final class ReaderCoordinator {
             lineSpacing: settings.lineSpacing,
             fontName: settings.fontName
         )
-        guard nextSpec != spec else { return }
+        if nextSpec == spec, !(isLoading && loadTask == nil) {
+            schedulePageMaintenance()
+            return
+        }
         spec = nextSpec
         rebuildWindow(at: offset, progressChange: nil)
     }
 
     func rebuild(at target: Int64) {
+        guard interactionEnabled else { return }
         requestedProgress = nil
         rebuildWindow(at: target, progressChange: .local(.now))
     }
@@ -234,6 +240,7 @@ final class ReaderCoordinator {
 
     private func rebuildWindow(at target: Int64, progressChange: RebuildProgressChange?) {
         guard let spec else { return }
+        let previousOffset = offset
         sessionGeneration += 1
         let generation = sessionGeneration
         loadTask?.cancel()
@@ -269,9 +276,14 @@ final class ReaderCoordinator {
                 if let progressChange {
                     switch progressChange {
                     case .local(let changedAt):
-                        self.commitProgressChange(changedAt: changedAt, publishesEvent: true)
+                        if self.offset != previousOffset {
+                            self.commitProgressChange(changedAt: changedAt, publishesEvent: true)
+                        }
                     case .remote(let changedAt):
-                        self.commitProgressChange(changedAt: changedAt, publishesEvent: false)
+                        self.lastProgressDate = changedAt
+                        self.book.offset = target
+                        self.book.updatedAt = changedAt
+                        self.scheduleProgressSave(changedAt: changedAt)
                     }
                 }
                 self.schedulePageMaintenance()
@@ -297,6 +309,9 @@ final class ReaderCoordinator {
     }
 
     private func turn(_ direction: ReaderDirection) -> Bool {
+        guard interactionEnabled else { return false }
+        requestedProgress = nil
+        guard !isLoading else { return false }
         guard !menuVisible else {
             ReaderTurnDiagnostics.log(
                 "turn rejected direction=\(ReaderTurnDiagnostics.directionName(direction)) reason=menu"
@@ -324,6 +339,7 @@ final class ReaderCoordinator {
     }
 
     func seek(progress: Double) {
+        guard interactionEnabled else { return }
         let target = min(1, max(0, progress))
         requestedProgress = target
         rebuildWindow(at: Int64(Double(book.fileSize) * target), progressChange: .local(.now))
@@ -334,6 +350,7 @@ final class ReaderCoordinator {
     }
 
     func toggleAutoPaging(seconds: Int) {
+        guard interactionEnabled else { return }
         autoPaging.toggle()
         autoTask?.cancel()
         guard autoPaging else { return }
@@ -349,14 +366,22 @@ final class ReaderCoordinator {
     func flush() async {
         saveTask?.cancel()
         guard persistsProgress else { return }
-        try? await store.saveProgress(bookID: book.id, offset: offset, updatedAt: lastProgressDate)
+        try? await store.saveProgress(bookID: book.id, offset: book.offset, updatedAt: lastProgressDate)
     }
 
     func stop() {
+        // A pushed settings/search/catalog screen cancels this view's work.
+        // Returning with the same layout must still restart an interrupted load.
+        sessionGeneration += 1
         loadTask?.cancel()
+        loadTask = nil
         maintenanceTask?.cancel()
+        maintenanceTask = nil
         saveTask?.cancel()
         autoTask?.cancel()
+        autoTask = nil
+        autoPaging = false
+        requestedProgress = nil
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
@@ -434,9 +459,9 @@ final class ReaderCoordinator {
     private func scheduleProgressSave(changedAt: Date) {
         guard persistsProgress else { return }
         saveTask?.cancel()
-        let value = offset
+        let value = book.offset
         saveTask = Task { [store, book] in
-            try? await Task.sleep(for: .milliseconds(650))
+            do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
             try? await store.saveProgress(bookID: book.id, offset: value, updatedAt: changedAt)
         }
     }

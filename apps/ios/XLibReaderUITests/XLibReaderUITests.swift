@@ -2,9 +2,115 @@ import XCTest
 
 final class XLibReaderUITests: XCTestCase {
     @MainActor
-    func testLaunchesLibrary() {
+    private func launchApp(scenario: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchEnvironment["XLIB_UI_TEST_ID"] = UUID().uuidString
+        app.launchEnvironment["XLIB_UI_TEST_SCENARIO"] = scenario
         app.launch()
+        return app
+    }
+
+    @MainActor
+    private func openFixtureReader(_ app: XCUIApplication) {
+        let book = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "能力验收")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 10))
+        book.tap()
+        showReaderMenu(app)
+    }
+
+    @MainActor
+    private func showReaderMenu(_ app: XCUIApplication) {
+        let progress = app.buttons["reader.progressButton"]
+        if !progress.exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.5)).tap()
+        }
+        XCTAssertTrue(progress.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testBookmarkDuplicateAndSingleDeletion() {
+        let app = launchApp(scenario: "reading")
+        openFixtureReader(app)
+        app.buttons["目录"].tap()
+        let add = app.buttons["添加当前书签"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.tap()
+        XCTAssertTrue(app.staticTexts["书签已保存"].waitForExistence(timeout: 5))
+        add.tap()
+        XCTAssertTrue(app.staticTexts["当前位置已有书签"].waitForExistence(timeout: 5))
+        let marks = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "catalog.bookmark."))
+        XCTAssertEqual(marks.count, 1)
+        marks.firstMatch.press(forDuration: 1)
+        let delete = app.buttons["删除书签"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "还没有书签")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(marks.count, 0)
+    }
+
+    @MainActor
+    func testSearchTemporaryReadingPreservesFormalProgress() {
+        let app = launchApp(scenario: "reading")
+        openFixtureReader(app)
+        let original = app.buttons["reader.progressButton"].value as? String
+        app.buttons["搜索当前书籍"].tap()
+        let query = app.textFields["search.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        query.tap()
+        query.typeText("NEEDLE")
+        app.buttons["开始搜索"].tap()
+        let status = app.staticTexts["search.status"]
+        expectation(for: NSPredicate(format: "label CONTAINS %@", "30 条结果"), evaluatedWith: status)
+        waitForExpectations(timeout: 10)
+        let result = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.result.")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        result.tap()
+        showReaderMenu(app)
+        XCTAssertNotEqual(app.buttons["reader.progressButton"].value as? String, original)
+        app.buttons["回到书架"].tap()
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        app.buttons["返回阅读"].tap()
+        showReaderMenu(app)
+        XCTAssertEqual(app.buttons["reader.progressButton"].value as? String, original)
+        app.buttons["回到书架"].tap()
+        openFixtureReader(app)
+        XCTAssertEqual(app.buttons["reader.progressButton"].value as? String, original)
+    }
+
+    @MainActor
+    func testCloudDeletionConfirmationAndLocalDataSurvive() {
+        let app = launchApp(scenario: "sync")
+        openFixtureReader(app)
+        let original = app.buttons["reader.progressButton"].value as? String
+        app.buttons["目录"].tap()
+        let add = app.buttons["添加当前书签"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.tap()
+        let delete = app.buttons["catalog.deleteCloudProgress"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        let confirm = app.buttons["删除本书云端进度"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        if app.buttons["取消"].exists {
+            app.buttons["取消"].tap()
+        } else {
+            // iOS may present this as a popover; tapping outside is its cancel action.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.1)).tap()
+        }
+        XCTAssertFalse(confirm.exists)
+        delete.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        XCTAssertTrue(app.staticTexts["本书云端进度已删除，本次阅读暂停上传。"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "catalog.bookmark.")).count, 1)
+        app.buttons["返回阅读"].tap()
+        showReaderMenu(app)
+        XCTAssertEqual(app.buttons["reader.progressButton"].value as? String, original)
+    }
+
+    @MainActor
+    func testLaunchesLibrary() {
+        let app = launchApp()
         let headerExists = app.staticTexts["我的书架"].waitForExistence(timeout: 10)
         let addButtonExists = app.buttons["添加 TXT"].waitForExistence(timeout: 10)
         XCTAssertTrue(headerExists)
@@ -13,8 +119,7 @@ final class XLibReaderUITests: XCTestCase {
 
     @MainActor
     func testOpensNativeGlassSettingsHierarchy() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
         let settings = app.buttons["常规设置"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
@@ -34,8 +139,7 @@ final class XLibReaderUITests: XCTestCase {
 
     @MainActor
     func testProgressSyncUsesEditableDefaultServerAddress() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
         XCTAssertTrue(app.staticTexts["我的书架"].waitForExistence(timeout: 5))
 
         app.buttons["常规设置"].tap()
@@ -60,8 +164,7 @@ final class XLibReaderUITests: XCTestCase {
 
     @MainActor
     func testSyncEmailAutoSavesWhenLeavingField() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
         app.buttons["常规设置"].tap()
         app.buttons["settings.progressSync"].tap()
 
@@ -84,8 +187,7 @@ final class XLibReaderUITests: XCTestCase {
 
     @MainActor
     func testProgressSyncUsesStatusAndCombinedSettingsCards() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
         XCTAssertTrue(app.staticTexts["我的书架"].waitForExistence(timeout: 5))
 
         app.buttons["常规设置"].tap()
@@ -130,8 +232,7 @@ final class XLibReaderUITests: XCTestCase {
 
     @MainActor
     func testNumericSettingOpensSavePanel() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
         let settings = app.buttons["常规设置"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
@@ -165,8 +266,7 @@ final class XLibReaderUITests: XCTestCase {
 
     @MainActor
     func testButtonFramesAcceptEdgeTaps() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let settings = app.buttons["常规设置"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
@@ -181,8 +281,7 @@ final class XLibReaderUITests: XCTestCase {
 
     @MainActor
     func testSettingsPagesSupportNativeEdgeSwipeBack() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         XCTAssertTrue(app.buttons["常规设置"].waitForExistence(timeout: 5))
         app.buttons["常规设置"].tap()

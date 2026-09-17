@@ -22,12 +22,12 @@
 
 | 差异 | 用户已确认的决定 | 当前实现跟踪 |
 |---|---|---|
-| 同步裁决 | [0002](0002-latest-reading-time-wins.md) 最近阅读时间优先，提示当前进度 | 服务和 Android 已实现；iOS 提示及时间生成待完善 |
-| 阅读前与恢复 | [0003](0003-pre-reading-progress-comparison.md) 先比较定位，再正式阅读 | 两端生命周期符合性待验证 |
-| 配置应用 | [0004](0004-sync-configuration-auto-apply.md) 首次手动、之后有效修改自动应用 | Android 已补齐；iOS 符合性待验证 |
-| 上传范围 | [0005](0005-sync-only-current-reading-book.md) 仅当前正式阅读书籍 | iOS 全书库上传待移除 |
-| 搜索 | [0006](0006-search-case-insensitive.md)、[0007](0007-search-non-overlapping-matches.md)、[0012](0012-search-results-in-batches.md)、[0013](0013-search-wrap-with-user-choice.md)、[0014](0014-search-query-character-count.md) | Android 已补齐；iOS 续查/回绕待完善 |
-| 书签 | [0008](0008-bookmark-position-uniqueness.md) 同位置唯一；[0009](0009-delete-individual-bookmark.md) 单条删除 | Android 已补齐；iOS 补去重 |
-| 云端删除 | [0010](0010-delete-cloud-progress-per-book.md) 仅单书，删除后会话暂停；[0011](0011-no-sync-identity-deletion.md) 不提供身份删除 | Android 入口及会话行为已实现；iOS 仍仅有传输层 |
+| 同步裁决 | [0002](0002-latest-reading-time-wins.md) 最近阅读时间优先，提示当前进度 | 服务及 Android/iOS 已实现；真实跨设备验收待执行 |
+| 阅读前与恢复 | [0003](0003-pre-reading-progress-comparison.md) 先比较定位，再正式阅读 | 两端已实现阶段门控并有单元测试；真机生命周期待验收 |
+| 配置应用 | [0004](0004-sync-configuration-auto-apply.md) 首次手动、之后有效修改自动应用 | Android/iOS 已补齐并有协调器回归测试 |
+| 上传范围 | [0005](0005-sync-only-current-reading-book.md) 仅当前正式阅读书籍 | iOS 全书库上传已移除，仅活动正式阅读书籍上传 |
+| 搜索 | [0006](0006-search-case-insensitive.md)、[0007](0007-search-non-overlapping-matches.md)、[0012](0012-search-results-in-batches.md)、[0013](0013-search-wrap-with-user-choice.md)、[0014](0014-search-query-character-count.md) | Android/iOS 已补齐续查、手动回绕及边界测试 |
+| 书签 | [0008](0008-bookmark-position-uniqueness.md) 同位置唯一；[0009](0009-delete-individual-bookmark.md) 单条删除 | Android/iOS 已补齐去重及单条删除，iOS 重复提示已接入页面 |
+| 云端删除 | [0010](0010-delete-cloud-progress-per-book.md) 仅单书，删除后会话暂停；[0011](0011-no-sync-identity-deletion.md) 不提供身份删除 | Android/iOS 入口、串行删除及会话暂停/重开恢复已实现 |
 
 具体证据在各能力 Source 与客户端文档，完整缺口和检查状态只在 [CURRENT](../../CURRENT.md) 汇总。尚未明确的是自动翻页跨端范围、章节一致性、空文件/重复导入/历史重复书签处理、量化性能目标、新端同步范围及更强认证方案。

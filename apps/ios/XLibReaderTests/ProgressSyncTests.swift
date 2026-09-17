@@ -4,6 +4,198 @@ import XCTest
 
 final class ProgressSyncTests: XCTestCase {
     @MainActor
+    func testFailedPullKeepsLocalReadingAvailableWithoutUploading() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let spy = SyncAPISpy(pullItems: [])
+        let coordinator = makeCoordinator(fixture: fixture, api: await spy.client(), syncInterval: .milliseconds(10))
+        await coordinator.start()
+        await spy.failPull()
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL)
+        XCTAssertFalse(coordinator.isPreparingReading(bookID: fixture.book.id))
+        coordinator.recordLocalProgress(bookID: fixture.book.id, offset: 200, changedAt: .now)
+        await coordinator.appEnteredBackground()
+        await coordinator.endReading(bookID: fixture.book.id)
+        let counts = await spy.counts()
+        XCTAssertEqual(counts.sync, 0)
+    }
+
+    @MainActor
+    func testFailedDeletionDoesNotPauseOrClearLocalReadingSession() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let spy = SyncAPISpy(pullItems: [])
+        let coordinator = makeCoordinator(fixture: fixture, api: await spy.client())
+        await coordinator.start()
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL)
+        await spy.failDeletion()
+        let deleted = await coordinator.deleteCloudProgress(book: fixture.book, fileURL: fixture.fileURL)
+        XCTAssertFalse(deleted)
+        XCTAssertNotNil(coordinator.lastFailureMessage)
+        _ = await coordinator.syncRefresh()
+        await coordinator.appEnteredBackground()
+        let counts = await spy.counts()
+        XCTAssertEqual(counts.sync, 1)
+    }
+
+    @MainActor
+    func testPositioningGatesUploadsAndDoesNotChangeReadingTime() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let spy = SyncAPISpy(pullItems: [])
+        let coordinator = makeCoordinator(fixture: fixture, api: await spy.client(), syncInterval: .milliseconds(15))
+        await coordinator.start()
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL, positionReady: false)
+        coordinator.recordLocalProgress(bookID: fixture.book.id, offset: 900, changedAt: .now)
+        try await Task.sleep(for: .milliseconds(60))
+        let before = await spy.counts()
+        XCTAssertEqual(before.sync, 0)
+        coordinator.readingPositionReady(bookID: fixture.book.id)
+        await coordinator.appEnteredBackground()
+        let items = await spy.uploadedItems()
+        XCTAssertEqual(items.last?.offset, fixture.book.offset)
+        XCTAssertEqual(items.last?.readAtMs, milliseconds(fixture.book.updatedAt))
+    }
+
+    @MainActor
+    func testRemoteChoiceWaitsForPositionAndShowsBothProgressValues() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let stateStore = SyncStateStore(root: fixture.stateRoot)
+        let key = try await stateStore.identity(for: fixture.book, fileURL: fixture.fileURL).key
+        let remote = Self.remote(key: key, offset: 50, readAtMs: milliseconds(fixture.book.updatedAt) + 10,
+                                 device: .init(deviceId: UUID(), deviceName: "另一设备", platform: "ios"), version: "new")
+        let spy = SyncAPISpy(pullItems: [remote])
+        let coordinator = makeCoordinator(fixture: fixture, api: await spy.client(), stateStore: stateStore)
+        await coordinator.start()
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL)
+        let suggestion = try XCTUnwrap(coordinator.jumpSuggestion)
+        XCTAssertEqual(suggestion.localOffset, 100)
+        XCTAssertTrue(suggestion.message().contains("当前阅读进度"))
+        XCTAssertTrue(suggestion.message().contains("云端阅读进度"))
+        coordinator.resolveJump(useRemote: true)
+        await coordinator.appEnteredBackground()
+        let before = await spy.counts()
+        XCTAssertEqual(before.sync, 0)
+        coordinator.readingPositionReady(bookID: fixture.book.id)
+        await coordinator.appEnteredBackground()
+        let items = await spy.uploadedItems()
+        XCTAssertEqual(items.last?.offset, 50, "更近时间的回读位置也要保留")
+        XCTAssertEqual(items.last?.readAtMs, remote.readAtMs)
+    }
+
+    @MainActor
+    func testOldStartResponseCannotRestoreCredentialsAfterConfigurationChange() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let gate = SyncTestGate()
+        let spy = SyncAPISpy(pullItems: [], startCredentials: fixture.credentials)
+        await spy.setStartGate(gate)
+        let vault = CredentialVaultSpy(initial: nil)
+        let coordinator = makeCoordinator(fixture: fixture, api: await spy.client(), vault: await vault.client())
+        await coordinator.start()
+        let starting = Task { await coordinator.startSync(email: fixture.credentials.email) }
+        await gate.waitUntilEntered()
+        _ = await coordinator.saveConfiguredEmail("changed@example.com")
+        await gate.release()
+        let result = await starting.value
+        XCTAssertFalse(result)
+        XCTAssertFalse(coordinator.isSyncEnabled)
+        XCTAssertEqual(coordinator.configuredEmail, "changed@example.com")
+        let saved = await vault.saved()
+        XCTAssertNil(saved)
+    }
+
+    @MainActor
+    func testOldPullCannotRestoreCloudStateAfterServerChange() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let spy = SyncAPISpy(pullItems: [])
+        let coordinator = makeCoordinator(fixture: fixture, api: await spy.client())
+        await coordinator.start()
+        let gate = SyncTestGate()
+        await spy.setPullGate(gate)
+        let pulling = Task { await coordinator.syncRefresh() }
+        await gate.waitUntilEntered()
+        _ = await coordinator.saveServerAddress("https://new.example.com")
+        await gate.release()
+        let result = await pulling.value
+        XCTAssertFalse(result)
+        XCTAssertFalse(coordinator.isSyncEnabled)
+        XCTAssertNil(coordinator.lastSuccessAt)
+        XCTAssertNil(coordinator.jumpSuggestion)
+    }
+
+    @MainActor
+    func testDeletionWaitsForUploadAndPauseSurvivesRefreshAndConfiguration() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let spy = SyncAPISpy(pullItems: [], startCredentials: fixture.credentials)
+        let coordinator = makeCoordinator(fixture: fixture, api: await spy.client())
+        let readingID = UUID()
+        await coordinator.start()
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL, sessionID: readingID)
+        let gate = SyncTestGate()
+        await spy.setSyncGate(gate)
+        let upload = Task { await coordinator.appEnteredBackground() }
+        await gate.waitUntilEntered()
+        let deleting = Task { await coordinator.deleteCloudProgress(book: fixture.book, fileURL: fixture.fileURL) }
+        try await Task.sleep(for: .milliseconds(20))
+        let before = await spy.events()
+        XCTAssertFalse(before.contains("delete"))
+        await gate.release()
+        await upload.value
+        let deleted = await deleting.value
+        XCTAssertTrue(deleted)
+        let events = await spy.events()
+        XCTAssertEqual(events.suffix(2), ["upload", "delete"])
+        _ = await coordinator.syncRefresh()
+        await coordinator.appEnteredBackground()
+        _ = await coordinator.saveDeviceName("新设备名")
+        _ = await coordinator.startConfiguredSync()
+        await coordinator.appEnteredBackground()
+        let paused = await spy.counts()
+        XCTAssertEqual(paused.sync, 1)
+        await coordinator.endReading(bookID: fixture.book.id)
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL, sessionID: readingID)
+        await coordinator.appEnteredBackground()
+        let sameReading = await spy.counts()
+        XCTAssertEqual(sameReading.sync, 1)
+        await coordinator.endReading(bookID: fixture.book.id)
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL)
+        await coordinator.appEnteredBackground()
+        let reopened = await spy.counts()
+        XCTAssertEqual(reopened.sync, 2)
+    }
+
+    @MainActor
+    func testOfflineRecoveryComparesLatestLocalStateBeforeUploading() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let spy = SyncAPISpy(pullItems: [])
+        let monitor = SyncConnectivityMonitor(started: false, initialOnline: false)
+        let coordinator = ProgressSyncCoordinator(api: await spy.client(), vault: .constant(fixture.credentials),
+            stateStore: SyncStateStore(root: fixture.stateRoot), connectivity: monitor, defaults: fixture.defaults)
+        await coordinator.start()
+        await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL)
+        let readAt = fixture.book.updatedAt.addingTimeInterval(30)
+        coordinator.recordLocalProgress(bookID: fixture.book.id, offset: 250, changedAt: readAt)
+        let gate = SyncTestGate()
+        await spy.setPullGate(gate)
+        monitor.setOnlineForTesting(true)
+        await gate.waitUntilEntered()
+        let before = await spy.counts()
+        XCTAssertEqual(before.sync, 0)
+        coordinator.recordLocalProgress(bookID: fixture.book.id, offset: 300, changedAt: readAt.addingTimeInterval(1))
+        await gate.release()
+        try await Task.sleep(for: .milliseconds(40))
+        let items = await spy.uploadedItems()
+        XCTAssertEqual(items.last?.offset, 300)
+        XCTAssertEqual(items.last?.readAtMs, milliseconds(readAt.addingTimeInterval(1)))
+        await coordinator.endReading(bookID: fixture.book.id)
+    }
+
+    @MainActor
     func testJumpThresholdIsStrictlyGreaterThanPointZeroZeroOnePercent() {
         let localDeviceID = UUID()
         let remoteDevice = SyncDevice(deviceId: UUID(), deviceName: "iPad", platform: "ios")
@@ -334,7 +526,7 @@ final class ProgressSyncTests: XCTestCase {
     }
 
     @MainActor
-    func testScheduledSyncUploadsStoredProgressWithoutAnActiveReader() async throws {
+    func testScheduledSyncNeverUploadsStoredProgressWithoutAnActiveReader() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
         let libraryStore = LibraryStore(root: fixture.root.appending(path: "library"))
@@ -344,7 +536,6 @@ final class ProgressSyncTests: XCTestCase {
         let coordinator = makeCoordinator(
             fixture: fixture,
             api: await spy.client(),
-            libraryStore: libraryStore,
             syncInterval: .milliseconds(20)
         )
 
@@ -352,7 +543,7 @@ final class ProgressSyncTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(60))
 
         let calls = await spy.counts()
-        XCTAssertGreaterThanOrEqual(calls.sync, 1)
+        XCTAssertEqual(calls.sync, 0)
     }
 
     @MainActor
@@ -412,7 +603,6 @@ final class ProgressSyncTests: XCTestCase {
         api: SyncAPIClient,
         vault: SyncCredentialVault? = nil,
         stateStore: SyncStateStore? = nil,
-        libraryStore: LibraryStore? = nil,
         syncInterval: Duration = .seconds(20),
         healthProbeDelays: [Duration] = [.seconds(60)]
     ) -> ProgressSyncCoordinator {
@@ -420,7 +610,6 @@ final class ProgressSyncTests: XCTestCase {
             api: api,
             vault: vault ?? .constant(fixture.credentials),
             stateStore: stateStore ?? SyncStateStore(root: fixture.stateRoot),
-            libraryStore: libraryStore,
             connectivity: SyncConnectivityMonitor(started: false, initialOnline: true),
             defaults: fixture.defaults,
             syncInterval: syncInterval,
@@ -616,6 +805,25 @@ private actor SyncAPISpy {
     private var syncCallCount = 0
     private var requestedEmail: String?
     private var deletedDeviceIDsValue: [UUID] = []
+    private var startGate: SyncTestGate?
+    private var pullGate: SyncTestGate?
+    private var syncGate: SyncTestGate?
+    private var recordedItems: [ProgressSyncRequest.Item] = []
+    private var recordedEvents: [String] = []
+    private var pullFails = false
+    private var deletionFails = false
+
+    func setStartGate(_ gate: SyncTestGate) { startGate = gate }
+    func setPullGate(_ gate: SyncTestGate) { pullGate = gate }
+    func setSyncGate(_ gate: SyncTestGate) { syncGate = gate }
+    func uploadedItems() -> [ProgressSyncRequest.Item] { recordedItems }
+    func events() -> [String] { recordedEvents }
+    func failPull() { pullFails = true }
+    func failDeletion() { deletionFails = true }
+    private func deleteBook() throws {
+        if deletionFails { throw SyncAPIError.http(status: 400, code: "test", message: "删除失败", retryable: false) }
+        recordedEvents.append("delete")
+    }
 
     init(
         pullItems: [RemoteProgressSnapshot],
@@ -638,13 +846,13 @@ private actor SyncAPISpy {
             },
             pullProgress: { [weak self] _ in
                 guard let self else { throw CancellationError() }
-                return await self.pull()
+                return try await self.pull()
             },
             syncProgress: { [weak self] request, _ in
                 guard let self else { throw CancellationError() }
                 return try await self.sync(request)
             },
-            deleteBookProgress: { _, _ in },
+            deleteBookProgress: { [weak self] _, _ in try await self?.deleteBook() },
             listDevices: { [weak self] _ in
                 guard let self else { throw CancellationError() }
                 return await self.listDevices()
@@ -669,9 +877,10 @@ private actor SyncAPISpy {
         deletedDeviceIDsValue
     }
 
-    private func start(_ request: SyncStartRequest) throws -> SyncStartResponse {
+    private func start(_ request: SyncStartRequest) async throws -> SyncStartResponse {
         startCallCount += 1
         requestedEmail = request.email
+        if let startGate { await startGate.enter() }
         guard let credentials = startCredentials else { throw SyncAPIError.invalidResponse }
         return SyncStartResponse(
             token: credentials.token,
@@ -681,8 +890,10 @@ private actor SyncAPISpy {
         )
     }
 
-    private func pull() -> ProgressPullResponse {
+    private func pull() async throws -> ProgressPullResponse {
         pullCallCount += 1
+        if let pullGate { await pullGate.enter() }
+        if pullFails { throw SyncAPIError.transport("test failure") }
         return ProgressPullResponse(serverTimeMs: 2_000_000_000_000, items: pullItems)
     }
 
@@ -694,8 +905,11 @@ private actor SyncAPISpy {
         deletedDeviceIDsValue.append(deviceID)
     }
 
-    private func sync(_ request: ProgressSyncRequest) throws -> ProgressSyncResponse {
+    private func sync(_ request: ProgressSyncRequest) async throws -> ProgressSyncResponse {
         syncCallCount += 1
+        recordedItems.append(contentsOf: request.items)
+        if let syncGate { await syncGate.enter() }
+        recordedEvents.append("upload")
         if let syncError { throw syncError }
         guard let item = request.items.first else {
             return ProgressSyncResponse(serverTimeMs: 2_000_000_000_000, results: [])
@@ -713,6 +927,30 @@ private actor SyncAPISpy {
             serverTimeMs: 2_000_000_000_000,
             results: [.init(decision: "client_kept", timeAdjusted: false, state: state)]
         )
+    }
+}
+
+private actor SyncTestGate {
+    private var entered = false
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func enter() async {
+        entered = true
+        for waiter in entryWaiters { waiter.resume() }
+        entryWaiters = []
+        if !released { await withCheckedContinuation { waiters.append($0) } }
+    }
+
+    func waitUntilEntered() async {
+        if !entered { await withCheckedContinuation { entryWaiters.append($0) } }
+    }
+
+    func release() {
+        released = true
+        for waiter in waiters { waiter.resume() }
+        waiters = []
     }
 }
 

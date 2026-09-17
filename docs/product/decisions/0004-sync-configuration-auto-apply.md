@@ -22,7 +22,7 @@ Android 保存配置后暂停同步，等待手动刷新；iOS 在曾启动同�
 
 ## Consequences
 
-CAP-SYNC-IDENTITY 以本决定为准。Android 已补齐自动应用、最新配置排队合并和旧提示失效测试；iOS 总体方向一致，但会话失效、旧响应隔离及先比较再上传仍需验证。当前状态见能力矩阵，不以文档批准代替实现验收。
+CAP-SYNC-IDENTITY 以本决定为准。Android 已补齐自动应用、最新配置排队合并和旧提示失效测试；iOS 已补齐会话失效、旧响应隔离及先比较再上传，并通过协调器回归测试。当前状态见能力矩阵，不以文档批准代替实现验收。
 
 实施与验收状态见 [CURRENT](../../CURRENT.md)。首次启动失败、撤销设备和 Token 无效的恢复策略不因本决定自动放宽。上传范围以 [Decision 0005](0005-sync-only-current-reading-book.md) 为准。
 

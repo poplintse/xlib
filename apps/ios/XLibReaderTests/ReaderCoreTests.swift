@@ -6,6 +6,74 @@ import XCTest
 @testable import XLibReader
 
 final class ReaderCoreTests: XCTestCase {
+    @MainActor
+    func testReturningWithSameLayoutRestartsInterruptedLoad() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appending(path: "lifecycle.txt")
+        try Data(String(repeating: "阅读生命周期测试。\n", count: 500).utf8).write(to: source)
+        let store = LibraryStore(root: root.appending(path: "library"))
+        let book = try await store.importBook(from: source)
+        let reader = ReaderCoordinator(book: book, store: store)
+        let size = CGSize(width: 320, height: 540)
+        reader.configure(size: size, settings: ReaderSettings())
+        reader.stop()
+        reader.configure(size: size, settings: ReaderSettings())
+        for _ in 0..<400 where reader.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(reader.isLoading)
+        XCTAssertNotNil(reader.page)
+        XCTAssertNil(reader.errorMessage)
+        XCTAssertEqual(reader.readingBook.updatedAt, book.updatedAt)
+        reader.toggleAutoPaging(seconds: 60)
+        XCTAssertTrue(reader.autoPaging)
+        reader.stop()
+        XCTAssertFalse(reader.autoPaging)
+    }
+
+    @MainActor
+    func testRestorationAndUnchangedSeekPreserveTimeAndRemoteTimeIsExact() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appending(path: "source.txt")
+        try Data(String(repeating: "阅读位置与时间的测试。\n", count: 500).utf8).write(to: source)
+        let store = LibraryStore(root: root.appending(path: "library"))
+        var book = try await store.importBook(from: source)
+        book.offset = 60
+        book.updatedAt = Date(timeIntervalSince1970: 1_900_000_000)
+        try await store.updateBook(book)
+        let reader = ReaderCoordinator(book: book, store: store)
+        reader.configure(size: CGSize(width: 320, height: 540), settings: ReaderSettings())
+        for _ in 0..<400 where reader.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(reader.isLoading)
+        await reader.flush()
+        var books = try await store.load()
+        var stored = try XCTUnwrap(books.first)
+        XCTAssertEqual(stored.offset, book.offset)
+        XCTAssertEqual(stored.updatedAt, book.updatedAt)
+        reader.rebuild(at: reader.offset)
+        for _ in 0..<400 where reader.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        await reader.flush()
+        books = try await store.load()
+        stored = try XCTUnwrap(books.first)
+        XCTAssertEqual(stored.updatedAt, book.updatedAt)
+        XCTAssertNil(reader.progressEvent)
+        let remoteDate = book.updatedAt.addingTimeInterval(-100)
+        reader.applyRemoteProgress(offset: 120, readAt: remoteDate)
+        for _ in 0..<400 where reader.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        await reader.flush()
+        books = try await store.load()
+        stored = try XCTUnwrap(books.first)
+        XCTAssertEqual(stored.offset, 120)
+        XCTAssertEqual(stored.updatedAt, remoteDate)
+        reader.interactionEnabled = false
+        XCTAssertFalse(reader.next())
+        reader.rebuild(at: 900)
+        XCTAssertEqual(reader.readingBook.offset, 120)
+        reader.stop()
+    }
+
     func testReaderTextUsesJustifiedParagraphAlignment() {
         let attributed = ReaderLayoutService.makeAttributedString(
             text: "两端对齐的阅读正文。",

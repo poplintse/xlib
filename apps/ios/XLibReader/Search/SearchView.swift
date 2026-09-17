@@ -10,6 +10,14 @@ struct SearchView: View {
     @State private var results: [SearchResult] = []
     @State private var searching = false
     @State private var errorMessage: String?
+    @State private var activeQuery = ""
+    @State private var originalOffset: Int64 = 0
+    @State private var nextOffset: Int64 = 0
+    @State private var rangeEnd: Int64 = 0
+    @State private var exhausted = false
+    @State private var wrapped = false
+    @State private var searchTask: Task<Void, Never>?
+    @State private var generation = UUID()
     private let service = SearchService()
     private var theme: AppTheme { settings.settings.theme }
 
@@ -21,6 +29,7 @@ struct SearchView: View {
                     XLIconButton(theme: theme, foreground: theme.text, action: { dismiss() }) { Image(systemName: "chevron.left") }
                         .accessibilityLabel("返回阅读")
                     TextField("搜索当前书籍", text: $query)
+                        .accessibilityIdentifier("search.query")
                         .font(.system(size: 17)).foregroundStyle(theme.text).submitLabel(.search).onSubmit(runSearch)
                         .padding(.horizontal, 16).frame(height: 52)
                         .xlGlassSurface(theme: theme, cornerRadius: 17, interactive: true)
@@ -30,16 +39,34 @@ struct SearchView: View {
                 }
             }
             Text(statusText).font(.system(size: 14)).foregroundStyle(theme.secondaryText).padding(.vertical, 10)
+                .accessibilityIdentifier("search.status")
             ScrollView {
                 LazyVStack(spacing: 10) {
                     ForEach(results) { result in
                         NavigationLink { ReaderView(book: temporaryBook(offset: result.offset), store: store, settings: settings, persistsProgress: false) } label: {
                             HighlightedExcerpt(result: result, theme: theme)
                                 .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(.plain).accessibilityIdentifier("search.result.\(result.offset)")
                     }
-                    if !searching && results.isEmpty && !query.isEmpty {
+                    if !searching && exhausted && results.isEmpty && !activeQuery.isEmpty {
                         Text("没有找到相关内容").font(.system(size: 15)).foregroundStyle(theme.secondaryText).padding(.top, 48)
+                    }
+                    if searching {
+                        ProgressView().accessibilityLabel("正在搜索")
+                    } else if !activeQuery.isEmpty {
+                        if !exhausted {
+                            Button("继续加载", action: loadBatch)
+                                .accessibilityIdentifier("search.loadMore")
+                        } else if !wrapped && originalOffset > 0 {
+                            Text("已到书末，是否从开头继续？").foregroundStyle(theme.secondaryText)
+                            Button("从开头继续") {
+                                wrapped = true
+                                nextOffset = 0
+                                rangeEnd = originalOffset
+                                exhausted = false
+                                loadBatch()
+                            }.accessibilityIdentifier("search.wrap")
+                        }
                     }
                 }.padding(.bottom, 16)
             }
@@ -47,24 +74,60 @@ struct SearchView: View {
         .padding(.horizontal, 20).padding(.top, 16)
         .background(theme.background.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
+        .onDisappear {
+            searchTask?.cancel()
+            generation = UUID()
+            searching = false
+        }
         .alert("搜索失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("好") {} } message: { Text(errorMessage ?? "未知错误") }
     }
 
     private var statusText: String {
         if searching { return "正在搜索..." }
-        if !results.isEmpty { return "已找到 \(results.count) 条结果" }
+        if !activeQuery.isEmpty {
+            let state = exhausted ? (wrapped || originalOffset == 0 ? "搜索结束" : "已到书末") : "可继续加载"
+            return "已加载 \(results.count) 条结果 · \(state)"
+        }
         return "输入关键词后，从当前阅读位置开始向后搜索"
     }
 
     private func runSearch() {
+        searchTask?.cancel()
+        generation = UUID()
+        searching = false
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (2...32).contains(value.count) else { errorMessage = "请输入 2–32 个字符"; return }
+        activeQuery = value
+        results = []
+        originalOffset = min(book.fileSize, max(0, book.offset))
+        nextOffset = originalOffset
+        rangeEnd = book.fileSize
+        wrapped = false
+        exhausted = false
+        loadBatch()
+    }
+
+    private func loadBatch() {
+        guard !searching else { return }
         searching = true
-        Task {
+        errorMessage = nil
+        let requestGeneration = UUID()
+        generation = requestGeneration
+        let value = activeQuery
+        let start = nextOffset
+        let end = rangeEnd
+        searchTask = Task {
             do {
                 let url = await store.url(for: book)
-                results = try await service.search(url: url, book: book, query: value, from: book.offset)
-            } catch is CancellationError { return } catch { errorMessage = error.localizedDescription }
+                let batch = try await service.searchBatch(url: url, book: book, query: value, from: start, to: end)
+                guard !Task.isCancelled, generation == requestGeneration else { return }
+                results.append(contentsOf: batch.results)
+                nextOffset = batch.nextOffset
+                exhausted = batch.exhausted
+            } catch is CancellationError { return } catch {
+                guard generation == requestGeneration else { return }
+                errorMessage = error.localizedDescription
+            }
             searching = false
         }
     }

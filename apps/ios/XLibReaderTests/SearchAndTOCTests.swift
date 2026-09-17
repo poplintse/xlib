@@ -3,6 +3,98 @@ import XCTest
 @testable import XLibReader
 
 final class SearchAndTOCTests: XCTestCase {
+    func testBatchesPreserveNonOverlappingMatchesAcrossSegments() async throws {
+        let text = String(repeating: "a", count: 65_541)
+        try await withSearchBook(text) { url, book in
+            let service = SearchService()
+            var cursor: Int64 = 0
+            var offsets: [Int64] = []
+            while true {
+                let batch = try await service.searchBatch(url: url, book: book, query: "AAA", from: cursor)
+                XCTAssertLessThanOrEqual(batch.results.count, 200)
+                offsets += batch.results.map(\.offset)
+                if batch.exhausted { break }
+                XCTAssertGreaterThan(batch.nextOffset, cursor)
+                cursor = batch.nextOffset
+            }
+            XCTAssertEqual(offsets, stride(from: Int64(0), to: Int64(text.utf8.count - 2), by: 3).map { $0 })
+        }
+    }
+
+    func testExactlyTwoHundredResultsCanConfirmRangeEnd() async throws {
+        try await withSearchBook(String(repeating: "Hello ", count: 200)) { url, book in
+            let service = SearchService()
+            let first = try await service.searchBatch(url: url, book: book, query: "hello", from: 0)
+            XCTAssertEqual(first.results.count, 200)
+            XCTAssertFalse(first.exhausted)
+            let last = try await service.searchBatch(url: url, book: book, query: "hello", from: first.nextOffset)
+            XCTAssertTrue(last.exhausted)
+            XCTAssertTrue(last.results.isEmpty)
+        }
+    }
+
+    func testNonOverlappingMatchAtReadBoundary() async throws {
+        try await withSearchBook(String(repeating: "x", count: 65_530) + "aaaaaaaaaaaa") { url, book in
+            let batch = try await SearchService().searchBatch(url: url, book: book, query: "AAA", from: 0)
+            XCTAssertEqual(batch.results.map(\.offset), [65_530, 65_533, 65_536, 65_539])
+        }
+    }
+
+    func testUTF16BatchCursorUsesBytes() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).txt")
+        let data = try XCTUnwrap("前苹果苹果后".data(using: .utf16LittleEndian))
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let book = Book(id: UUID(), title: "UTF16", sourceName: "test.txt", author: "", relativePath: "", fileSize: Int64(data.count), modifiedAt: .now, encoding: .utf16LittleEndian, offset: 0, updatedAt: .now, schemaVersion: 1)
+        let service = SearchService()
+        let first = try await service.searchBatch(url: url, book: book, query: "苹果", from: 0, limit: 1)
+        XCTAssertEqual(first.results.first?.offset, 2)
+        XCTAssertEqual(first.nextOffset, 6)
+        let second = try await service.searchBatch(url: url, book: book, query: "苹果", from: first.nextOffset)
+        XCTAssertEqual(second.results.map(\.offset), [6])
+    }
+
+    func testWrapStopsAtOriginalStartWithoutRepeatingLaterResults() async throws {
+        try await withSearchBook("Hello HELLO hello") { url, book in
+            let service = SearchService()
+            let tail = try await service.searchBatch(url: url, book: book, query: "hello", from: 6)
+            let head = try await service.searchBatch(url: url, book: book, query: "hello", from: 0, to: 6)
+            XCTAssertEqual(tail.results.map(\.offset), [6, 12])
+            XCTAssertEqual(head.results.map(\.offset), [0])
+            XCTAssertTrue(head.exhausted)
+            let cut = try await service.searchBatch(url: url, book: book, query: "hello", from: 0, to: 3)
+            XCTAssertTrue(cut.results.isEmpty)
+        }
+    }
+
+    func testGraphemeQueryLengthAndOriginalByteOffsets() async throws {
+        let family = "👨‍👩‍👧‍👦"
+        let queries = ["😀😀", "e\u{301}e\u{301}", family + family, String(repeating: "中", count: 32)]
+        for query in queries {
+            try await withSearchBook("前" + query + "后") { url, book in
+                let batch = try await SearchService().searchBatch(url: url, book: book, query: "  " + query + " \n", from: 0)
+                XCTAssertEqual(batch.results.map(\.offset), [3])
+            }
+        }
+        try await withSearchBook("😀😀") { url, book in
+            for query in ["😀", family, String(repeating: "中", count: 33)] {
+                do {
+                    _ = try await SearchService().searchBatch(url: url, book: book, query: query, from: 0)
+                    XCTFail("Invalid query accepted")
+                } catch SearchError.invalidQuery { }
+            }
+        }
+    }
+
+    private func withSearchBook(_ text: String, check: (URL, Book) async throws -> Void) async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).txt")
+        let data = Data(text.utf8)
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let book = Book(id: UUID(), title: "搜索", sourceName: "test.txt", author: "", relativePath: "", fileSize: Int64(data.count), modifiedAt: .now, encoding: .utf8, offset: 0, updatedAt: .now, schemaVersion: 1)
+        try await check(url, book)
+    }
+
     func testSearchAndTOCUseAbsoluteByteOffsets() async throws {
         let text = "序言\n第一章 开始\n苹果香蕉苹果\n第二章 继续\n结束"
         let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).txt")

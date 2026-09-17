@@ -45,7 +45,7 @@ HTTP 字段以 [OpenAPI](../../../contracts/openapi.yaml) 为准；能力描述�
 | Client | Status | Notes |
 |---|---|---|
 | Android | done | 流式大小写不敏感、不重叠匹配及扩展字素簇计数；包含续查/手动回绕测试 |
-| iOS | partial | 分批续查及书末后手动回绕待补齐 |
+| iOS | implemented | 分批续查、用户主动回绕、Unicode 计数及临时阅读隔离已补齐；验证见 CURRENT |
 | Backend | unsupported | 服务端职责，不是阅读客户端 |
 
 未评估端见 [矩阵](../matrix/capability-matrix.md)；partial 表示存在范围缺口或未决业务差异，不等于整个功能不可用。

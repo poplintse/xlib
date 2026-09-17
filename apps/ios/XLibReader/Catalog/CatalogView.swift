@@ -5,14 +5,19 @@ struct CatalogView: View {
     let book: Book
     let store: LibraryStore
     @Bindable var settings: SettingsStore
+    var readingSessionID: UUID? = nil
     let currentOffset: () -> Int64
     let jump: (Int64) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(ProgressSyncCoordinator.self) private var sync
     @State private var section = SectionKind.toc
     @State private var entries: [TocEntry] = []
     @State private var bookmarks: [Bookmark] = []
     @State private var loading = true
     @State private var prompt: CatalogPrompt?
+    @State private var operationMessage: String?
+    @State private var confirmsCloudDeletion = false
+    @State private var deletingCloudProgress = false
     private let tocService = TocService()
     private var theme: AppTheme { settings.settings.theme }
 
@@ -21,6 +26,17 @@ struct CatalogView: View {
             header
             XLSegmentedControl(options: [(SectionKind.toc, "目录"), (.bookmarks, "书签")], selection: $section, theme: theme)
                 .padding(.top, 2)
+            if let operationMessage {
+                Text(operationMessage).font(.footnote).foregroundStyle(theme.text)
+                    .accessibilityIdentifier("catalog.operationMessage")
+            }
+            if sync.isSyncEnabled {
+                Button(deletingCloudProgress ? "正在删除…" : "删除本书云端阅读进度", role: .destructive) {
+                    confirmsCloudDeletion = true
+                }
+                .disabled(deletingCloudProgress)
+                .accessibilityIdentifier("catalog.deleteCloudProgress")
+            }
             ScrollView {
                 LazyVStack(spacing: section == .toc ? 2 : 8) {
                     if loading { ProgressView("正在整理…").tint(theme.accent).padding(.top, 48) }
@@ -54,7 +70,9 @@ struct CatalogView: View {
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
                                     .background(theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                                     .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            }.buttonStyle(.plain).contextMenu { Button("删除书签", role: .destructive) { Task { try? await store.removeBookmark(id: mark.id); await load() } } }
+                            }.buttonStyle(.plain)
+                                .accessibilityIdentifier("catalog.bookmark.\(mark.offset)")
+                                .contextMenu { Button("删除书签", role: .destructive) { Task { try? await store.removeBookmark(id: mark.id); await load() } } }
                         }
                     }
                 }.padding(.bottom, 16)
@@ -64,6 +82,12 @@ struct CatalogView: View {
         .background(theme.background.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .task { await load() }
+        .confirmationDialog("删除《\(book.title)》的云端阅读进度？", isPresented: $confirmsCloudDeletion, titleVisibility: .visible) {
+            Button("删除本书云端进度", role: .destructive) { deleteCloudProgress() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("仅删除本书的云端进度，保留本地书籍、书签和阅读位置。本次阅读暂停上传，退出本书并重新打开后恢复。")
+        }
         .alert(
             prompt?.title ?? "目录尚未生成",
             isPresented: Binding(get: { prompt != nil }, set: { if !$0 { prompt = nil } })
@@ -114,7 +138,24 @@ struct CatalogView: View {
     }
 
     private func addBookmark() {
-        Task { _ = try? await store.addBookmark(bookID: book.id, offset: currentOffset(), excerpt: book.title); await load(); section = .bookmarks }
+        Task {
+            do {
+                _ = try await store.addBookmark(bookID: book.id, offset: currentOffset(), excerpt: book.title)
+                operationMessage = "书签已保存"
+            } catch { operationMessage = error.localizedDescription }
+            section = .bookmarks
+            await load()
+        }
+    }
+
+    private func deleteCloudProgress() {
+        deletingCloudProgress = true
+        Task {
+            let url = await store.url(for: book)
+            let deleted = await sync.deleteCloudProgress(book: book, fileURL: url, readingSessionID: readingSessionID)
+            operationMessage = deleted ? "本书云端进度已删除，本次阅读暂停上传。" : (sync.lastFailureMessage ?? "删除失败，请重试。")
+            deletingCloudProgress = false
+        }
     }
 
     private func load() async {
@@ -123,7 +164,7 @@ struct CatalogView: View {
             bookmarks = try await store.bookmarks(for: book.id)
             if let cached = try await store.cachedTOC(for: book) {
                 entries = cached
-            } else {
+            } else if section == .toc {
                 prompt = .missing
             }
         } catch is CancellationError {

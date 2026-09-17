@@ -18,7 +18,7 @@ Android 当前按书籍与字节位置去重；iOS 当前每次添加都追加�
 
 ## Consequences
 
-CAP-BOOKMARK 采用本规则。Android 已覆盖位置唯一及单条删除；iOS 添加路径待调整。单条书签删除由 [Decision 0009](0009-delete-individual-bookmark.md) 确认为共同要求，当前状态见能力矩阵。
+CAP-BOOKMARK 采用本规则。Android 已覆盖位置唯一及单条删除；iOS 已补齐存储层原子判重及页面重复提示。单条书签删除由 [Decision 0009](0009-delete-individual-bookmark.md) 确认为共同要求，当前状态见能力矩阵。
 
 实施与验收状态见 [CURRENT](../../CURRENT.md)。历史重复记录的迁移清理不在本次决定范围，后续实施时需说明处理方式，不能据此自动删除用户现有数据。
 

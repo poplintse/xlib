@@ -46,12 +46,15 @@ struct RemoteProgressSnapshot: Codable, Equatable, Sendable {
 struct SyncJumpSuggestion: Identifiable, Equatable, Sendable {
     let bookID: UUID
     let remote: RemoteProgressSnapshot
+    var localOffset: Int64 = 0
 
     var id: String { "\(bookID.uuidString):\(remote.version)" }
 
     func message(now: Date = .now) -> String {
-        let percent = remote.progress.formatted(.percent.precision(.fractionLength(2)))
-        return "位置：\(remote.offset.formatted())（\(percent)）\n进度于\(Self.relativeTime(from: remote.readAtMs, now: now))保存。"
+        let size = Double(max(1, remote.fileSize))
+        let localPercent = (Double(localOffset) / size).formatted(.percent.precision(.fractionLength(2)))
+        let remotePercent = (Double(remote.offset) / size).formatted(.percent.precision(.fractionLength(2)))
+        return "当前阅读进度 \(localPercent)\n云端阅读进度 \(remotePercent)\n进度于\(Self.relativeTime(from: remote.readAtMs, now: now))保存。"
     }
 
     private static func relativeTime(from milliseconds: Int64, now: Date) -> String {

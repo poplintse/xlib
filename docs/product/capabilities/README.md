@@ -18,7 +18,7 @@ Client Implementations 使用 implemented / partial / planned / unsupported；�
 - [CAP-READING-PREFERENCES](reading-preferences.md)：阅读偏好。
 - [CAP-SYNC-IDENTITY](sync-identity.md)：可选同步身份和设备管理。
 - [CAP-PROGRESS-SYNC](progress-sync.md)：可选阅读进度同步。
-- [CAP-CLOUD-DATA-CONTROL](cloud-data-control.md)：单书云端进度删除；后端与传输层已适配，客户端入口及会话行为待实现。
+- [CAP-CLOUD-DATA-CONTROL](cloud-data-control.md)：单书云端进度删除；Android/iOS 入口与会话行为已实现，真实跨设备验收边界见 CURRENT。
 
 ## Candidate
 

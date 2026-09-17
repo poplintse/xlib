@@ -39,7 +39,7 @@ HTTP 字段以 [OpenAPI](../../../contracts/openapi.yaml) 为准；能力描述�
 | Client | Status | Notes |
 |---|---|---|
 | Android | done | 单书删除入口、上传/删除串行、会话暂停及关闭重开恢复，包含协调器回归测试 |
-| iOS | partial | 单书传输层已适配，入口与会话暂停尚待实现 |
+| iOS | done | 本书删除入口及确认、上传/删除串行、阅读会话暂停与关闭重开恢复；协调器测试及隔离 UI 删除/取消/本地数据保留测试通过，真实删除未验收 |
 | Backend | implemented | 单书范围限定和幂等 204 已实现，运行验收见 CURRENT |
 
 未评估端见 [矩阵](../matrix/capability-matrix.md)；partial 表示存在范围缺口或未决业务差异，不等于整个功能不可用。

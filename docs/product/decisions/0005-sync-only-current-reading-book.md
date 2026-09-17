@@ -21,7 +21,7 @@ Android 周期上传依赖活动正式阅读会话，iOS 无阅读会话时也�
 
 ## Consequences
 
-CAP-PROGRESS-SYNC 采用本规则。iOS 当前 syncStoredReadingProgress 的空闲期全书库上传不符合新定义，应在后续代码工作中移除该上传路径；不应为保留该路径继续扩展批量拆分或去重功能。Android 活动会话上传方向一致，但完整边界仍需验证。
+CAP-PROGRESS-SYNC 采用本规则。iOS 已移除 syncStoredReadingProgress 空闲期全书库上传路径，不扩展该路径的批量拆分或去重。Android/iOS 均仅上传活动正式阅读会话，并有无会话不上传及离线恢复边界测试；真实跨设备验收仍需执行。
 
 实施与验收状态见 [CURRENT](../../CURRENT.md)。现有后台/退出提交不能被解释成允许在会话结束后持续补传；具体生命周期实现仍需在后续代码符合性检查中核对。
 

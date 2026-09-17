@@ -12,12 +12,12 @@ final class ProgressSyncCoordinator {
         var comparisonState: ReaderSyncComparisonState
         var promptedRemoteVersion: String?
         var lastObservedSequence: UInt64?
+        var positionReady: Bool
     }
 
     private var api: SyncAPIClient
     private let vault: SyncCredentialVault
     private let stateStore: SyncStateStore
-    private let libraryStore: LibraryStore?
     private let connectivity: SyncConnectivityMonitor
     private let defaults: UserDefaults
     private let managesLiveAPI: Bool
@@ -35,6 +35,13 @@ final class ProgressSyncCoordinator {
     private var started = false
     private var appIsActive = true
     private var freshPullCompleted = false
+    private var configurationGeneration = UUID()
+    private var pullGeneration = UUID()
+    private var pausedReadingSessions: Set<UUID> = []
+    private var deletingKeys: Set<SyncBookKey> = []
+    private var mutationBusy = false
+    private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var credentialWrite: Task<Void, Never>?
 
     private(set) var availability: SyncAvailability = .available
     private(set) var lastSuccessAt: Date?
@@ -48,7 +55,6 @@ final class ProgressSyncCoordinator {
         api: SyncAPIClient? = nil,
         vault: SyncCredentialVault = .live(),
         stateStore: SyncStateStore = SyncStateStore(),
-        libraryStore: LibraryStore? = nil,
         connectivity: SyncConnectivityMonitor = SyncConnectivityMonitor(),
         defaults: UserDefaults = .standard,
         syncInterval: Duration = .seconds(20),
@@ -66,7 +72,6 @@ final class ProgressSyncCoordinator {
         }
         self.vault = vault
         self.stateStore = stateStore
-        self.libraryStore = libraryStore
         self.connectivity = connectivity
         self.defaults = defaults
         self.syncInterval = syncInterval
@@ -98,9 +103,13 @@ final class ProgressSyncCoordinator {
     func start() async {
         guard !started else { return }
         started = true
+        let generation = configurationGeneration
         let cached = await stateStore.cachedRemote()
+        guard generation == configurationGeneration else { return }
         remoteByKey = Dictionary(uniqueKeysWithValues: cached.map { ($0.key, $0) })
-        credentials = await vault.load()
+        let loaded = await vault.load()
+        guard generation == configurationGeneration else { return }
+        credentials = loaded
         if configuredEmailValue == nil, let email = credentials?.email {
             configuredEmailValue = email
             defaults.set(email, forKey: Self.emailKey)
@@ -155,6 +164,8 @@ final class ProgressSyncCoordinator {
     }
 
     func startSync(email: String, deviceName: String? = nil) async -> Bool {
+        guard !isWorking else { return false }
+        let generation = configurationGeneration
         guard api.isConfigured else {
             lastFailureMessage = SyncAPIError.notConfigured.localizedDescription
             return false
@@ -179,30 +190,34 @@ final class ProgressSyncCoordinator {
 
         isWorking = true
         lastFailureMessage = nil
-        defer { isWorking = false }
+        defer { if generation == configurationGeneration { isWorking = false } }
         let request = SyncStartRequest(
             email: email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             device: registration
         )
         do {
             let response = try await api.startSync(request)
+            guard generation == configurationGeneration, !Task.isCancelled else { return false }
             deviceRegistration = registration
             defaults.set(registration.deviceName, forKey: Self.deviceNameKey)
             credentials = response.credentials
             configuredEmailValue = response.credentials.email
             defaults.set(response.credentials.email, forKey: Self.emailKey)
-            await vault.save(response.credentials)
+            await saveCredentials(response.credentials)
+            guard generation == configurationGeneration else { return false }
             defaults.set(serverAddress, forKey: SyncServerConfiguration.credentialServerKey)
             defaults.set(true, forKey: Self.hasStartedSyncKey)
             availability = .available
             freshPullCompleted = false
             await pullOnly()
+            guard generation == configurationGeneration else { return false }
             await prepareCurrentSessionAfterPull()
             startSyncTimerIfNeeded()
             return true
         } catch is CancellationError {
             return false
         } catch {
+            guard generation == configurationGeneration else { return false }
             handle(error)
             return false
         }
@@ -254,25 +269,31 @@ final class ProgressSyncCoordinator {
     }
 
     private func clearSyncInformationAfterConfigurationChange() async {
-        guard defaults.bool(forKey: Self.hasStartedSyncKey) || credentials != nil else { return }
         await clearSyncInformation()
     }
 
     private func clearSyncInformation() async {
+        configurationGeneration = UUID()
+        pullGeneration = UUID()
+        isWorking = false
         syncTimerTask?.cancel()
         healthProbeTask?.cancel()
         credentials = nil
         currentSession?.comparisonState = .pending
+        currentSession?.promptedRemoteVersion = nil
         jumpSuggestion = nil
         devices = []
         freshPullCompleted = false
         remoteByKey.removeAll()
-        try? await stateStore.clearRemote()
-        await vault.clear()
         defaults.removeObject(forKey: SyncServerConfiguration.credentialServerKey)
         availability = .available
         lastSuccessAt = nil
         lastFailureMessage = nil
+        // Enqueue the credential clear before yielding, so a new login always
+        // saves after this clear even if persistence suspends.
+        let clearing = enqueueCredentialWrite(nil)
+        try? await stateStore.clearRemote()
+        await clearing.value
     }
 
     func saveServerAddress(_ value: String) async -> Bool {
@@ -286,10 +307,10 @@ final class ProgressSyncCoordinator {
             return true
         }
 
-        await clearSyncInformation()
         serverAddress = normalized
         defaults.set(normalized, forKey: SyncServerConfiguration.storageKey)
         if managesLiveAPI { api = .live(address: normalized) }
+        await clearSyncInformation()
         lastSuccessAt = nil
         lastFailureMessage = nil
         startSyncTimerIfNeeded()
@@ -299,23 +320,102 @@ final class ProgressSyncCoordinator {
     func refreshRemoteStates() async {
         guard credentials != nil else { return }
         freshPullCompleted = false
+        currentSession?.comparisonState = .pending
+        jumpSuggestion = nil
         await pullOnly()
+        compareCurrentSession()
     }
 
     func syncRefresh() async -> Bool {
+        guard !isWorking else { return false }
         guard isServiceConfigured,
               configuredEmail != nil,
               !currentDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             lastFailureMessage = "请先完成同步配置。"
             return false
         }
+        if availability == .tokenRequired { await clearSyncInformation() }
         guard isSyncEnabled else { return await startConfiguredSync() }
 
         isWorking = true
         lastFailureMessage = nil
-        defer { isWorking = false }
+        let generation = configurationGeneration
+        defer { if generation == configurationGeneration { isWorking = false } }
         await refreshRemoteStates()
-        return lastFailureMessage == nil
+        return generation == configurationGeneration && lastFailureMessage == nil
+    }
+
+    func deleteCloudProgress(book: Book, fileURL: URL, readingSessionID: UUID? = nil) async -> Bool {
+        let generation = configurationGeneration
+        guard credentials != nil else {
+            lastFailureMessage = "请先开启同步。"
+            return false
+        }
+        do {
+            let identity = try await stateStore.identity(for: book, fileURL: fileURL)
+            guard generation == configurationGeneration else { return false }
+            let key = identity.key
+            guard key.fileSize > 0, !deletingKeys.contains(key) else { return false }
+            deletingKeys.insert(key)
+            defer { deletingKeys.remove(key) }
+            // Waiting for the previous upload is essential: cancellation alone
+            // cannot ensure the server has finished processing that request.
+            await acquireMutation()
+            defer { releaseMutation() }
+            guard generation == configurationGeneration, !Task.isCancelled else { return false }
+            try await authorized { authorization in
+                try await self.api.deleteBookProgress(key, authorization)
+            }
+            if let readingSessionID { pausedReadingSessions.insert(readingSessionID) }
+            if let current = currentSession, current.local.key == key {
+                pausedReadingSessions.insert(current.id)
+            }
+            pullGeneration = UUID()
+            remoteByKey.removeValue(forKey: key)
+            if jumpSuggestion?.remote.key == key {
+                jumpSuggestion = nil
+                currentSession?.comparisonState = .completed
+            }
+            try? await stateStore.replaceRemote(Array(remoteByKey.values))
+            guard generation == configurationGeneration else { return false }
+            lastFailureMessage = nil
+            lastSuccessAt = now()
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            guard generation == configurationGeneration else { return false }
+            handle(error)
+            return false
+        }
+    }
+
+    private func acquireMutation() async {
+        if !mutationBusy {
+            mutationBusy = true
+            return
+        }
+        await withCheckedContinuation { mutationWaiters.append($0) }
+    }
+
+    private func enqueueCredentialWrite(_ value: SyncCredentials?) -> Task<Void, Never> {
+        let previous = credentialWrite
+        let task = Task { [vault] in
+            await previous?.value
+            if let value { await vault.save(value) }
+            else { await vault.clear() }
+        }
+        credentialWrite = task
+        return task
+    }
+
+    private func saveCredentials(_ value: SyncCredentials) async {
+        await enqueueCredentialWrite(value).value
+    }
+
+    private func releaseMutation() {
+        if mutationWaiters.isEmpty { mutationBusy = false }
+        else { mutationWaiters.removeFirst().resume() }
     }
 
     func loadDevices() async {
@@ -343,15 +443,9 @@ final class ProgressSyncCoordinator {
         }
     }
 
-    func beginReading(book: Book, fileURL: URL) async {
+    func beginReading(book: Book, fileURL: URL, sessionID: UUID = UUID(), positionReady: Bool = true) async {
         syncTimerTask?.cancel()
         jumpSuggestion = nil
-        guard credentials != nil, api.isConfigured else {
-            currentSession = nil
-            return
-        }
-
-        let sessionID = UUID()
         currentSession = ReaderSession(
             id: sessionID,
             bookID: book.id,
@@ -364,7 +458,8 @@ final class ProgressSyncCoordinator {
             ),
             comparisonState: .pending,
             promptedRemoteVersion: nil,
-            lastObservedSequence: nil
+            lastObservedSequence: nil,
+            positionReady: positionReady
         )
 
         do {
@@ -387,18 +482,23 @@ final class ProgressSyncCoordinator {
             return
         }
 
-        guard connectivity.isOnline() else {
+        guard credentials != nil, api.isConfigured, connectivity.isOnline() else {
             availability = .offline
             currentSession?.comparisonState = .unavailable
+            startSyncTimerIfNeeded()
             return
         }
-        if !freshPullCompleted { await pullOnly() }
+        freshPullCompleted = false
+        await pullOnly()
         guard currentSession?.id == sessionID else { return }
         compareCurrentSession()
     }
 
     func recordLocalProgress(bookID: UUID, offset: Int64, changedAt: Date) {
         guard var session = currentSession, session.bookID == bookID else { return }
+        guard session.positionReady,
+              session.comparisonState == .completed || session.comparisonState == .unavailable,
+              offset != session.local.offset else { return }
         let previous = session.local.readAtMs
         session.local.offset = max(0, min(session.local.key?.fileSize ?? .max, offset))
         session.local.readAtMs = max(Self.milliseconds(changedAt), previous + 1)
@@ -414,6 +514,7 @@ final class ProgressSyncCoordinator {
         if useRemote {
             session.local.offset = suggestion.remote.offset
             session.local.readAtMs = suggestion.remote.readAtMs
+            session.positionReady = false
         }
         session.promptedRemoteVersion = suggestion.remote.version
         session.comparisonState = .completed
@@ -424,12 +525,27 @@ final class ProgressSyncCoordinator {
     }
 
     func endReading(bookID: UUID) async {
+        suspendReading(bookID: bookID)
+    }
+
+    func suspendReading(bookID: UUID, sessionID: UUID? = nil) {
         guard currentSession?.bookID == bookID else { return }
+        if let sessionID, currentSession?.id != sessionID { return }
         syncTimerTask?.cancel()
         syncTimerTask = nil
-        await syncCurrentProgress(forceLatest: true)
         currentSession = nil
         jumpSuggestion = nil
+        startSyncTimerIfNeeded()
+    }
+
+    func readingPositionReady(bookID: UUID) {
+        guard currentSession?.bookID == bookID else { return }
+        currentSession?.positionReady = true
+    }
+
+    func isPreparingReading(bookID: UUID) -> Bool {
+        guard let session = currentSession, session.bookID == bookID else { return false }
+        return !session.positionReady || session.comparisonState == .pending || session.comparisonState == .awaitingJumpDecision
     }
 
     static func shouldSuggestJump(
@@ -462,7 +578,7 @@ final class ProgressSyncCoordinator {
            session.promptedRemoteVersion != remote.version {
             session.comparisonState = .awaitingJumpDecision
             currentSession = session
-            jumpSuggestion = SyncJumpSuggestion(bookID: session.bookID, remote: remote)
+            jumpSuggestion = SyncJumpSuggestion(bookID: session.bookID, remote: remote, localOffset: session.local.offset)
             return
         }
         session.comparisonState = .completed
@@ -500,50 +616,31 @@ final class ProgressSyncCoordinator {
             return
         }
         if currentSession != nil {
-            await syncCurrentProgress(forceLatest: true)
-        } else {
-            await syncStoredReadingProgress()
-        }
-    }
-
-    private func syncStoredReadingProgress() async {
-        guard let libraryStore else { return }
-        guard let books = try? await libraryStore.load() else { return }
-        var items: [ProgressSyncRequest.Item] = []
-        for book in books {
-            let fileURL = await libraryStore.url(for: book)
-            guard let identity = try? await stateStore.identity(for: book, fileURL: fileURL) else { continue }
-            items.append(.init(
-                bookHash: identity.key.bookHash,
-                fileSize: identity.key.fileSize,
-                offset: book.offset,
-                readAtMs: Self.milliseconds(book.updatedAt)
-            ))
-        }
-        guard !items.isEmpty else { return }
-        do {
-            let response = try await authorized { authorization in
-                try await self.api.syncProgress(.init(items: items), authorization)
+            guard availability == .available else { return }
+            if !freshPullCompleted {
+                await pullOnly()
+                compareCurrentSession()
             }
-            for result in response.results { remoteByKey[result.state.key] = result.state }
-            try? await stateStore.replaceRemote(Array(remoteByKey.values))
-            availability = .available
-            lastSuccessAt = now()
-            lastFailureMessage = nil
-        } catch is CancellationError {
-            return
-        } catch {
-            handle(error)
+            await syncCurrentProgress(forceLatest: true)
         }
     }
 
     private func syncCurrentProgress(forceLatest: Bool) async {
+        let generation = configurationGeneration
+        let sessionID = currentSession?.id
+        await acquireMutation()
+        defer { releaseMutation() }
+        guard generation == configurationGeneration, currentSession?.id == sessionID, !Task.isCancelled else { return }
         guard credentials != nil,
               availability == .available,
               connectivity.isOnline(),
               var session = currentSession,
+              session.positionReady,
+              !pausedReadingSessions.contains(session.id),
               session.comparisonState == .completed,
-              let key = session.local.key else { return }
+              freshPullCompleted,
+              let key = session.local.key,
+              !deletingKeys.contains(key) else { return }
         if !forceLatest, session.lastObservedSequence == session.local.localSequence { return }
         session.lastObservedSequence = session.local.localSequence
         currentSession = session
@@ -560,13 +657,16 @@ final class ProgressSyncCoordinator {
             let response = try await authorized { authorization in
                 try await self.api.syncProgress(request, authorization)
             }
+            guard currentSession?.id == session.id, connectivity.isOnline() else { return }
             if let state = response.results.first?.state {
                 remoteByKey[state.key] = state
                 try? await stateStore.replaceRemote(Array(remoteByKey.values))
             }
+            guard generation == configurationGeneration else { return }
             availability = .available
             lastSuccessAt = now()
             lastFailureMessage = nil
+            compareCurrentSession()
         } catch is CancellationError {
             return
         } catch {
@@ -581,12 +681,17 @@ final class ProgressSyncCoordinator {
             freshPullCompleted = false
             return
         }
+        let generation = configurationGeneration
+        let requestID = UUID()
+        pullGeneration = requestID
         do {
             let response = try await authorized { authorization in
                 try await self.api.pullProgress(authorization)
             }
+            guard requestID == pullGeneration else { return }
             remoteByKey = Dictionary(uniqueKeysWithValues: response.items.map { ($0.key, $0) })
             try? await stateStore.replaceRemote(response.items)
+            guard generation == configurationGeneration, requestID == pullGeneration else { return }
             freshPullCompleted = true
             availability = .available
             lastSuccessAt = now()
@@ -596,6 +701,7 @@ final class ProgressSyncCoordinator {
         } catch is CancellationError {
             return
         } catch {
+            guard generation == configurationGeneration, requestID == pullGeneration else { return }
             freshPullCompleted = false
             handle(error)
         }
@@ -612,6 +718,8 @@ final class ProgressSyncCoordinator {
     private func networkChanged(isOnline: Bool) async {
         guard started else { return }
         if !isOnline {
+            pullGeneration = UUID()
+            jumpSuggestion = nil
             availability = .offline
             freshPullCompleted = false
             syncTimerTask?.cancel()
@@ -633,6 +741,7 @@ final class ProgressSyncCoordinator {
     }
 
     private func authorized<T>(_ operation: (SyncAuthorization) async throws -> T) async throws -> T {
+        let generation = configurationGeneration
         guard let credentials else {
             throw SyncAPIError.http(
                 status: 401,
@@ -641,7 +750,14 @@ final class ProgressSyncCoordinator {
                 retryable: false
             )
         }
-        return try await operation(credentials.authorization)
+        do {
+            let result = try await operation(credentials.authorization)
+            guard generation == configurationGeneration else { throw CancellationError() }
+            return result
+        } catch {
+            guard generation == configurationGeneration else { throw CancellationError() }
+            throw error
+        }
     }
 
     private func handle(_ error: Error) {
@@ -655,6 +771,9 @@ final class ProgressSyncCoordinator {
         lastFailureMessage = apiError.localizedDescription
         if apiError.statusCode == 401 || apiError.statusCode == 403 {
             availability = .tokenRequired
+            freshPullCompleted = false
+            currentSession?.comparisonState = .unavailable
+            jumpSuggestion = nil
             syncTimerTask?.cancel()
         } else if apiError.marksServiceUnavailable {
             availability = connectivity.isOnline() ? .serviceUnavailable : .offline
@@ -665,6 +784,7 @@ final class ProgressSyncCoordinator {
 
     private func startHealthProbes() {
         guard healthProbeTask == nil, credentials != nil, connectivity.isOnline() else { return }
+        let generation = configurationGeneration
         healthProbeTask = Task { [weak self, healthProbeDelays] in
             var index = 0
             while !Task.isCancelled {
@@ -673,6 +793,7 @@ final class ProgressSyncCoordinator {
                 guard let self, !Task.isCancelled else { return }
                 do {
                     if try await self.api.health() {
+                        guard generation == self.configurationGeneration, !Task.isCancelled else { return }
                         await self.serviceRecovered()
                         return
                     }

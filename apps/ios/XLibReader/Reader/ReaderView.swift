@@ -49,6 +49,7 @@ enum ReaderPageInteraction {
 struct ReaderView: View {
     let book: Book
     let store: LibraryStore
+    let persistsProgress: Bool
     @Bindable var settings: SettingsStore
     @State private var coordinator: ReaderCoordinator
     @Environment(\.scenePhase) private var scenePhase
@@ -57,10 +58,15 @@ struct ReaderView: View {
     @Environment(ProgressSyncCoordinator.self) private var sync
     @State private var progressPanelVisible = false
     @State private var toastMessage: String?
+    @State private var readingSessionID = UUID()
+    @State private var syncPrepared = false
 
     init(book: Book, store: LibraryStore, settings: SettingsStore, persistsProgress: Bool = true) {
         self.book = book; self.store = store; self.settings = settings
-        _coordinator = State(initialValue: ReaderCoordinator(book: book, store: store, persistsProgress: persistsProgress))
+        self.persistsProgress = persistsProgress
+        let coordinator = ReaderCoordinator(book: book, store: store, persistsProgress: persistsProgress)
+        coordinator.interactionEnabled = !persistsProgress
+        _coordinator = State(initialValue: coordinator)
     }
 
     var body: some View {
@@ -105,6 +111,11 @@ struct ReaderView: View {
                 })
 
                 if coordinator.isLoading { ProgressView().controlSize(.large) }
+                if persistsProgress, syncPrepared, !coordinator.isLoading,
+                   sync.isPreparingReading(bookID: book.id), sync.jumpSuggestion == nil {
+                    ProgressView("正在比较阅读进度…")
+                        .padding().background(settings.settings.theme.surface, in: RoundedRectangle(cornerRadius: 12))
+                }
                 if coordinator.menuVisible { readerChrome }
                 if let toastMessage {
                     Text(toastMessage).font(.system(size: 13, weight: .bold)).foregroundStyle(settings.settings.theme.text)
@@ -147,29 +158,44 @@ struct ReaderView: View {
         .toolbar(.hidden, for: .navigationBar)
         .preferredColorScheme(settings.settings.theme.colorScheme)
         .task {
+            guard persistsProgress else { return }
+            syncPrepared = false
             let fileURL = await store.url(for: book)
-            await sync.beginReading(book: book, fileURL: fileURL)
+            guard !Task.isCancelled else { return }
+            await sync.beginReading(book: coordinator.readingBook, fileURL: fileURL, sessionID: readingSessionID, positionReady: false)
+            guard !Task.isCancelled else { return }
+            syncPrepared = true
+            updateReadingReadiness()
         }
+        .onChange(of: coordinator.isLoading) { _, _ in updateReadingReadiness() }
+        .onChange(of: sync.isPreparingReading(bookID: book.id)) { _, _ in updateReadingReadiness() }
         .onChange(of: coordinator.progressEvent) { _, event in
-            guard let event else { return }
+            guard persistsProgress, let event else { return }
             sync.recordLocalProgress(bookID: book.id, offset: event.offset, changedAt: event.changedAt)
         }
         .onChange(of: scenePhase) { _, phase in
             flushReaderIfNeeded(for: phase)
         }
         .onDisappear {
+            if persistsProgress { sync.suspendReading(bookID: book.id, sessionID: readingSessionID) }
             Task {
                 await coordinator.flush()
-                await sync.endReading(bookID: book.id)
             }
             coordinator.stop()
         }
-        .modifier(ReaderAlertsModifier(coordinator: coordinator, sync: sync, dismiss: dismiss))
+        .modifier(ReaderAlertsModifier(coordinator: coordinator, sync: sync, dismiss: dismiss, allowsSync: persistsProgress))
     }
 
     private func flushReaderIfNeeded(for phase: ScenePhase) {
         guard phase != .active else { return }
         Task { await coordinator.flush() }
+    }
+
+    private func updateReadingReadiness() {
+        if persistsProgress, syncPrepared, !coordinator.isLoading, coordinator.errorMessage == nil {
+            sync.readingPositionReady(bookID: book.id)
+        }
+        coordinator.interactionEnabled = !coordinator.isLoading && (!persistsProgress || (syncPrepared && !sync.isPreparingReading(bookID: book.id)))
     }
 
     private var readerChrome: some View {
@@ -191,7 +217,7 @@ struct ReaderView: View {
                         chromeTextButton("A+", theme: theme) { settings.update { $0.fontSize += 2 } }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     XLNavigationIcon(theme: theme, size: 42, foreground: theme.text,
-                                     destination: { SearchView(book: book, store: store, settings: settings) }) { Image(systemName: "magnifyingglass") }
+                                     destination: { SearchView(book: searchBook, store: store, settings: settings) }) { Image(systemName: "magnifyingglass") }
                         .accessibilityLabel("搜索当前书籍")
                     XLIconButton(theme: theme, size: 42, foreground: theme.text, action: {
                         settings.update { $0.theme = $0.theme == .light ? .dark : .light }
@@ -219,7 +245,7 @@ struct ReaderView: View {
                 HStack(spacing: 4) {
                     XLNavigationIcon(theme: theme, size: 44, foreground: theme.text,
                                      destination: {
-                        CatalogView(book: book, store: store, settings: settings, currentOffset: { coordinator.offset }, jump: { coordinator.rebuild(at: $0) })
+                        CatalogView(book: book, store: store, settings: settings, readingSessionID: readingSessionID, currentOffset: { coordinator.offset }, jump: { coordinator.rebuild(at: $0) })
                     }) { Image(systemName: "list.bullet") }.accessibilityLabel("目录")
                     XLIconButton(theme: theme, size: 44, foreground: theme.text, action: { saveBookmark() }) {
                         Image(systemName: "bookmark")
@@ -258,11 +284,21 @@ struct ReaderView: View {
     private func saveBookmark() {
         let excerpt = coordinator.page?.text.prefix(36).replacingOccurrences(of: "\n", with: " ") ?? book.title
         Task {
-            _ = try? await store.addBookmark(bookID: book.id, offset: coordinator.offset, excerpt: String(excerpt))
-            withAnimation { toastMessage = "书签已保存" }
+            do {
+                _ = try await store.addBookmark(bookID: book.id, offset: coordinator.offset, excerpt: String(excerpt))
+                withAnimation { toastMessage = "书签已保存" }
+            } catch {
+                withAnimation { toastMessage = error.localizedDescription }
+            }
             try? await Task.sleep(for: .seconds(1.2))
             withAnimation { toastMessage = nil }
         }
+    }
+
+    private var searchBook: Book {
+        var current = book
+        current.offset = coordinator.offset
+        return current
     }
 
     private func pageGesture(width: CGFloat, height: CGFloat) -> some Gesture {
@@ -299,6 +335,7 @@ private struct ReaderAlertsModifier: ViewModifier {
     @Bindable var coordinator: ReaderCoordinator
     @Bindable var sync: ProgressSyncCoordinator
     let dismiss: DismissAction
+    let allowsSync: Bool
 
     func body(content: Content) -> some View {
         content
@@ -326,9 +363,9 @@ private struct ReaderAlertsModifier: ViewModifier {
 
     private var jumpAlertIsPresented: Binding<Bool> {
         Binding(
-            get: { sync.jumpSuggestion != nil },
+            get: { allowsSync && sync.jumpSuggestion != nil },
             set: { isPresented in
-                if !isPresented, sync.jumpSuggestion != nil {
+                if allowsSync, !isPresented, sync.jumpSuggestion != nil {
                     sync.resolveJump(useRemote: false)
                 }
             }

@@ -3,6 +3,33 @@ import XCTest
 @testable import XLibReader
 
 final class LibraryStoreTests: XCTestCase {
+    func testBookmarkUniquenessPreservesOriginalAndOtherPositions() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LibraryStore(root: root)
+        let bookID = UUID()
+        let original = try await store.addBookmark(bookID: bookID, offset: 100, excerpt: "原摘要")
+        do {
+            _ = try await store.addBookmark(bookID: bookID, offset: 100, excerpt: "新摘要")
+            XCTFail("Duplicate position accepted")
+        } catch BookmarkError.duplicatePosition { }
+        let adjacent = try await store.addBookmark(bookID: bookID, offset: 101, excerpt: "邻近位置")
+        let other = try await store.addBookmark(bookID: UUID(), offset: 100, excerpt: "另一书")
+        let reopened = LibraryStore(root: root)
+        let marks = try await reopened.bookmarks(for: bookID)
+        XCTAssertEqual(marks.map(\.id), [original.id, adjacent.id])
+        XCTAssertEqual(marks.first?.excerpt, "原摘要")
+        XCTAssertEqual(try XCTUnwrap(marks.first).createdAt.timeIntervalSince1970, original.createdAt.timeIntervalSince1970, accuracy: 1)
+        try await reopened.removeBookmark(id: original.id)
+        let remaining = try await reopened.bookmarks(for: bookID)
+        let otherMarks = try await reopened.bookmarks(for: other.bookID)
+        XCTAssertEqual(remaining.map(\.id), [adjacent.id])
+        XCTAssertEqual(otherMarks.map(\.id), [other.id])
+        try await reopened.removeBookmark(id: adjacent.id)
+        let empty = try await reopened.bookmarks(for: bookID)
+        XCTAssertTrue(empty.isEmpty)
+    }
+
     func testImportEditProgressBookmarkAndDelete() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let source = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).txt")

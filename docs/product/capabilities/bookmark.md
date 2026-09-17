@@ -35,7 +35,7 @@ HTTP 字段以 [OpenAPI](../../../contracts/openapi.yaml) 为准；能力描述�
 | Client | Status | Notes |
 |---|---|---|
 | Android | done | 同位置去重、单条删除确认及最后一条删除后的空列表 |
-| iOS | partial | 单条删除已有，同位置去重待调整（Decision 0008） |
+| iOS | implemented | 同位置判重并保留原记录、重复提示、单条删除及空列表；历史重复记录不自动清理 |
 | Backend | unsupported | 服务端职责，不是阅读客户端 |
 
 未评估端见 [矩阵](../matrix/capability-matrix.md)；partial 表示存在范围缺口或未决业务差异，不等于整个功能不可用。

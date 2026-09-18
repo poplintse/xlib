@@ -1,6 +1,6 @@
 # Capability Matrix
 
-初始盘点于 2026-09-14，更新于 2026-09-16，基于代码与文档，非发布验收。业务定义以能力文件为准。Backend 列表示服务端支持职责，不表示终端功能；API 不是独立客户端，apple-shared 是共享实现包。
+基于代码与文档，非发布验收。业务定义以能力文件为准。Backend 列表示服务端支持职责，不表示终端功能；API 不是独立客户端，apple-shared 是共享实现包。
 
 - done：当前代码覆盖已定义范围，不代表所有未知产品规则已解决。
 - partial：已实现一部分，或存在已知语义冲突/入口缺口。
@@ -17,8 +17,9 @@
 | [CAP-BOOKMARK](../capabilities/bookmark.md) | active | done | done | not-evaluated | not-evaluated | not-evaluated | unsupported |
 | [CAP-READING-PREFERENCES](../capabilities/reading-preferences.md) | active | done | done | not-evaluated | not-evaluated | not-evaluated | unsupported |
 | [CAP-SYNC-IDENTITY](../capabilities/sync-identity.md) | active | done | done | not-evaluated | not-evaluated | not-evaluated | done |
-| [CAP-PROGRESS-SYNC](../capabilities/progress-sync.md) | active | done | done | not-evaluated | not-evaluated | not-evaluated | done |
+| [CAP-PROGRESS-SYNC](../capabilities/progress-sync.md) | active | done | partial | not-evaluated | not-evaluated | not-evaluated | done |
 | [CAP-AUTO-PAGING](../capabilities/auto-paging.md) | candidate | done | done | not-evaluated | not-evaluated | not-evaluated | unsupported |
 | [CAP-CLOUD-DATA-CONTROL](../capabilities/cloud-data-control.md) | active | done | done | not-evaluated | not-evaluated | not-evaluated | done |
+| [CAP-TEXT-COPY](../capabilities/text-copy.md) | candidate | done | not-evaluated | not-evaluated | not-evaluated | not-evaluated | unsupported |
 
-候选能力的 done 仅表示已存在实现，不表示正式产品承诺。Web / Windows 未立项，无对应空客户端文件。Shared Optional 的选择由客户端范围决定。所有 partial 的具体原因见能力及客户端文档。
+候选能力的 done 仅表示已存在实现，不表示正式产品承诺。Web / Windows 未立项，无对应空客户端文件。Shared Optional 的选择由客户端范围决定。所有 partial 的具体原因见能力及客户端文档。iOS 进度同步的 partial 来自导入时间充当阅读时间的已知冲突。Android 批量导入和搜索起点选择属于已有能力扩展，不据此给其他端新增计划。

@@ -66,15 +66,26 @@ final class ProgressSyncCoordinator {
     private long sessionGeneration;
     private volatile long preparingBookId = -1L;
     private volatile String currentPromptId;
+    private volatile Object readerToken;
+    private volatile Object promptReaderToken;
     private volatile long configurationGeneration;
     private boolean registrationScheduled;
 
     boolean isPreparing(long bookId) { return preparingBookId == bookId; }
-    boolean isCurrentPrompt(String id) { return id != null && id.equals(currentPromptId); }
+    boolean isCurrentPrompt(String id) {
+        return id != null && id.equals(currentPromptId) && readerToken != null
+                && readerToken == promptReaderToken;
+    }
+
+    private boolean isCurrentReaderSession() {
+        return session != null && session.readerToken == readerToken;
+    }
 
     void onPageReady(long bookId) {
+        Object token = readerToken;
         serial.execute(() -> {
-            if (session == null || session.localBookId != bookId) return;
+            if (!isCurrentReaderSession() || session.readerToken != token
+                    || session.localBookId != bookId) return;
             session.phase.positioned = true;
             updatePreparation();
             schedulePeriodicIfAllowed();
@@ -82,7 +93,8 @@ final class ProgressSyncCoordinator {
     }
 
     private void updatePreparation() {
-        preparingBookId = session != null && !session.phase.canRead() ? session.localBookId : -1L;
+        if (!isCurrentReaderSession()) return;
+        preparingBookId = !session.phase.canRead() ? session.localBookId : -1L;
         publishState();
     }
 
@@ -180,6 +192,8 @@ final class ProgressSyncCoordinator {
     }
 
     void openBook(long localBookId, File file, long fileSize, long offset, long readAtMs) {
+        Object token = new Object();
+        readerToken = token;
         readerVisible = true;
         preparingBookId = localBookId;
         currentPromptId = null;
@@ -188,7 +202,7 @@ final class ProgressSyncCoordinator {
             cancelPeriodic();
             localStore.seed(localBookId, fileSize, offset, readAtMs);
             session = new ReaderSession(UUID.randomUUID().toString(), localBookId, file,
-                    ReaderComparisonState.PENDING);
+                    ReaderComparisonState.PENDING, token);
             session.active = true;
             if (!tokenStore.enabled()) {
                 session.phase.complete();
@@ -201,6 +215,7 @@ final class ProgressSyncCoordinator {
     }
 
     void closeBook() {
+        readerToken = null;
         readerVisible = false;
         preparingBookId = -1L;
         currentPromptId = null;
@@ -597,7 +612,7 @@ final class ProgressSyncCoordinator {
             BookHashCache.HashResult finalResult = result;
             try {
                 serial.execute(() -> {
-                    if (generation != sessionGeneration || session == null
+                    if (generation != sessionGeneration || !isCurrentReaderSession()
                         || session.localBookId != localBookId) return;
                     if (finalResult == null || finalResult.fileSize <= 0L) {
                         allowOfflineReading();
@@ -606,7 +621,10 @@ final class ProgressSyncCoordinator {
                     LocalProgressSnapshot local = localStore.setIdentity(localBookId,
                         finalResult.bookHash, finalResult.fileSize);
                     session.bookKey = local == null ? null : local.bookKey();
-                    if (session.bookKey == null || disabledBookKeys.contains(session.bookKey)) return;
+                    if (session.bookKey == null || disabledBookKeys.contains(session.bookKey)) {
+                        allowOfflineReading();
+                        return;
+                    }
                     if (!tokenStore.enabled() || hasConfigurationChanged()) {
                         allowOfflineReading();
                         autoStartIfNeeded();
@@ -684,7 +702,7 @@ final class ProgressSyncCoordinator {
     }
 
     private void compareCurrentBook() {
-        if (session == null || !readerVisible || !session.active || session.temporarySearchReading || !foreground
+        if (!isCurrentReaderSession() || !readerVisible || !session.active || session.temporarySearchReading || !foreground
                 || session.bookKey == null
                 || session.comparisonState == ReaderComparisonState.COMPLETED
                 || session.comparisonState == ReaderComparisonState.AWAITING_JUMP_DECISION) {
@@ -699,6 +717,7 @@ final class ProgressSyncCoordinator {
             updatePreparation();
             session.promptedRemoteVersion = remote.version;
             String sessionId = UUID.randomUUID().toString();
+            promptReaderToken = session.readerToken;
             currentPromptId = sessionId;
             long localBookId = session.localBookId;
             mainHandler.post(() -> {
@@ -754,11 +773,12 @@ final class ProgressSyncCoordinator {
     }
 
     private boolean canSyncCurrentSession() {
-        return foreground && readerVisible && session != null && session.active
+        return foreground && readerVisible && isCurrentReaderSession() && session.active
                 && !session.temporarySearchReading
                 && session.comparisonState == ReaderComparisonState.COMPLETED
                 && session.phase.canUpload()
-                && session.bookKey != null && canCallBusinessApi();
+                && session.bookKey != null && !disabledBookKeys.contains(session.bookKey)
+                && canCallBusinessApi();
     }
 
     private boolean canCallBusinessApi() {
@@ -799,7 +819,8 @@ final class ProgressSyncCoordinator {
         lastFailureCode = errorCode(error);
         if (error instanceof SyncApiClient.ApiException) {
             SyncApiClient.ApiException apiError = (SyncApiClient.ApiException) error;
-            if (apiError.status == 401) {
+            if (apiError.status == 401 || (apiError.status == 403
+                    && "DEVICE_FORBIDDEN".equals(apiError.code))) {
                 availability = SyncAvailability.TOKEN_REQUIRED;
                 cancelPeriodic();
                 cancelRecovery();
@@ -933,6 +954,7 @@ final class ProgressSyncCoordinator {
     }
 
     private static final class ReaderSession {
+        final Object readerToken;
         final String sessionId;
         final long localBookId;
         final File file;
@@ -945,7 +967,8 @@ final class ProgressSyncCoordinator {
         boolean active;
 
         ReaderSession(String sessionId, long localBookId, File file,
-                      ReaderComparisonState comparisonState) {
+                      ReaderComparisonState comparisonState, Object readerToken) {
+            this.readerToken = readerToken;
             this.sessionId = sessionId;
             this.localBookId = localBookId;
             this.file = file;

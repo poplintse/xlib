@@ -2,7 +2,7 @@
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-release="${1:-0.9.9}"
+release="${1:-${RELEASE_VERSION:-0.9.11}}"
 manifest="$root/releases/$release.yaml"
 
 if [ ! -f "$manifest" ]; then

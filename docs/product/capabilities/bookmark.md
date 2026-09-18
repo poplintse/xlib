@@ -34,7 +34,7 @@ HTTP 字段以 [OpenAPI](../../../contracts/openapi.yaml) 为准；能力描述�
 
 | Client | Status | Notes |
 |---|---|---|
-| Android | done | 同位置去重、单条删除确认及最后一条删除后的空列表 |
+| Android | implemented | 同位置去重、单条删除确认及最后一条删除后的空列表 |
 | iOS | implemented | 同位置判重并保留原记录、重复提示、单条删除及空列表；历史重复记录不自动清理 |
 | Backend | unsupported | 服务端职责，不是阅读客户端 |
 

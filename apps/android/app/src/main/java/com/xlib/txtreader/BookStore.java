@@ -70,7 +70,7 @@ final class BookStore {
         book.offset = item.optLong("offset", 0L);
         book.progress = (float) item.optDouble("progress", 0d);
         book.pageMode = item.optBoolean("pageMode", true);
-        book.updatedAt = item.optLong("updatedAt", System.currentTimeMillis());
+        book.updatedAt = item.optLong("updatedAt", 0L);
         return book;
     }
 

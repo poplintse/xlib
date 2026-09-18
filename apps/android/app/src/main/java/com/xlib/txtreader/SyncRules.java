@@ -40,7 +40,7 @@ final class SyncRules {
 
     static boolean shouldUploadLocal(LocalProgressSnapshot local,
                                      RemoteProgressSnapshot remote) {
-        if (local == null || local.bookHash == null) return false;
+        if (local == null || local.bookHash == null || local.readAtMs <= 0L) return false;
         if (remote == null || !local.bookHash.equals(remote.bookHash)
                 || local.fileSize != remote.fileSize) return true;
         return local.readAtMs > remote.readAtMs;

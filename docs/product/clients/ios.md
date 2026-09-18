@@ -6,11 +6,11 @@
 
 ## Implemented Capabilities
 
-CAP-LIBRARY、CAP-READING、CAP-SEARCH、CAP-TOC、CAP-BOOKMARK、CAP-READING-PREFERENCES，以及 Shared Optional 的 CAP-SYNC-IDENTITY、CAP-PROGRESS-SYNC、CAP-CLOUD-DATA-CONTROL。candidate CAP-AUTO-PAGING 有实现。见 [矩阵](../matrix/capability-matrix.md)。
+CAP-LIBRARY、CAP-READING、CAP-SEARCH、CAP-TOC、CAP-BOOKMARK、CAP-READING-PREFERENCES，以及 Shared Optional 的 CAP-SYNC-IDENTITY、CAP-CLOUD-DATA-CONTROL。CAP-PROGRESS-SYNC 为 partial，见下方冲突；candidate CAP-AUTO-PAGING 有实现。见 [矩阵](../matrix/capability-matrix.md)。
 
-### 本版本 Product Capability 补齐（2026-09-15）
+### Product Capability 实现
 
-按能力 Type 与矩阵盘点，正式 Product Capability 的缺口为 CAP-SEARCH、CAP-BOOKMARK；其余四项已有实现。同步三项 Shared Optional Capability 于 2026-09-16 补齐。
+搜索与书签属于 A. Existing Product Capability；没有新增正式能力。
 
 | Capability | iOS 设计与实现 | 验收重点 |
 |---|---|---|
@@ -19,19 +19,21 @@ CAP-LIBRARY、CAP-READING、CAP-SEARCH、CAP-TOC、CAP-BOOKMARK、CAP-READING-PR
 
 这些属于已有 Product Capability 的业务补齐。续查按钮、原生导航及异步任务取消属于 iOS 实现细节，不成为跨端 Feature。历史重复书签保持原样，不自动清理。
 
-### 同步能力补齐（2026-09-16）
+### Shared Optional Capability 实现（分类 D）
 
 | Capability | iOS 设计与实现 | 验收重点 |
 |---|---|---|
 | CAP-SYNC-IDENTITY | 配置代际隔离旧登录、拉取、上传与设备响应；凭据清除/写入串行，配置修改立即使旧会话失效 | 延迟登录/拉取不能覆盖新配置，配置离线持久化 |
-| CAP-PROGRESS-SYNC | 阅读前比较、选择和定位门控；提示本地与云端百分比；仅实际位移更新时间，接受远端保留远端时间；只上传活动正式阅读书籍 | 恢复/原地停留不改时间，准备期不上传，离线恢复先比较，拉取失败只本地阅读，无会话不补传 |
+| CAP-PROGRESS-SYNC | 阅读前比较、选择和定位门控；提示本地与云端百分比；阅读内实际位移更新时间，接受远端保留远端时间；只上传活动正式阅读书籍；导入时间缺陷见 Partial | 恢复/原地停留不改时间，准备期不上传，离线恢复先比较，拉取失败只本地阅读，无会话不补传 |
 | CAP-CLOUD-DATA-CONTROL | 目录/书签页提供本书云端删除与原生确认；上传/删除串行；成功后暂停本次阅读上传，真正关闭重开才恢复 | 在途上传排序、同会话刷新/配置重建不解除暂停、失败不暂停、本地数据保留 |
 
-书签重复错误已从存储层传递至页面，不再被静默吞掉。2026-09-17 补齐阅读加载中断后返回的恢复处理及隔离 UI 测试：70 项单元测试、11 项 UI 测试均有通过记录，Debug/不签名 Release 模拟器构建通过。UI 已覆盖书签去重删除、搜索临时阅读隔离、单书云端删除确认/取消和本地数据保留；删除采用内存服务，真实云端删除和跨设备验收未执行，详见 [CURRENT](../../CURRENT.md)。
+书签重复错误传递至页面；导航中断加载后返回可恢复加载，离开阅读停止自动翻页。任务取消、凭据串行写入、隔离 UI 测试入口属于 F. Implementation Detail。既有自动化结果及真实服务验收边界见 [CURRENT](../../CURRENT.md)，不以隔离服务测试代替真实云端验收。
 
 ## Partial Capabilities
 
-当前已确认范围内无已知未实现项；不代表全部发布验收已完成。
+CAP-PROGRESS-SYNC：**implementation vs capability conflict**。`LibraryStore.importBook` 将新书 `updatedAt` 设为导入时刻；`beginReading` 把它作为 `readAtMs`，`syncCurrentProgress` 在完成比较后可直接上传。新导入同一文件、尚未翻页时，本地 0% 可能比云端真实阅读记录更新，从而覆盖云端。违反 Decision 0003 的实际阅读时间语义，属于实现缺陷，不是能力定义演进。本轮只记录，不修改代码；Android 已用未知时间 0 和上传门控修复对应边界。
+
+证据：[导入](../../../apps/ios/XLibReader/Persistence/LibraryStore.swift)、[同步协调器](../../../apps/ios/XLibReader/Sync/ProgressSyncCoordinator.swift)。已有有效历史时间不能在没有来源依据时统一清零；历史错误时间的处理仍需产品判断。
 
 ## Planned Capabilities
 

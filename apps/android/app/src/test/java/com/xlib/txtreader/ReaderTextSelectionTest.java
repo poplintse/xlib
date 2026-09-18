@@ -5,6 +5,22 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ReaderTextSelectionTest {
+    @Test public void copyMenuStaysInsideHorizontalViewport() {
+        assertEquals(8, ReaderTextSelection.clampMenuCoordinate(-50, 8, 352, 184));
+        assertEquals(168, ReaderTextSelection.clampMenuCoordinate(330, 8, 352, 184));
+        assertEquals(80, ReaderTextSelection.clampMenuCoordinate(80, 8, 352, 184));
+    }
+
+    @Test public void copyMenuPrefersAboveAndFallsBelowFirstLine() {
+        assertEquals(132, ReaderTextSelection.menuTop(200, 240, 56, 24, 700, 12));
+        assertEquals(82, ReaderTextSelection.menuTop(30, 70, 56, 24, 700, 12));
+    }
+
+    @Test public void copyMenuClampsLongSelectionAndOversizedContent() {
+        assertEquals(644, ReaderTextSelection.menuTop(24, 695, 56, 24, 700, 12));
+        assertEquals(24, ReaderTextSelection.menuTop(24, 90, 120, 24, 100, 12));
+    }
+
     @Test public void selectsWordAndPreservesOriginalCase() {
         String text = "Hello reader, welcome";
         int[] range = ReaderTextSelection.wordAt(text, 9);

@@ -23,5 +23,6 @@ Client Implementations 使用 implemented / partial / planned / unsupported；�
 ## Candidate
 
 - [CAP-AUTO-PAGING](auto-paging.md)：自动翻页，已存在但尚无独立跨端承诺。
+- [CAP-TEXT-COPY](text-copy.md)：正文选取复制，来源 Android，其他客户端范围未评估。
 
 离线能力由愿景明确为阅读前提，归入 CAP-READING，不因通用示例将其降为可选能力。后台调度不等于独立“后台同步产品”；缓存窗口、字节映射和限流是实现细节。

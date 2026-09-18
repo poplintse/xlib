@@ -2,7 +2,7 @@
 
 ## 范围
 
-当前 Alpha 开发清单为 [0.9.9（draft）](../releases/0.9.9.yaml)，包含 Android、iOS、同步 Backend、OpenAPI v1 和 Apple 共享核心。macOS 标记为 planned，不属于本次可交付范围。
+当前 Alpha 开发清单为 [0.9.11（draft）](../releases/0.9.11.yaml)，记录 Android 0.9.11/build 67、iOS 0.9.9/build 43、Backend 0.9.9、OpenAPI v1 和 Apple 共享核心。新增清单不升级组件、不表示已经发布；旧清单保留。macOS 标记为 planned，不属于本次可交付范围。
 
 ## 必须通过
 

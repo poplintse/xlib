@@ -6,7 +6,7 @@ SHELL := /bin/sh
 	build-macos-debug build-macos-release \
 	build-backend-release prepare-release release-check
 
-RELEASE ?= 0.9.9
+RELEASE ?= $(or $(RELEASE_VERSION),0.9.11)
 
 help:
 	@printf '%s\n' \
@@ -28,10 +28,10 @@ bootstrap:
 	./scripts/bootstrap.sh
 
 check:
-	./scripts/check-local.sh
+	RELEASE_VERSION="$(RELEASE)" ./scripts/check-local.sh
 
 check-alpha:
-	./scripts/check-alpha.sh
+	RELEASE_VERSION="$(RELEASE)" ./scripts/check-alpha.sh
 
 test-backend:
 	./scripts/test-backend.sh

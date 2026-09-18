@@ -21,6 +21,6 @@
 
 ## Consequences
 
-CAP-SEARCH 采用本规则。Android 已覆盖手动回绕至固定原起点及分批搜索组合；iOS 需补齐回绕选择及搜索范围控制。当前状态见能力矩阵，关键词长度计数由 [Decision 0014](0014-search-query-character-count.md) 确认。
+CAP-SEARCH 采用本规则。Android 已覆盖手动回绕至固定原起点及分批搜索组合；iOS 已实现回绕选择及固定原起点范围控制。当前状态见能力矩阵，关键词长度计数由 [Decision 0014](0014-search-query-character-count.md) 确认。
 
 后续验收覆盖中途起搜后到末尾、用户不继续、用户选择继续并在原起点结束、从书首起搜、无结果和跨批次续查。实施与验收状态见 [CURRENT](../../CURRENT.md)。

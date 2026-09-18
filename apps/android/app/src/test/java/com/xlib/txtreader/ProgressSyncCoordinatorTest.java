@@ -275,6 +275,105 @@ public class ProgressSyncCoordinatorTest {
         assertNull(prompt.get());
     }
 
+    @Test public void unreadImportPromptsForCloudInsteadOfUploadingZero() throws Exception {
+        remote.set(List.of(progress(600, 200)));
+        open(0, 0);
+        await(() -> prompt.get() != null);
+        assertEquals(0, locals.get(1).readAtMs);
+        coordinator.onJumpDeclined(prompt.get());
+        await(() -> !coordinator.isPreparing(1));
+        refresh();
+        verify(api, never()).syncProgress(any(), anyString(), any());
+    }
+
+    @Test public void unreadImportWithoutCloudWaitsForActualMovement() throws Exception {
+        open(0, 0);
+        await(() -> !coordinator.isPreparing(1));
+        refresh();
+        verify(api, never()).syncProgress(any(), anyString(), any());
+        coordinator.onLocalProgressChanged(1, 1000, 100, 300);
+        refresh();
+        assertTrue(calls.contains("upload:100:300"));
+    }
+
+    @Test public void revokedDeviceRequiresManualRestartNotAutomaticRegistration() throws Exception {
+        doThrow(new SyncApiClient.ApiException(403, "DEVICE_FORBIDDEN", false, 0))
+                .when(api).pullProgress(any(), anyString());
+        refresh();
+        assertEquals(SyncAvailability.TOKEN_REQUIRED, coordinator.state().availability);
+        coordinator.onForeground();
+        refresh();
+        verify(api, never()).startSync(anyString(), anyString(), anyString(), anyString());
+        doReturn(List.of()).when(api).pullProgress(any(), anyString());
+        AtomicBoolean done = new AtomicBoolean();
+        coordinator.startSync(email.get(), "Android", result -> done.set(result.isSuccess()));
+        await(done::get);
+        assertEquals(SyncAvailability.AVAILABLE, coordinator.state().availability);
+        verify(api).pullProgress("new-token", "device");
+    }
+
+    @Test public void identityForbiddenIsNotTreatedAsDeviceReregistration() throws Exception {
+        doThrow(new SyncApiClient.ApiException(403, "SYNC_UNAVAILABLE", false, 0))
+                .when(api).pullProgress(any(), anyString());
+        refresh();
+        assertEquals(SyncAvailability.SERVICE_UNAVAILABLE, coordinator.state().availability);
+        verify(api, never()).startSync(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test public void rejectedBookRemainsLocallyReadableAfterReopening() throws Exception {
+        doThrow(new SyncApiClient.ApiException(422, "INVALID_PROGRESS", false, 0))
+                .when(api).syncProgress(any(), anyString(), any());
+        open(200, 100);
+        await(() -> "INVALID_PROGRESS".equals(coordinator.state().lastFailureCode));
+        coordinator.closeBook();
+        open(200, 100);
+        await(() -> !coordinator.isPreparing(1));
+        coordinator.onLocalProgressChanged(1, 1000, 300, 400);
+        refresh();
+        assertEquals(300, locals.get(1).offset);
+        verify(api, times(1)).syncProgress(any(), anyString(), any());
+    }
+
+    @Test public void switchingBooksDuringPullNeverUploadsPreviousBook() throws Exception {
+        assertSwitchDuringPull(2);
+    }
+
+    @Test public void reopeningSameBookDuringPullAlsoInvalidatesPreviousSession() throws Exception {
+        assertSwitchDuringPull(1);
+    }
+
+    private void assertSwitchDuringPull(long nextBookId) throws Exception {
+        assertSwitchDuringPull(nextBookId, false);
+    }
+
+    @Test public void switchingBooksDuringPullDoesNotDeliverPreviousBooksPrompt() throws Exception {
+        assertSwitchDuringPull(2, true);
+    }
+
+    private void assertSwitchDuringPull(long nextBookId, boolean newerRemote) throws Exception {
+        offline.set(true);
+        open(200, 100);
+        await(() -> !coordinator.isPreparing(1));
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        AtomicBoolean firstPull = new AtomicBoolean(true);
+        doAnswer(a -> {
+            entered.countDown();
+            assertTrue(release.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            return firstPull.getAndSet(false) && newerRemote ? List.of(progress(600, 200)) : List.of();
+        }).when(api).pullProgress(any(), anyString());
+        coordinator.onForeground();
+        assertTrue(entered.await(3, java.util.concurrent.TimeUnit.SECONDS));
+        coordinator.closeBook();
+        coordinator.openBook(nextBookId, new File("next-book"), 1000, 0, 0);
+        coordinator.onPageReady(nextBookId);
+        release.countDown();
+        await(() -> !coordinator.isPreparing(nextBookId));
+        refresh();
+        verify(api, never()).syncProgress(any(), anyString(), any());
+        assertNull(prompt.get());
+    }
+
     interface Condition { boolean get() throws Exception; }
     private static void await(Condition condition) throws Exception {
         long end = System.nanoTime() + 5_000_000_000L;

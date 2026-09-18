@@ -36,8 +36,8 @@ HTTP 字段以 [OpenAPI](../../../contracts/openapi.yaml) 为准；能力描述�
 
 | Client | Status | Notes |
 |---|---|---|
-| Android | done | 首次手动开启、有效配置自动重建、旧凭据与异步提示隔离；见客户端验证说明 |
-| iOS | done | 配置自动应用、旧请求代际隔离、凭据写入串行；延迟响应回归测试通过 |
+| Android | implemented | 首次手动开启、有效配置自动重建、旧凭据与异步提示隔离；见客户端验证说明 |
+| iOS | implemented | 配置自动应用、旧请求代际隔离、凭据写入串行；延迟响应回归测试通过 |
 | Backend | implemented | 服务端职责，不是阅读客户端 |
 
 未评估端见 [矩阵](../matrix/capability-matrix.md)；partial 表示存在范围缺口或未决业务差异，不等于整个功能不可用。

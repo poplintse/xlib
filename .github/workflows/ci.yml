@@ -21,22 +21,9 @@ jobs:
       - name: Validate contract and release manifest
         run: |
           ruby scripts/check-contract.rb
-          # Determine the release manifest version to check against. On a push
-          # to a release/* branch, prefer that branch name (RELEASE_VERSION is
-          # set by the workflow); otherwise fall back to the Android
-          # versionName, which is the source of truth for monorepo releases.
-          if [ -n "${RELEASE_VERSION:-}" ]; then
-            EXPECTED="${RELEASE_VERSION}"
-          else
-            EXPECTED="$(sed -n 's/^versionName=//p' apps/android/version.properties | head -n1 || true)"
-          fi
-          if [ -z "${EXPECTED:-}" ]; then
-            echo "::warning::No version available; skipping release manifest check."
-          elif [ ! -f "releases/${EXPECTED}.yaml" ]; then
-            echo "::warning::releases/${EXPECTED}.yaml not found yet; skipping release manifest check."
-          else
-            ./scripts/release-check.sh "${EXPECTED}"
-          fi
+          ruby scripts/test-release-check.rb
+          # Match local defaults; a missing or mismatched manifest must fail.
+          ./scripts/release-check.sh
 
   backend:
     runs-on: ubuntu-latest

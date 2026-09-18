@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PointF;
@@ -11,12 +12,17 @@ import android.graphics.Rect;
 import android.text.StaticLayout;
 import android.view.ActionMode;
 import android.view.HapticFeedbackConstants;
-import android.view.Menu;
-import android.view.MenuItem;
+import android.os.Build;
+import android.view.Gravity;
+import android.view.textclassifier.TextClassifier;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.widget.TextView;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.PopupWindow;
+import android.view.ViewGroup;
 
 /** Draws the exact page slice produced by the background paginator. */
 final class ReaderPageTextView extends TextView {
@@ -31,13 +37,24 @@ final class ReaderPageTextView extends TextView {
     private float downY;
     private float dragDeltaX;
     private float dragDeltaY;
-    private ActionMode selectionMenu;
+    private PopupWindow selectionMenu;
     private Runnable onSelectionStarted;
     private final Runnable longPress = this::selectWord;
 
     ReaderPageTextView(Context context) {
         super(context);
+        setTextIsSelectable(false);
+        setLongClickable(false);
+        if (Build.VERSION.SDK_INT >= 26) setTextClassifier(TextClassifier.NO_OP);
     }
+
+    // This view draws and owns its selection. Never enter the framework/OEM editor.
+    @Override public ActionMode startActionMode(ActionMode.Callback callback) { return null; }
+    @Override public ActionMode startActionMode(ActionMode.Callback callback, int type) { return null; }
+    @Override public boolean showContextMenu() { return false; }
+    @Override public boolean showContextMenu(float x, float y) { return false; }
+    @Override public boolean onTextContextMenuItem(int id) { return false; }
+    @Override public boolean performLongClick() { return true; }
 
     void setReaderPage(ReaderPage page, CharSequence accessibilityText) {
         clearTextSelection();
@@ -85,7 +102,7 @@ final class ReaderPageTextView extends TextView {
                     int line = layout.getLineForOffset(offset);
                     dragDeltaY = getPaddingTop() - renderedPage.layoutTop
                             + (layout.getLineTop(line) + layout.getLineBottom(line)) / 2f - y;
-                    if (selectionMenu != null) selectionMenu.hide(-1);
+                    dismissSelectionMenu();
                 } else {
                     clearTextSelection();
                     consumeGesture = true; // Dismissal must not also turn the page.
@@ -104,16 +121,14 @@ final class ReaderPageTextView extends TextView {
                 if (draggedHandle == 1 && offset < selectionEnd) selectionStart = offset;
                 if (draggedHandle == 2 && offset > selectionStart) selectionEnd = offset;
                 invalidate();
-                if (selectionMenu != null) selectionMenu.hide(-1);
+                dismissSelectionMenu();
             }
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
                 || action == MotionEvent.ACTION_POINTER_DOWN) {
             removeCallbacks(longPress);
             draggedHandle = 0;
-            if (selectionMenu != null) {
-                selectionMenu.hide(0);
-                selectionMenu.invalidateContentRect();
-            }
+            if (action == MotionEvent.ACTION_UP && hasTextSelection()) showSelectionMenu();
+            else if (action != MotionEvent.ACTION_UP) clearTextSelection();
         }
         return consumeGesture;
     }
@@ -160,45 +175,84 @@ final class ReaderPageTextView extends TextView {
         consumeGesture = true;
         if (onSelectionStarted != null) onSelectionStarted.run();
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-        selectionMenu = startActionMode(new ActionMode.Callback2() {
-            @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
-                menu.add(Menu.NONE, android.R.id.copy, Menu.NONE, android.R.string.copy)
-                        .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                return true;
-            }
-            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-                return false;
-            }
-            @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-                if (item.getItemId() != android.R.id.copy || selectionStart < 0) return false;
-                ClipboardManager clipboard = (ClipboardManager)
-                        getContext().getSystemService(Context.CLIPBOARD_SERVICE);
-                if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText(
-                        "", renderedPage.text.substring(selectionStart, selectionEnd)));
-                mode.finish();
-                return true;
-            }
-            @Override public void onDestroyActionMode(ActionMode mode) {
-                selectionMenu = null;
-                selectionStart = selectionEnd = -1;
-                draggedHandle = 0;
-                invalidate();
-            }
-            @Override public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
-                if (!hasTextSelection()) {
-                    outRect.setEmpty();
-                    return;
-                }
-                PointF start = handlePoint(true);
-                PointF end = handlePoint(false);
-                outRect.set((int) Math.min(start.x, end.x),
-                        (int) Math.max(0, Math.min(start.y, end.y) - getTextSize() - dp(12)),
-                        (int) Math.max(start.x, end.x) + 1,
-                        (int) Math.max(start.y, end.y));
-            }
-        }, ActionMode.TYPE_FLOATING);
-        if (selectionMenu == null) clearTextSelection();
+        showSelectionMenu();
         invalidate();
+    }
+
+    private void showSelectionMenu() {
+        dismissSelectionMenu();
+        if (!hasTextSelection() || !isAttachedToWindow()) return;
+        int foreground = getCurrentTextColor();
+        boolean dark = Color.red(foreground) + Color.green(foreground) + Color.blue(foreground) > 382;
+        int background = dark ? UiKit.DARK_SURFACE : UiKit.LIGHT_SURFACE;
+        int text = dark ? UiKit.DARK_TEXT : UiKit.LIGHT_TEXT;
+        LinearLayout actions = new LinearLayout(getContext());
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setPadding((int) dp(4), (int) dp(4), (int) dp(4), (int) dp(4));
+        actions.setBackground(UiKit.rounded(getContext(), background, 16));
+        Button copy = selectionButton(getContext().getString(android.R.string.copy), text);
+        copy.setOnClickListener(v -> {
+            if (!hasTextSelection() || renderedPage == null) return;
+            ClipboardManager clipboard = (ClipboardManager)
+                    getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("",
+                        renderedPage.text.substring(selectionStart, selectionEnd)));
+                clearTextSelection();
+            }
+        });
+        Button cancel = selectionButton(getContext().getString(android.R.string.cancel), text);
+        cancel.setOnClickListener(v -> clearTextSelection());
+        actions.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        actions.addView(cancel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        Rect visible = new Rect();
+        getWindowVisibleDisplayFrame(visible);
+        int[] screen = new int[2];
+        int[] window = new int[2];
+        getLocationOnScreen(screen);
+        getLocationInWindow(window);
+        visible.offset(window[0] - screen[0], window[1] - screen[1]);
+        visible.inset((int) dp(8), (int) dp(8));
+        int width = Math.min((int) dp(184), visible.width());
+        if (width <= 0 || visible.height() <= 0) return;
+        actions.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(visible.height(), MeasureSpec.AT_MOST));
+        int height = actions.getMeasuredHeight();
+        PointF start = handlePoint(true);
+        PointF end = handlePoint(false);
+        int x = ReaderTextSelection.clampMenuCoordinate(
+                window[0] + (int) ((start.x + end.x) / 2) - width / 2,
+                visible.left, visible.right, width);
+        int y = ReaderTextSelection.menuTop(
+                window[1] + (int) (Math.min(start.y, end.y) - getTextSize() - dp(12)),
+                window[1] + (int) Math.max(start.y, end.y), height,
+                visible.top, visible.bottom, (int) dp(12));
+        selectionMenu = new PopupWindow(actions, width, height, false);
+        // Keep touches outside the two buttons in our reader/handle gesture pipeline.
+        selectionMenu.setOutsideTouchable(false);
+        selectionMenu.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
+        selectionMenu.setBackgroundDrawable(UiKit.rounded(getContext(), background, 16));
+        selectionMenu.setElevation(dp(8));
+        selectionMenu.showAtLocation(this, Gravity.TOP | Gravity.LEFT, x, y);
+    }
+
+    private Button selectionButton(String label, int color) {
+        Button button = new Button(getContext());
+        button.setText(label);
+        button.setContentDescription(label);
+        UiKit.styleButton(getContext(), button, Color.TRANSPARENT, color, 14);
+        button.setTextSize(14);
+        button.setMinHeight((int) dp(48));
+        button.setMinimumHeight((int) dp(48));
+        button.setPadding((int) dp(12), 0, (int) dp(12), 0);
+        return button;
+    }
+
+    private void dismissSelectionMenu() {
+        PopupWindow menu = selectionMenu;
+        selectionMenu = null;
+        if (menu != null) menu.dismiss();
     }
 
     private PointF handlePoint(boolean start) {
@@ -216,8 +270,7 @@ final class ReaderPageTextView extends TextView {
 
     void clearTextSelection() {
         removeCallbacks(longPress);
-        if (selectionMenu != null) selectionMenu.finish();
-        selectionMenu = null;
+        dismissSelectionMenu();
         selectionStart = selectionEnd = -1;
         draggedHandle = 0;
         invalidate();
@@ -226,6 +279,11 @@ final class ReaderPageTextView extends TextView {
     @Override protected void onDetachedFromWindow() {
         clearTextSelection();
         super.onDetachedFromWindow();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasWindowFocus) {
+        super.onWindowFocusChanged(hasWindowFocus);
+        if (!hasWindowFocus) clearTextSelection();
     }
 
     @Override

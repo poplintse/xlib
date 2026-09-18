@@ -6,7 +6,7 @@ on:
       release:
         description: Monorepo release manifest version
         required: true
-        default: 0.9.9
+        default: 0.9.11
   push:
     tags:
       - "*.*.*"

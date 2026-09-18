@@ -34,7 +34,7 @@ HTTP 字段以 [OpenAPI](../../../contracts/openapi.yaml) 为准；能力描述�
 
 | Client | Status | Notes |
 |---|---|---|
-| Android | implemented | 以客户端文档及已知差异为准 |
+| Android | implemented | 支持批量导入与完整字节去重；20 本上限及重复策略仅为该端扩展，未形成跨端承诺，见客户端文档 |
 | iOS | implemented | 以客户端文档及已知差异为准 |
 | macOS | planned | 仅有基础阅读/书库方向，尚无 target |
 | Backend | unsupported | 服务端职责，不是阅读客户端 |

@@ -38,13 +38,13 @@ HTTP 字段以 [OpenAPI](../../../contracts/openapi.yaml) 为准；能力描述�
 
 ## Edge Cases
 
-跨读取边界命中、无结果、Unicode、重复查询；现有客户端匹配语义存在差异，见初始化决策。
+跨读取边界命中、无结果、Unicode、重复查询及加载失败；既有匹配/分批/回绕差异已补齐，自动化不代替完整字符集与真机验收。
 
 ## Client Implementations
 
 | Client | Status | Notes |
 |---|---|---|
-| Android | done | 流式大小写不敏感、不重叠匹配及扩展字素簇计数；包含续查/手动回绕测试 |
+| Android | implemented | 已覆盖匹配、字素簇计数、续查及手动回绕；额外提供起搜前选书首的候选扩展，尚不提升为共同规则 |
 | iOS | implemented | 分批续查、用户主动回绕、Unicode 计数及临时阅读隔离已补齐；验证见 CURRENT |
 | Backend | unsupported | 服务端职责，不是阅读客户端 |
 

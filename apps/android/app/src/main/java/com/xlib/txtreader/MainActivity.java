@@ -354,6 +354,10 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (readerText != null && readerText.hasTextSelection()) {
+            readerText.clearTextSelection();
+            return;
+        }
         if (catalogOpen && currentBook != null) {
             catalogOpen = false;
             showReader(currentBook);
@@ -816,6 +820,7 @@ public class MainActivity extends Activity {
     }
 
     private String relativeReadTime(long timestamp) {
+        if (timestamp <= 0L) return "暂无阅读记录";
         long hours = Math.max(1L, (System.currentTimeMillis() - timestamp) / (60L * 60L * 1000L));
         return hours < 24L ? hours + "小时前" : (hours / 24L) + "天前";
     }
@@ -1239,7 +1244,8 @@ public class MainActivity extends Activity {
         book.offset = 0L;
         book.progress = 0f;
         book.pageMode = true;
-        book.updatedAt = System.currentTimeMillis();
+        // Importing is not a formal reading event.
+        book.updatedAt = 0L;
         importDeduplicator.accepted(target);
         return book;
     }
@@ -2638,6 +2644,8 @@ public class MainActivity extends Activity {
         String message;
         if ("OFFLINE".equals(code) || "CONNECTION_FAILED".equals(code)) {
             message = "网络不可用，请稍后重试";
+        } else if ("DEVICE_FORBIDDEN".equals(code)) {
+            message = "本机未登记或已被撤销，请点击同步刷新重新登记";
         } else if ("TOKEN_REQUIRED".equals(code) || "INVALID_SYNC_TOKEN".equals(code)
                 || "AUTH_REQUIRED".equals(code)) {
             message = "同步凭据已失效，请重新输入账户信息开启同步";

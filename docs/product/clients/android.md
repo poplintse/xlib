@@ -6,11 +6,11 @@
 
 ## Implemented Capabilities
 
-CAP-LIBRARY、CAP-READING、CAP-SEARCH、CAP-TOC、CAP-BOOKMARK、CAP-READING-PREFERENCES；本版本同时实现 Shared Optional Capability：CAP-SYNC-IDENTITY、CAP-PROGRESS-SYNC、CAP-CLOUD-DATA-CONTROL。candidate CAP-AUTO-PAGING、CAP-TEXT-COPY 有实现但无跨端交付承诺。见 [矩阵](../matrix/capability-matrix.md)。done 表示代码及自动化覆盖，不等于真机或发布验收通过。
+CAP-LIBRARY、CAP-READING、CAP-SEARCH、CAP-TOC、CAP-BOOKMARK、CAP-READING-PREFERENCES；本版本同时实现 Shared Optional Capability：CAP-SYNC-IDENTITY、CAP-CLOUD-DATA-CONTROL；CAP-PROGRESS-SYNC 为 partial，见下方契约差异。candidate CAP-AUTO-PAGING、CAP-TEXT-COPY 有实现但无跨端交付承诺。见 [矩阵](../matrix/capability-matrix.md)。done 表示代码及自动化覆盖，不等于真机或发布验收通过。
 
 ## Partial Capabilities
 
-已确认能力范围内暂无已知实现缺口；真实设备、真实服务和跨设备并发仍需验收，不将未验证环境写成已通过。
+CAP-PROGRESS-SYNC：**implementation vs capability conflict**。进度响应解析将来源设备名称限制为 20 个字符，而后端登记允许 80，OpenAPI DeviceSummary 未设置该上限。合法长名称设备产生的进度可能被 Android 拒绝。P1 仅发现并记录该兼容缺陷，不缩窄产品定义或修改客户端行为。真实设备、真实服务和跨设备并发仍需验收。
 
 ## 能力实现与验证范围
 
@@ -60,6 +60,12 @@ CAP-LIBRARY、CAP-READING、CAP-SEARCH、CAP-TOC、CAP-BOOKMARK、CAP-READING-PR
 
 ## Implementation Notes
 
-SharedPreferences、StaticLayout、连续缓存与分页窗口均属技术实现。具体原生交互见 [reader](../../features/reader.md)，实现边界见 [architecture](../../architecture.md)。源码位于 [apps/android](../../../apps/android/)。
+P2 将导入、书库、搜索、目录/书签、偏好与阅读任务生命周期提取为用例及适配器，分类为 Implementation Detail，不新增 Capability 或平台 Feature。从书首搜索的临时返回位置仍保留搜索前正式位置，修复原实现误用起搜位置的缺陷；能力定义不变。P3 将同步比较状态、配置会话、网络执行与正式进度提交分离，时钟/传输可替换；属于 Implementation Detail，API 和已确认业务语义不变。
+
+P6 将书库、进度、书签、目录、非敏感设置与同步状态迁入 `xlib.db`；`ReadingPreferences` 等 typed Store 通过 `LocalDatabase` 访问。TXT 仍在应用文件目录，Token 仍使用 Android Keystore 保护的现有密文。迁移失败回退 legacy，成功后不双写；legacy 清理由 P7 独立执行。这是 Implementation Detail，不改变 Capability 或同步契约。
+
+P7.0 已确认当前迁移版本尚未发布且没有 Android 真机升级证据，因此旧运行时分支、设备 legacy 数据和 migrator 均暂留。清理顺序及永久保留的 Token/TXT 边界见 [Legacy Persistence Cleanup](../../architecture/legacy-persistence-cleanup.md)。
+
+StaticLayout、连续缓存与分页窗口均属技术实现。具体原生交互见 [reader](../../features/reader.md)，存储约束见 [Local Storage Contract](../../architecture/local-storage-contract.md)，实现边界见 [architecture](../../architecture.md)。源码位于 [apps/android](../../../apps/android/)。
 
 搜索使用固定版本 ICU4J，以兼容 min SDK 23 的用户感知字符计数；需在发布验收关注包体及低端设备开销。详细检查结果统一见 [CURRENT](../../CURRENT.md)。不自动继承其他客户端的平台专属 Feature。

@@ -42,8 +42,8 @@ HTTP 字段以 [OpenAPI](../../../contracts/openapi.yaml) 为准；能力描述�
 
 | Client | Status | Notes |
 |---|---|---|
-| Android | implemented | 正式阅读阶段门控、时间优先、双进度、恢复先比较、仅活动书籍上传；导入/缺失时间为未知且不上传，旧阅读会话响应隔离；真机联调待验收 |
-| iOS | partial | 已有阶段门控、双进度及活动书籍上传；导入时刻仍进入 readAtMs，可能覆盖真实云端进度，见 iOS 文档的 implementation vs capability conflict |
+| Android | partial | 正式阅读阶段门控、时间优先、双进度、恢复先比较、仅活动书籍上传；导入/缺失时间为未知且不上传，旧阅读会话响应隔离；来源设备名称超过 20 字符时拒绝合法响应，见 Android 文档；真机联调待验收 |
+| iOS | implemented | 阶段门控、双进度及活动书籍上传；新导入时间为 0 且禁止未知时间上传，先比较远端再选择；真实跨设备验收仍待执行 |
 | Backend | implemented | 时间优先裁决已有；客户端阅读阶段需各端保证 |
 
 未评估端见 [矩阵](../matrix/capability-matrix.md)；partial 表示存在范围缺口或未决业务差异，不等于整个功能不可用。

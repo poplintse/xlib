@@ -1,5 +1,7 @@
 # XLib 架构
 
+系统重构提案见 [重构计划](refactoring-plan.md)；P0–P6.4 已完成代码实现与本地自动化验证，P6 的历史输入见 [移动端本地存储审计](architecture/local-storage-audit.md)，当前约束见 [Local Storage Contract](architecture/local-storage-contract.md)。验证边界见 CURRENT，下文描述当前架构。
+
 本文记录当前实现的稳定边界。共同业务语义以 [产品能力](product/README.md) 为准，客户端覆盖与差距见 [CURRENT](CURRENT.md)。第 1–7 节主要描述 Android 技术结构，不约束其他客户端界面，也不代表已完成最新业务规则的验收。
 
 ## 0. Monorepo 边界
@@ -16,7 +18,7 @@
 
 ## 1. 页面与状态边界
 
-应用由单个 `MainActivity` 组织书架、阅读、搜索、目录/书签和设置页面。页面切换前必须显式处理阅读位置、自动翻页和临时搜索状态。
+应用由单个 `MainActivity` 装配书架、阅读、搜索、目录/书签和设置的原生 View。导入、书库、搜索及目录/书签分别委托 `BookImportController`、`LibraryController`、`BookSearchController`、`CatalogController`；`ReadingPreferences` 管理偏好键与归一化。`ReaderTaskScope` 管理阅读工作队列与取消代次，`ReaderCacheStore` 管理 XLI2 文件。页面切换前必须显式处理阅读位置、自动翻页和临时搜索状态。
 
 - 书架、设置、目录/书签、搜索和阅读共用全局浅色/深色主题。
 - 正式阅读使用 `Book.offset` 作为主位置；搜索结果阅读使用 `SearchSession` 保存进入搜索前的位置，临时阅读不得覆盖正式进度。
@@ -37,6 +39,12 @@
 - 输入框定位使用其在 ScrollView 内容坐标中的完整矩形，不能用被 IME 裁切后的全局可见矩形计算滚动距离；
 - 仅在同步会话已启动且当前配置与已应用配置一致时，进入同步页才预加载设备列表；设备管理弹窗先渲染内存缓存或本机信息，再异步刷新并原位更新；未同步时只显示同步设置中的当前设备名称，不访问服务端；
 - 确认弹窗统一由主题化 `Dialog` 卡片构建，不依赖会在不同系统版本和主题下退化为旧式白框的默认 AlertDialog 样式。
+
+### 1.3 同步用例边界
+
+`ProgressSyncCoordinator` 保留外部入口、生命周期和副作用编排。`ReadingSyncPhase` 集中阅读比较状态与定位/上传门控，`SyncRules` 保持纯业务规则；单书删除暂停不随配置重建解除。`SyncConfigurationSession` 管理已配置身份、凭据失效和配置代次，`SyncExecution` 保持 API 串行执行、独立哈希队列与恢复定时。
+
+`SyncTransport`、`SyncClock` 及执行器由构造参数注入；生产适配为 `SyncApiClient`、系统时钟与单线程队列。`ReadingProgressRecorder` 是正式阅读进度提交入口，负责位移时间、远端时间保留和本地快照发布；页面不生成阅读时间或修改同步业务状态。会话标识、配置代次及请求代次共同阻止过期结果回写，取消线程本身不代表已发出的 HTTP 请求未执行。
 
 ## 2. 持久化模型
 
@@ -172,3 +180,29 @@ UTF-8、UTF-16LE、UTF-16BE、GB18030 等多字节编码必须在完整字符边
 - Android 和 iOS 的普通构建不得修改版本文件；版本变化只能来自明确的发布准备操作。
 - 根 `Makefile` 与 `scripts/` 是本地和 CI 的统一入口，组件内部仍保留各自原生工具链。
 - `releases/<version>.yaml` 记录 monorepo 发布与组件版本映射，不重置组件自己的版本历史。
+
+## iOS 同步与阅读会话边界
+
+ProgressSyncCoordinator 在 MainActor 上编排 UI 状态与异步副作用。ReadingSyncSession 是阅读比较及位移规则的模型；SyncConfigurationSession 是可观察的身份配置与配置代次，沿用现有 UserDefaults 键；SyncRequestExecution 保持上传/删除互斥和凭据写入顺序。网络、文件哈希/缓存、Keychain 仍由现有异步客户端及 actor 承接，不将阻塞 I/O 搬入页面。
+
+FormalReadingProgress 由 ReaderEngine 与同步会话共同使用；正式位移产生单调时间，远端定位保留时间，恢复和临时阅读不制造阅读事件。阅读页 @State 中的会话 ID 跨子页面导航保持，暂停可见阅读与关闭重开采用不同语义。本次激活标识拒绝同会话旧准备任务；定位/进度/退出回调按会话 ID 校验。单书删除暂停独立于身份重建，不因页面返回或网络恢复解除。
+
+原 HTTP 合同、本地书库和同步缓存 Schema、Keychain 编码、SwiftUI 导航和组件版本保持不变。验证状态见 CURRENT。
+
+## Backend PostgreSQL 边界
+
+Backend 仍是单个 TypeScript 服务，持久化继续使用 PostgreSQL。路由负责协议解析和认证入口，AuthService/ProgressService 负责编排与事务，IdentityRepository/ProgressRepository 只在调用方提供的 Pool 或 transaction client 上执行 SQL。Repository 不自行创建事务或切换连接。
+
+身份级写入先锁定 active user，再用新的查询复查请求设备。进度上传、容量检查、单书删除和设备撤销因此按身份串行，等待期间提交的撤销不会因旧 statement snapshot 被忽略。进度记录仍按 readAt 优先、设备 UUID 决胜；HTTP 与 PostgreSQL Schema 均未因 P5 改变。
+
+本地 `make test-backend-postgres` 使用只绑定 Unix socket 的临时 PostgreSQL 17：owner 执行 migration，服务以受限 DML 角色运行。该入口验证真实事务回滚、并发容量、上传/删除顺序与撤销竞态；常规 Backend 测试不再是数据库事务正确性的唯一证据。
+
+## P6 本地存储边界
+
+Android/iOS 生产路径已经把 Book、Progress、Bookmark、TOC、非敏感 Setting 与 SyncState 收敛到各端 `xlib.db`，由 typed Store/Repository 和 `LocalDatabase` 访问。TXT 正文继续使用文件系统，Android Keystore 保护的凭据和 iOS Keychain 凭据继续使用 Secure Store。删书事务记录待删除相对路径，正文删除失败会在下次书库加载重试。
+
+两端共享数据语义、约束与迁移夹具，不共享平台数据库实现。首次迁移校验 legacy 正式数据，在一个事务中写入 Schema v1 和 ledger；重复执行按 migration ID + fingerprint 跳过，来源变化拒绝覆盖。旧存储只读保留到独立 P7 清理阶段，生产路径不双写。该工程迁移不新增 Capability，也不修改同步 API、Backend PostgreSQL Schema 或跨设备业务规则。
+
+## P7 legacy 清理边界
+
+P7 分为旧运行时路径、已迁移设备数据和一次性 migrator 三类清理。前两类等待迁移版本发布、双端真实设备升级与回退窗口；migrator 还必须保留到最低受支持的直接升级来源已经包含 SQLite，避免 pre-SQLite 版本跳跃升级时断链。当前 P7.0 只完成删除清单与门槛审计，详见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md)。

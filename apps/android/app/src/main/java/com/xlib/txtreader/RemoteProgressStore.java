@@ -14,17 +14,27 @@ final class RemoteProgressStore {
     private static final String KEY_ITEMS = "sync_remote_items";
 
     private final SharedPreferences preferences;
+    private final LocalDatabase database;
     private final Map<BookKey, RemoteProgressSnapshot> snapshots = new HashMap<>();
     private String email = "";
 
     RemoteProgressStore(SharedPreferences preferences) {
         this.preferences = preferences;
+        this.database = null;
     }
+
+    RemoteProgressStore(LocalDatabase database) { this.preferences = null; this.database = database; }
 
     synchronized void open(String requestedEmail) {
         String normalized = SyncTokenStore.normalizeEmail(requestedEmail);
         snapshots.clear();
         email = normalized;
+        if (database != null) {
+            for (RemoteProgressSnapshot snapshot : database.loadRemote(normalized, null)) {
+                snapshots.put(snapshot.bookKey(), snapshot);
+            }
+            return;
+        }
         if (!normalized.equals(preferences.getString(KEY_EMAIL, ""))) return;
         String raw = preferences.getString(KEY_ITEMS, "[]");
         try {
@@ -68,6 +78,7 @@ final class RemoteProgressStore {
     synchronized void clear() {
         email = "";
         snapshots.clear();
+        if (database != null) { database.clearRemote(); return; }
         preferences.edit().remove(KEY_EMAIL).remove(KEY_ITEMS).apply();
     }
 
@@ -84,6 +95,10 @@ final class RemoteProgressStore {
     }
 
     private void persist() {
+        if (database != null) {
+            database.replaceRemote(email, new java.util.ArrayList<>(snapshots.values()), null);
+            return;
+        }
         try {
             JSONArray items = new JSONArray();
             for (RemoteProgressSnapshot snapshot : snapshots.values()) {

@@ -13,12 +13,17 @@ import java.util.ArrayList;
 
 final class TocStore {
     private final File directory;
+    private final LocalDatabase database;
 
     TocStore(Context context) {
         directory = new File(context.getFilesDir(), "toc");
+        database = null;
     }
 
+    TocStore(LocalDatabase database) { this.directory = null; this.database = database; }
+
     TocDocument read(Book book) {
+        if (database != null) return database.readToc(book);
         File source = new File(book.path);
         File cache = fileFor(book);
         if (!cache.exists() || !source.exists()) return null;
@@ -50,6 +55,7 @@ final class TocStore {
     }
 
     void write(Book book, TocDocument document) throws Exception {
+        if (database != null) { database.writeToc(book, document); return; }
         if (!directory.exists() && !directory.mkdirs()) {
             throw new IllegalStateException("Cannot create TOC directory");
         }
@@ -72,6 +78,7 @@ final class TocStore {
     }
 
     void delete(Book book) {
+        if (database != null) { database.deleteToc(book.id); return; }
         File file = fileFor(book);
         if (file.exists()) file.delete();
     }

@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help bootstrap check check-alpha test-backend test-apple-shared \
+.PHONY: help bootstrap check check-alpha test-backend test-backend-postgres test-apple-shared \
 	build-android-debug build-android-release \
 	build-ios-debug build-ios-release \
 	build-macos-debug build-macos-release \
@@ -14,6 +14,7 @@ help:
 		'make check                 Run local contract, backend, shared, Android and iOS checks' \
 		'make check-alpha           Run the full Alpha verification suite' \
 		'make test-backend          Lint, typecheck, test and build the backend' \
+		'make test-backend-postgres  Test backend with a disposable PostgreSQL 17 cluster' \
 		'make test-apple-shared     Test the shared Swift package' \
 		'make build-android-debug   Build an Android Debug APK (optional VERSION)' \
 		'make build-android-release Build an Android Release APK (optional VERSION)' \
@@ -65,3 +66,6 @@ prepare-release:
 
 release-check:
 	./scripts/release-check.sh "$(RELEASE)"
+
+test-backend-postgres:
+	./scripts/test-backend-postgres.sh

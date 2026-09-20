@@ -11,11 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.RejectedExecutionException;
 
 final class ProgressSyncCoordinator {
@@ -31,8 +27,10 @@ final class ProgressSyncCoordinator {
 
     private static final long PERIOD_MS = 20_000L;
 
-    private final ScheduledExecutorService serial = Executors.newSingleThreadScheduledExecutor();
-    private final ExecutorService hashExecutor = Executors.newSingleThreadExecutor();
+    private final SyncExecution execution;
+    private final SyncClock clock;
+    private final ReadingProgressRecorder progress;
+    private final SyncConfigurationSession configuration;
     private final Handler mainHandler;
     private final Listener listener;
     private final LocalProgressStore localStore;
@@ -40,7 +38,7 @@ final class ProgressSyncCoordinator {
     private final BookHashCache hashCache;
     private final SyncTokenStore tokenStore;
     private final SyncServerConfig serverConfig;
-    private final SyncApiClient api;
+    private final SyncTransport api;
     private final ConnectivityMonitor connectivity;
     private final String appVersion;
     private final String launchId = UUID.randomUUID().toString();
@@ -68,7 +66,6 @@ final class ProgressSyncCoordinator {
     private volatile String currentPromptId;
     private volatile Object readerToken;
     private volatile Object promptReaderToken;
-    private volatile long configurationGeneration;
     private boolean registrationScheduled;
 
     boolean isPreparing(long bookId) { return preparingBookId == bookId; }
@@ -83,10 +80,10 @@ final class ProgressSyncCoordinator {
 
     void onPageReady(long bookId) {
         Object token = readerToken;
-        serial.execute(() -> {
+        execution.execute(() -> {
             if (!isCurrentReaderSession() || session.readerToken != token
                     || session.localBookId != bookId) return;
-            session.phase.positioned = true;
+            session.phase.positionReady();
             updatePreparation();
             schedulePeriodicIfAllowed();
         });
@@ -100,7 +97,6 @@ final class ProgressSyncCoordinator {
 
     private void allowOfflineReading() {
         if (session != null) {
-            session.comparisonState = ReaderComparisonState.UNAVAILABLE;
             session.phase.offline();
             currentPromptId = null;
             updatePreparation();
@@ -111,7 +107,7 @@ final class ProgressSyncCoordinator {
         if (!foreground || !networkAvailable || !tokenStore.enabled() || !hasConfigurationChanged()
                 || registrationScheduled || availability == SyncAvailability.TOKEN_REQUIRED) return;
         registrationScheduled = true;
-        serial.execute(() -> {
+        execution.execute(() -> {
             registrationScheduled = false;
             if (!foreground || !networkAvailable || !tokenStore.enabled()
                     || !hasConfigurationChanged()) return;
@@ -122,7 +118,20 @@ final class ProgressSyncCoordinator {
     ProgressSyncCoordinator(Context context, Handler mainHandler, Listener listener,
                             LocalProgressStore localStore, RemoteProgressStore remoteStore,
                             BookHashCache hashCache, SyncTokenStore tokenStore,
-                            SyncServerConfig serverConfig, SyncApiClient api, String appVersion) {
+                            SyncServerConfig serverConfig, SyncTransport api, String appVersion) {
+        this(context, mainHandler, listener, localStore, remoteStore, hashCache, tokenStore,
+                serverConfig, api, appVersion, System::currentTimeMillis, new SyncExecution());
+    }
+
+    ProgressSyncCoordinator(Context context, Handler mainHandler, Listener listener,
+                            LocalProgressStore localStore, RemoteProgressStore remoteStore,
+                            BookHashCache hashCache, SyncTokenStore tokenStore,
+                            SyncServerConfig serverConfig, SyncTransport api, String appVersion,
+                            SyncClock clock, SyncExecution execution) {
+        this.clock = clock;
+        this.execution = execution;
+        this.progress = new ReadingProgressRecorder(localStore, clock);
+        this.configuration = new SyncConfigurationSession(tokenStore, serverConfig, api);
         this.mainHandler = mainHandler;
         this.listener = listener;
         this.localStore = localStore;
@@ -134,7 +143,7 @@ final class ProgressSyncCoordinator {
         this.appVersion = appVersion;
         this.connectivity = new ConnectivityMonitor(context, available -> {
             try {
-                serial.execute(() -> handleConnectivity(available));
+                execution.execute(() -> handleConnectivity(available));
             } catch (RejectedExecutionException ignored) {
                 // Activity teardown won the race with a final network callback.
             }
@@ -150,7 +159,7 @@ final class ProgressSyncCoordinator {
     }
 
     void onForeground() {
-        serial.execute(() -> {
+        execution.execute(() -> {
             foreground = true;
             autoStartIfNeeded();
             if (!tokenStore.enabled() || hasConfigurationChanged()) {
@@ -173,11 +182,11 @@ final class ProgressSyncCoordinator {
     void onBackground() {
         foreground = false;
         currentPromptId = null;
-        serial.execute(() -> {
+        execution.execute(() -> {
             cancelPeriodic();
-            if (session != null && session.phase.awaitingChoice) {
+            if (session != null && session.phase.awaitingChoice()) {
                 session.phase.requireComparison();
-                session.comparisonState = ReaderComparisonState.PENDING;
+
                 session.promptedRemoteVersion = null;
             }
             foreground = false;
@@ -187,8 +196,7 @@ final class ProgressSyncCoordinator {
 
     void shutdown() {
         connectivity.stop();
-        serial.shutdownNow();
-        hashExecutor.shutdownNow();
+        execution.close();
     }
 
     void openBook(long localBookId, File file, long fileSize, long offset, long readAtMs) {
@@ -197,12 +205,12 @@ final class ProgressSyncCoordinator {
         readerVisible = true;
         preparingBookId = localBookId;
         currentPromptId = null;
-        serial.execute(() -> {
+        execution.execute(() -> {
             long generation = ++sessionGeneration;
             cancelPeriodic();
             localStore.seed(localBookId, fileSize, offset, readAtMs);
             session = new ReaderSession(UUID.randomUUID().toString(), localBookId, file,
-                    ReaderComparisonState.PENDING, token);
+                    token);
             session.active = true;
             if (!tokenStore.enabled()) {
                 session.phase.complete();
@@ -219,7 +227,7 @@ final class ProgressSyncCoordinator {
         readerVisible = false;
         preparingBookId = -1L;
         currentPromptId = null;
-        serial.execute(() -> {
+        execution.execute(() -> {
             sessionGeneration++;
             session = null;
             cancelPeriodic();
@@ -229,7 +237,7 @@ final class ProgressSyncCoordinator {
     void setReaderActive(boolean active, boolean temporarySearchReading) {
         readerVisible = active && !temporarySearchReading;
         if (!active || temporarySearchReading) currentPromptId = null;
-        serial.execute(() -> {
+        execution.execute(() -> {
             if (session == null) return;
             session.active = active;
             session.temporarySearchReading = temporarySearchReading;
@@ -239,14 +247,22 @@ final class ProgressSyncCoordinator {
             }
             else {
                 cancelPeriodic();
-                if (session.phase.awaitingChoice) {
+                if (session.phase.awaitingChoice()) {
                     session.phase.requireComparison();
-                    session.comparisonState = ReaderComparisonState.PENDING;
+
                     session.promptedRemoteVersion = null;
                     publishState();
                 }
             }
         });
+    }
+
+    boolean recordProgress(Book book, long offset, Long preservedReadAtMs) {
+        return progress.record(book, offset, preservedReadAtMs, isPreparing(book.id));
+    }
+
+    void onLibrarySaved(List<Book> books, Book preserved, long offset, long readAtMs) {
+        progress.saved(books, preserved, offset, readAtMs);
     }
 
     void onLocalProgressChanged(long localBookId, long fileSize, long offset, long readAtMs) {
@@ -255,26 +271,26 @@ final class ProgressSyncCoordinator {
     }
 
     void onJumpDeclined(String sessionId) {
-        serial.execute(() -> completeJumpDecision(sessionId));
+        execution.execute(() -> completeJumpDecision(sessionId));
     }
 
     void onRemoteJumpApplied(String sessionId, long fileSize, long offset, long readAtMs) {
-        serial.execute(() -> {
+        execution.execute(() -> {
             if (session == null || !isCurrentPrompt(sessionId)) return;
-            session.phase.positioned = false;
+            session.phase.requirePosition();
             localStore.updatePosition(session.localBookId, fileSize, offset, readAtMs);
             completeJumpDecision(sessionId);
         });
     }
 
     void startSync(String email, String deviceName, ActionCallback<Void> callback) {
-        serial.execute(() -> startSyncNow(email, deviceName, callback));
+        execution.execute(() -> startSyncNow(email, deviceName, callback));
     }
 
     private void startSyncNow(String email, String deviceName, ActionCallback<Void> callback) {
         registrationScheduled = false;
         String normalized = SyncTokenStore.normalizeEmail(email);
-        if (!isValidEmail(normalized)) {
+        if (!SyncConfigurationSession.validEmail(normalized)) {
             deliver(callback, SyncActionResult.failure("INVALID_EMAIL"));
             return;
         }
@@ -299,20 +315,16 @@ final class ProgressSyncCoordinator {
         busy = true;
         publishState();
         try {
-            lastAttemptAtMs = System.currentTimeMillis();
+            lastAttemptAtMs = clock.nowMs();
             SyncApiClient.StartSyncResponse response = api.startSync(normalized,
                     tokenStore.deviceId(), normalizedDeviceName, appVersion);
             String previousEmail = tokenStore.email();
-            tokenStore.saveDeviceName(normalizedDeviceName);
-            tokenStore.save(response.email, response.token);
-            tokenStore.saveActiveConfiguration(response.email, normalizedDeviceName,
-                    serverConfig.url());
+            configuration.registered(response.email, normalizedDeviceName, response.token);
             if (!response.email.equals(previousEmail)) remoteStore.clear();
             remoteStore.open(response.email);
             pullCompletedForLaunch = false;
             disabledBookKeys.clear();
             if (session != null) {
-                session.comparisonState = ReaderComparisonState.PENDING;
                 session.promptedRemoteVersion = null;
                 session.phase.requireComparison();
                 if (session.bookKey == null) {
@@ -347,13 +359,12 @@ final class ProgressSyncCoordinator {
     }
 
     void saveConfiguredEmail(String email, ActionCallback<Void> callback) {
-        serial.execute(() -> {
-            String normalized = SyncTokenStore.normalizeEmail(email);
-            if (!isValidEmail(normalized)) {
-                deliver(callback, SyncActionResult.failure("INVALID_EMAIL"));
+        execution.execute(() -> {
+            String error = configuration.saveEmail(email);
+            if (error != null) {
+                deliver(callback, SyncActionResult.failure(error));
                 return;
             }
-            tokenStore.saveConfiguredEmail(normalized);
             updateSyncForSavedConfiguration();
             publishState();
             deliver(callback, SyncActionResult.success(null));
@@ -361,13 +372,12 @@ final class ProgressSyncCoordinator {
     }
 
     void saveDeviceName(String deviceName, ActionCallback<Void> callback) {
-        serial.execute(() -> {
-            String normalized = SyncTokenStore.normalizeDeviceName(deviceName);
-            if (!SyncTokenStore.isValidDeviceName(normalized)) {
-                deliver(callback, SyncActionResult.failure("INVALID_DEVICE_NAME"));
+        execution.execute(() -> {
+            String error = configuration.saveName(deviceName);
+            if (error != null) {
+                deliver(callback, SyncActionResult.failure(error));
                 return;
             }
-            tokenStore.saveDeviceName(normalized);
             updateSyncForSavedConfiguration();
             publishState();
             deliver(callback, SyncActionResult.success(null));
@@ -377,13 +387,12 @@ final class ProgressSyncCoordinator {
     SyncDevice localDevice(String configuredDeviceName) {
         String normalized = SyncTokenStore.normalizeDeviceName(configuredDeviceName);
         return new SyncDevice(tokenStore.deviceId(), normalized, "android",
-                System.currentTimeMillis(), false);
+                clock.nowMs(), false);
     }
 
     void disableSync(ActionCallback<Void> callback) {
-        serial.execute(() -> {
-            tokenStore.clear();
-            configurationGeneration++;
+        execution.execute(() -> {
+            configuration.disable();
             currentPromptId = null;
             remoteStore.clear();
             pullCompletedForLaunch = false;
@@ -391,7 +400,6 @@ final class ProgressSyncCoordinator {
             cachedDevices = Collections.emptyList();
             cancelPeriodic();
             cancelRecovery();
-            if (session != null) session.comparisonState = ReaderComparisonState.PENDING;
             if (session != null) session.phase.complete();
             updatePreparation();
             availability = SyncAvailability.AVAILABLE;
@@ -402,7 +410,7 @@ final class ProgressSyncCoordinator {
     }
 
     void refreshRemote(ActionCallback<Void> callback) {
-        serial.execute(() -> {
+        execution.execute(() -> {
             if (!canCallBusinessApi()) {
                 deliver(callback, SyncActionResult.failure(stateErrorCode()));
                 return;
@@ -415,12 +423,12 @@ final class ProgressSyncCoordinator {
     }
 
     void saveServerUrl(String serverUrl, ActionCallback<Void> callback) {
-        serial.execute(() -> {
-            if (!serverConfig.save(serverUrl)) {
-                deliver(callback, SyncActionResult.failure("INVALID_SERVER_URL"));
+        execution.execute(() -> {
+            String error = configuration.saveServer(serverUrl);
+            if (error != null) {
+                deliver(callback, SyncActionResult.failure(error));
                 return;
             }
-            api.setBaseUrl(serverConfig.url());
             updateSyncForSavedConfiguration();
             publishState();
             deliver(callback, SyncActionResult.success(null));
@@ -429,17 +437,12 @@ final class ProgressSyncCoordinator {
 
     void saveConfiguration(String email, String deviceName, String serverUrl,
                            ActionCallback<Void> callback) {
-        serial.execute(() -> {
-            String normalizedEmail = SyncTokenStore.normalizeEmail(email);
-            String normalizedDeviceName = SyncTokenStore.normalizeDeviceName(deviceName);
-            if (!isConfigurationComplete(normalizedEmail, normalizedDeviceName, serverUrl)) {
-                deliver(callback, SyncActionResult.failure("INCOMPLETE_CONFIGURATION"));
+        execution.execute(() -> {
+            String error = configuration.save(email, deviceName, serverUrl);
+            if (error != null) {
+                deliver(callback, SyncActionResult.failure(error));
                 return;
             }
-            tokenStore.saveConfiguredEmail(normalizedEmail);
-            tokenStore.saveDeviceName(normalizedDeviceName);
-            serverConfig.save(serverUrl);
-            api.setBaseUrl(serverConfig.url());
             updateSyncForSavedConfiguration();
             publishState();
             deliver(callback, SyncActionResult.success(null));
@@ -451,7 +454,7 @@ final class ProgressSyncCoordinator {
     }
 
     void loadDevices(ActionCallback<List<SyncDevice>> callback) {
-        serial.execute(() -> {
+        execution.execute(() -> {
             if (callback != null) pendingDeviceCallbacks.add(callback);
             if (deviceLoadInFlight) return;
             if (!canCallBusinessApi()) {
@@ -460,7 +463,7 @@ final class ProgressSyncCoordinator {
             }
             deviceLoadInFlight = true;
             try {
-                lastAttemptAtMs = System.currentTimeMillis();
+                lastAttemptAtMs = clock.nowMs();
                 List<SyncDevice> devices = api.listDevices(tokenStore.token(),
                         tokenStore.deviceId());
                 cachedDevices = Collections.unmodifiableList(new ArrayList<>(devices));
@@ -491,7 +494,7 @@ final class ProgressSyncCoordinator {
     }
 
     void revokeDevice(String targetDeviceId, ActionCallback<Void> callback) {
-        serial.execute(() -> {
+        execution.execute(() -> {
             if (targetDeviceId.equals(tokenStore.deviceId())) {
                 deliver(callback, SyncActionResult.failure("CURRENT_DEVICE"));
                 return;
@@ -501,7 +504,7 @@ final class ProgressSyncCoordinator {
                 return;
             }
             try {
-                lastAttemptAtMs = System.currentTimeMillis();
+                lastAttemptAtMs = clock.nowMs();
                 api.revokeDevice(tokenStore.token(), tokenStore.deviceId(), targetDeviceId);
                 ArrayList<SyncDevice> remaining = new ArrayList<>();
                 for (SyncDevice device : cachedDevices) {
@@ -518,19 +521,19 @@ final class ProgressSyncCoordinator {
     }
 
     void deleteBookProgress(long localBookId, File file, ActionCallback<Void> callback) {
-        serial.execute(() -> {
+        execution.execute(() -> {
             if (!canCallBusinessApi()) {
                 deliver(callback, SyncActionResult.failure(stateErrorCode()));
                 return;
             }
-            long generation = configurationGeneration;
+            long generation = configuration.generation();
             ReaderSession opening = session;
-            boolean alreadyPaused = opening != null && opening.phase.uploadPaused;
+            boolean alreadyPaused = opening != null && opening.phase.uploadPaused();
             if (opening != null && opening.localBookId == localBookId) {
-                opening.phase.uploadPaused = true;
+                opening.phase.pauseUpload(true);
                 cancelPeriodic();
             }
-            hashExecutor.execute(() -> {
+            execution.hash(() -> {
                 BookKey key = null;
                 try {
                     BookHashCache.HashResult hash = hashCache.resolve(localBookId, file);
@@ -538,9 +541,9 @@ final class ProgressSyncCoordinator {
                 } catch (Exception ignored) { }
                 BookKey target = key;
                 try {
-                    serial.execute(() -> {
-                        if (generation != configurationGeneration || !canCallBusinessApi() || target == null) {
-                            if (session == opening && opening != null) opening.phase.uploadPaused = alreadyPaused;
+                    execution.execute(() -> {
+                        if (generation != configuration.generation() || !canCallBusinessApi() || target == null) {
+                            if (session == opening && opening != null) opening.phase.pauseUpload(alreadyPaused);
                             schedulePeriodicIfAllowed();
                             deliver(callback, SyncActionResult.failure(target == null
                                     ? "INVALID_BOOK_IDENTITY" : "CONFIGURATION_CHANGED"));
@@ -551,13 +554,13 @@ final class ProgressSyncCoordinator {
                             api.deleteBookProgress(tokenStore.token(), tokenStore.deviceId(), target);
                             remoteStore.remove(target);
                             if (session != null && session.localBookId == localBookId) {
-                                session.phase.uploadPaused = true;
+                                session.phase.pauseUpload(true);
                                 cancelPeriodic();
                             }
                             markSuccess();
                             deliver(callback, SyncActionResult.success(null));
                         } catch (Exception error) {
-                            if (session == opening && opening != null) opening.phase.uploadPaused = alreadyPaused;
+                            if (session == opening && opening != null) opening.phase.pauseUpload(alreadyPaused);
                             handleFailure(error, target);
                             deliver(callback, SyncActionResult.failure(errorCode(error)));
                         }
@@ -572,8 +575,7 @@ final class ProgressSyncCoordinator {
     }
 
     private boolean hasConfigurationChanged() {
-        return tokenStore.enabled() && (tokenStore.token() == null
-                || !tokenStore.activeConfigurationMatches(serverConfig.url()));
+        return configuration.changed();
     }
 
     private void updateSyncForSavedConfiguration() {
@@ -583,9 +585,8 @@ final class ProgressSyncCoordinator {
         }
         cancelPeriodic();
         cancelRecovery();
-        configurationGeneration++;
+        configuration.invalidate();
         currentPromptId = null;
-        tokenStore.invalidateCredentials();
         remoteStore.clear();
         cachedDevices = Collections.emptyList();
         pullCompletedForLaunch = false;
@@ -593,7 +594,6 @@ final class ProgressSyncCoordinator {
         lastFailureCode = null;
         availability = networkAvailable ? SyncAvailability.AVAILABLE : SyncAvailability.OFFLINE;
         if (session != null) {
-            session.comparisonState = ReaderComparisonState.PENDING;
             session.promptedRemoteVersion = null;
             session.phase.offline();
         }
@@ -602,7 +602,7 @@ final class ProgressSyncCoordinator {
     }
 
     private void resolveHash(long generation, long localBookId, File file) {
-        hashExecutor.execute(() -> {
+        execution.hash(() -> {
             BookHashCache.HashResult result = null;
             try {
                 result = hashCache.resolve(localBookId, file);
@@ -611,7 +611,7 @@ final class ProgressSyncCoordinator {
             }
             BookHashCache.HashResult finalResult = result;
             try {
-                serial.execute(() -> {
+                execution.execute(() -> {
                     if (generation != sessionGeneration || !isCurrentReaderSession()
                         || session.localBookId != localBookId) return;
                     if (finalResult == null || finalResult.fileSize <= 0L) {
@@ -655,25 +655,19 @@ final class ProgressSyncCoordinator {
             allowOfflineReading();
             availability = SyncAvailability.SERVICE_UNAVAILABLE;
             lastFailureCode = "SERVICE_NOT_CONFIGURED";
-            if (session != null && session.comparisonState != ReaderComparisonState.COMPLETED) {
-                session.comparisonState = ReaderComparisonState.UNAVAILABLE;
-            }
             publishState();
             return false;
         }
         if (!networkAvailable) {
             allowOfflineReading();
             availability = SyncAvailability.OFFLINE;
-            if (session != null && session.comparisonState != ReaderComparisonState.COMPLETED) {
-                session.comparisonState = ReaderComparisonState.UNAVAILABLE;
-            }
             publishState();
             return false;
         }
         busy = true;
         publishState();
         try {
-            lastAttemptAtMs = System.currentTimeMillis();
+            lastAttemptAtMs = clock.nowMs();
             List<RemoteProgressSnapshot> items = api.pullProgress(tokenStore.token(),
                     tokenStore.deviceId());
             remoteStore.replaceAll(tokenStore.email(), items, launchId);
@@ -681,8 +675,7 @@ final class ProgressSyncCoordinator {
             markSuccess();
             healthAttempt = 0;
             cancelRecovery();
-            if (session != null && session.comparisonState != ReaderComparisonState.AWAITING_JUMP_DECISION) {
-                session.comparisonState = ReaderComparisonState.PENDING;
+            if (session != null && session.phase.comparison() != ReaderComparisonState.AWAITING_JUMP_DECISION) {
                 session.phase.requireComparison();
             }
             compareCurrentBook();
@@ -690,9 +683,6 @@ final class ProgressSyncCoordinator {
             return true;
         } catch (Exception error) {
             allowOfflineReading();
-            if (session != null && session.comparisonState != ReaderComparisonState.COMPLETED) {
-                session.comparisonState = ReaderComparisonState.UNAVAILABLE;
-            }
             handleFailure(error, null);
             return false;
         } finally {
@@ -704,16 +694,15 @@ final class ProgressSyncCoordinator {
     private void compareCurrentBook() {
         if (!isCurrentReaderSession() || !readerVisible || !session.active || session.temporarySearchReading || !foreground
                 || session.bookKey == null
-                || session.comparisonState == ReaderComparisonState.COMPLETED
-                || session.comparisonState == ReaderComparisonState.AWAITING_JUMP_DECISION) {
+                || session.phase.comparison() == ReaderComparisonState.COMPLETED
+                || session.phase.comparison() == ReaderComparisonState.AWAITING_JUMP_DECISION) {
             return;
         }
         LocalProgressSnapshot local = localStore.get(session.localBookId);
         RemoteProgressSnapshot remote = remoteStore.get(session.bookKey);
-        if (SyncRules.shouldPrompt(local, remote, tokenStore.deviceId(), launchId,
-                session.promptedRemoteVersion, session.temporarySearchReading)) {
-            session.comparisonState = ReaderComparisonState.AWAITING_JUMP_DECISION;
-            session.phase.awaitingChoice = true;
+        ReadingSyncPhase.ComparisonAction action = session.phase.compare(local, remote,
+                tokenStore.deviceId(), launchId, session.promptedRemoteVersion, session.temporarySearchReading);
+        if (action == ReadingSyncPhase.ComparisonAction.PROMPT) {
             updatePreparation();
             session.promptedRemoteVersion = remote.version;
             String sessionId = UUID.randomUUID().toString();
@@ -726,20 +715,19 @@ final class ProgressSyncCoordinator {
             cancelPeriodic();
             return;
         }
-        boolean uploadLocal = SyncRules.shouldUploadLocal(local, remote);
+        boolean uploadLocal = action == ReadingSyncPhase.ComparisonAction.UPLOAD;
         completeComparison();
         if (uploadLocal) syncLatest(true);
     }
 
     private void completeJumpDecision(String sessionId) {
         if (session == null || !isCurrentPrompt(sessionId)
-                || session.comparisonState != ReaderComparisonState.AWAITING_JUMP_DECISION) return;
+                || session.phase.comparison() != ReaderComparisonState.AWAITING_JUMP_DECISION) return;
         completeComparison();
     }
 
     private void completeComparison() {
         if (session == null) return;
-        session.comparisonState = ReaderComparisonState.COMPLETED;
         currentPromptId = null;
         session.phase.complete();
         updatePreparation();
@@ -751,8 +739,7 @@ final class ProgressSyncCoordinator {
     private void schedulePeriodicIfAllowed() {
         cancelPeriodic();
         if (!canSyncCurrentSession()) return;
-        periodicFuture = serial.scheduleWithFixedDelay(this::pullRemote, PERIOD_MS,
-                PERIOD_MS, TimeUnit.MILLISECONDS);
+        periodicFuture = execution.periodically(this::pullRemote, PERIOD_MS);
     }
 
     private void syncLatest(boolean forceLatest) {
@@ -761,7 +748,7 @@ final class ProgressSyncCoordinator {
         if (snapshot == null || snapshot.bookHash == null
                 || disabledBookKeys.contains(snapshot.bookKey())) return;
         if (!session.uploadTracker.observeForRequest(snapshot.localSequence, forceLatest)) return;
-        lastAttemptAtMs = System.currentTimeMillis();
+        lastAttemptAtMs = clock.nowMs();
         try {
             RemoteProgressSnapshot finalState = api.syncProgress(tokenStore.token(),
                     tokenStore.deviceId(), snapshot);
@@ -775,7 +762,7 @@ final class ProgressSyncCoordinator {
     private boolean canSyncCurrentSession() {
         return foreground && readerVisible && isCurrentReaderSession() && session.active
                 && !session.temporarySearchReading
-                && session.comparisonState == ReaderComparisonState.COMPLETED
+                && session.phase.comparison() == ReaderComparisonState.COMPLETED
                 && session.phase.canUpload()
                 && session.bookKey != null && !disabledBookKeys.contains(session.bookKey)
                 && canCallBusinessApi();
@@ -794,9 +781,6 @@ final class ProgressSyncCoordinator {
             availability = SyncAvailability.OFFLINE;
             cancelPeriodic();
             cancelRecovery();
-            if (session != null && session.comparisonState != ReaderComparisonState.COMPLETED) {
-                session.comparisonState = ReaderComparisonState.UNAVAILABLE;
-            }
             publishState();
             return;
         }
@@ -858,7 +842,7 @@ final class ProgressSyncCoordinator {
         if (!foreground || !networkAvailable || !tokenStore.enabled()
                 || availability == SyncAvailability.TOKEN_REQUIRED) return;
         long delay = SyncRules.healthBackoffMs(healthAttempt++);
-        recoveryFuture = serial.schedule(() -> {
+        recoveryFuture = execution.after(() -> {
             try {
                 api.health();
                 healthAttempt = 0;
@@ -870,17 +854,17 @@ final class ProgressSyncCoordinator {
                 scheduleHealthProbe();
                 publishState();
             }
-        }, delay, TimeUnit.MILLISECONDS);
+        }, delay);
     }
 
     private void schedulePullRecovery(long delayMs) {
         cancelRecovery();
         if (!foreground || !networkAvailable || !tokenStore.enabled()
                 || availability == SyncAvailability.TOKEN_REQUIRED) return;
-        recoveryFuture = serial.schedule(() -> {
+        recoveryFuture = execution.after(() -> {
             if (hasConfigurationChanged()) autoStartIfNeeded();
             else pullRemote();
-        }, delayMs, TimeUnit.MILLISECONDS);
+        }, delayMs);
     }
 
     private void cancelPeriodic() {
@@ -895,13 +879,13 @@ final class ProgressSyncCoordinator {
 
     private void markSuccess() {
         availability = SyncAvailability.AVAILABLE;
-        lastSuccessAtMs = System.currentTimeMillis();
+        lastSuccessAtMs = clock.nowMs();
         lastFailureCode = null;
         publishState();
     }
 
     private void publishState() {
-        long generation = configurationGeneration;
+        long generation = configuration.generation();
         boolean enabled = tokenStore.enabled();
         boolean configurationChanged = enabled && hasConfigurationChanged();
         SyncAvailability stateAvailability = enabled ? availability : SyncAvailability.AVAILABLE;
@@ -910,7 +894,7 @@ final class ProgressSyncCoordinator {
                 lastAttemptAtMs, lastSuccessAtMs, lastFailureCode, configurationChanged, busy);
         uiState = state;
         mainHandler.post(() -> {
-            if (generation == configurationGeneration) listener.onSyncStateChanged(state);
+            if (generation == configuration.generation()) listener.onSyncStateChanged(state);
         });
     }
 
@@ -935,22 +919,14 @@ final class ProgressSyncCoordinator {
     }
 
     private <T> void deliver(ActionCallback<T> callback, SyncActionResult<T> result) {
-        long generation = configurationGeneration;
+        long generation = configuration.generation();
         if (callback != null) mainHandler.post(() -> {
-            if (generation == configurationGeneration) callback.onResult(result);
+            if (generation == configuration.generation()) callback.onResult(result);
         });
     }
 
-    private static boolean isValidEmail(String email) {
-        int at = email.indexOf('@');
-        return at > 0 && at == email.lastIndexOf('@') && at < email.length() - 3
-                && email.indexOf('.', at) > at + 1 && email.length() <= 254;
-    }
-
     static boolean isConfigurationComplete(String email, String deviceName, String serverUrl) {
-        return isValidEmail(SyncTokenStore.normalizeEmail(email))
-                && SyncTokenStore.isValidDeviceName(deviceName)
-                && SyncServerConfig.isValid(serverUrl);
+        return SyncConfigurationSession.complete(email, deviceName, serverUrl);
     }
 
     private static final class ReaderSession {
@@ -958,7 +934,6 @@ final class ProgressSyncCoordinator {
         final String sessionId;
         final long localBookId;
         final File file;
-        ReaderComparisonState comparisonState;
         BookKey bookKey;
         String promptedRemoteVersion;
         final ProgressUploadTracker uploadTracker = new ProgressUploadTracker();
@@ -967,12 +942,11 @@ final class ProgressSyncCoordinator {
         boolean active;
 
         ReaderSession(String sessionId, long localBookId, File file,
-                      ReaderComparisonState comparisonState, Object readerToken) {
+                      Object readerToken) {
             this.readerToken = readerToken;
             this.sessionId = sessionId;
             this.localBookId = localBookId;
             this.file = file;
-            this.comparisonState = comparisonState;
         }
     }
 }

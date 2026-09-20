@@ -14,6 +14,10 @@ final class MemoryPreferences {
         when(prefs.edit()).thenReturn(editor);
         when(prefs.getString(anyString(), any())).thenAnswer(a -> values.getOrDefault(a.getArgument(0), a.getArgument(1)));
         when(prefs.getBoolean(anyString(), anyBoolean())).thenAnswer(a -> values.getOrDefault(a.getArgument(0), a.getArgument(1)));
+        when(prefs.getInt(anyString(), anyInt())).thenAnswer(a -> values.getOrDefault(a.getArgument(0), a.getArgument(1)));
+        when(prefs.getFloat(anyString(), anyFloat())).thenAnswer(a -> values.getOrDefault(a.getArgument(0), a.getArgument(1)));
+        when(editor.putInt(anyString(), anyInt())).thenAnswer(a -> { values.put(a.getArgument(0), a.getArgument(1)); return editor; });
+        when(editor.putFloat(anyString(), anyFloat())).thenAnswer(a -> { values.put(a.getArgument(0), a.getArgument(1)); return editor; });
         when(prefs.contains(anyString())).thenAnswer(a -> values.containsKey(a.getArgument(0)));
         when(editor.putString(anyString(), any())).thenAnswer(a -> { values.put(a.getArgument(0), a.getArgument(1)); return editor; });
         when(editor.putBoolean(anyString(), anyBoolean())).thenAnswer(a -> { values.put(a.getArgument(0), a.getArgument(1)); return editor; });

@@ -28,11 +28,11 @@ import android.text.TextPaint;
 import android.text.TextWatcher;
 import android.text.style.BackgroundColorSpan;
 import android.util.TypedValue;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.animation.AccelerateDecelerateInterpolator;
@@ -52,14 +52,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -67,6 +62,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import com.xlib.txtreader.BookSearchController.SearchSession;
+import com.xlib.txtreader.BookSearchController.SearchResult;
+import com.xlib.txtreader.ReaderCacheStore.ReaderCache;
+import com.xlib.txtreader.ReaderCacheStore.ReaderCacheWrite;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -83,15 +82,8 @@ public class MainActivity extends Activity {
     private static final float CACHE_REFILL_RATIO = 0.10f;
     private static final int INDEX_STEP_BYTES = 64 * 1024;
     private static final int SEGMENT_CACHE_LIMIT = 6;
-    // XLI2: cache text is guaranteed to end on a complete encoded character.
-    private static final int READER_CACHE_MAGIC = 0x584C4932;
-    private static final int MAX_READER_CACHE_TEXT_BYTES = CACHE_SEGMENT_BYTES * 8;
     private static final long READER_CACHE_WRITE_DELAY_MS = 800L;
     private static final long BOOK_PROGRESS_SAVE_DELAY_MS = 600L;
-    private static final int SEARCH_READ_BYTES = 64 * 1024;
-    private static final int SEARCH_RESULT_LIMIT = 200;
-    private static final int SEARCH_CONTEXT_CHARS = 45;
-    private static final int SEARCH_SNIPPET_MAX_READ_BYTES = 64 * 1024;
     private static final int PAGE_WINDOW_MAX_PAGES = 17;
     private static final int PAGE_WINDOW_PREFETCH_EACH_SIDE =
             ReaderPageRefillPolicy.TARGET_READY_PAGES;
@@ -99,31 +91,20 @@ public class MainActivity extends Activity {
     private static final int PAGE_DIRECTION_NONE = ReaderPageRefillPolicy.NONE;
     private static final int PAGE_DIRECTION_FORWARD = ReaderPageRefillPolicy.FORWARD;
     private static final long SEEK_PREVIEW_DELAY_MS = 220L;
-    private static final String KEY_AUTO_TOC = "auto_toc";
-    private static final String KEY_APP_THEME = "app_theme";
-    private static final String KEY_KEEP_SCREEN_ON = "keep_screen_on";
-    private static final String KEY_AUTO_PAGE_INTERVAL = "auto_page_interval";
-    private static final String KEY_SENSITIVITY = "sensitivity";
-    private static final String KEY_FONT_FAMILY = "font_family";
-    private static final String KEY_FONT_SIZE = "font_size";
-    private static final String KEY_LINE_SPACING = "line_spacing";
     private static final int SETTINGS_GENERAL = 0;
     private static final int SETTINGS_READING = 1;
     private static final int SETTINGS_SYNC = 2;
     private static final boolean SHOW_PAGE_OFFSET_INDICATOR = false;
     private static final long SYNC_CONFIGURATION_SAVE_DELAY_MS = 700L;
 
-    private final List<Book> books = new ArrayList<>();
+    private List<Book> books;
+    private LibraryController library;
     private final Set<Long> selectedBookIds = new HashSet<>();
-    private final Set<Long> pendingProgressPublications = new HashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService libraryExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService pageExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService indexExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService readerCacheExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService searchExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService tocExecutor = Executors.newSingleThreadExecutor();
+    private final ReaderTaskScope readerTasks = new ReaderTaskScope();
     private final ReaderPagePaginator readerPagePaginator = new ReaderPagePaginator();
     private final Map<String, CacheSegment> segmentCache =
             new LinkedHashMap<String, CacheSegment>(8, 0.75f, true) {
@@ -132,12 +113,13 @@ public class MainActivity extends Activity {
             return size() > SEGMENT_CACHE_LIMIT;
         }
     };
-    private BookStore bookStore;
-    private BookmarkStore bookmarkStore;
+    private ReaderCacheStore readerCacheStore;
+    private CatalogController catalog;
     private Dialog remoteJumpDialog;
     private String displayedPromptId;
     private SharedPreferences preferences;
-    private TocStore tocStore;
+    private LocalDatabase localDatabase;
+    private ReadingPreferences readingPreferences;
     private LocalProgressStore localProgressStore;
     private SyncTokenStore syncTokenStore;
     private SyncServerConfig syncServerConfig;
@@ -175,10 +157,8 @@ public class MainActivity extends Activity {
     private float touchStartX;
     private float touchStartY;
     private float pendingSeekProgress;
-    private volatile long loadRequestId;
-    private volatile long searchRequestId;
+    private final BookSearchController searches = new BookSearchController(searchExecutor, task -> mainHandler.post(task));
     private long cacheStackGeneration;
-    private volatile long pageBuildRequestId;
     private long pageLayoutGeneration;
     private CombinedCacheSnapshot currentCache;
     private CacheCombineStack currentCombineStack;
@@ -207,8 +187,7 @@ public class MainActivity extends Activity {
     private ReaderPageTextView readerText;
     private LinearLayout libraryList;
     private TextView librarySubtitle;
-    private final BookImportDeduplicator importDeduplicator = new BookImportDeduplicator();
-    private final List<PendingBookImport> pendingBookImports = new ArrayList<>();
+    private BookImportController<Uri> imports;
     private LinearLayout readerTopBar;
     private LinearLayout readerBottomBar;
     private TextView pageIndicator;
@@ -273,14 +252,41 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
+        try {
+            localDatabase = LocalDatabase.open(this, preferences);
+        } catch (Exception error) {
+            Log.e("XLibStorage", "SQLite migration failed; using legacy storage for this launch");
+        }
+        readingPreferences = localDatabase == null
+                ? new ReadingPreferences(preferences) : new ReadingPreferences(localDatabase);
         migrateLegacySystemTheme();
-        bookStore = new BookStore(preferences);
-        bookmarkStore = new BookmarkStore(preferences);
-        tocStore = new TocStore(this);
+        readerCacheStore = new ReaderCacheStore(new File(getFilesDir(), "reader-cache"));
+        catalog = new CatalogController(localDatabase == null ? new TocStore(this) : new TocStore(localDatabase),
+                localDatabase == null ? new BookmarkStore(preferences) : new BookmarkStore(localDatabase),
+                tocExecutor, task -> mainHandler.post(task));
+        imports = new BookImportController<>(new File(getFilesDir(), "books"),
+                new BookImportController.Source<Uri>() {
+                    public String name(Uri uri) { return queryDisplayName(uri); }
+                    public InputStream open(Uri uri) throws Exception { return getContentResolver().openInputStream(uri); }
+                }, libraryExecutor, task -> mainHandler.post(task), new BookImportController.Listener() {
+                    public void changed() { refreshImportLibrary(); }
+                    public void publish(Book book) {
+                        library.add(book);
+                        saveBooks();
+                        if (isAutoTocEnabled()) generateTocInBackground(book, false);
+                    }
+                    public void finished(int added, int duplicates, int failed) {
+                        Toast.makeText(MainActivity.this, "已添加 " + added + " 本，重复 " + duplicates
+                                + " 本，失败 " + failed + " 本", Toast.LENGTH_LONG).show();
+                    }
+                });
         localProgressStore = new LocalProgressStore();
-        syncTokenStore = new SyncTokenStore(preferences);
-        syncServerConfig = new SyncServerConfig(preferences);
-        bookHashCache = new BookHashCache(preferences);
+        syncTokenStore = localDatabase == null ? new SyncTokenStore(preferences)
+                : new SyncTokenStore(preferences, localDatabase);
+        syncServerConfig = localDatabase == null ? new SyncServerConfig(preferences)
+                : new SyncServerConfig(localDatabase);
+        bookHashCache = localDatabase == null ? new BookHashCache(preferences)
+                : new BookHashCache(localDatabase);
         SyncApiClient syncApiClient = new SyncApiClient(syncServerConfig.url());
         syncCoordinator = new ProgressSyncCoordinator(this, mainHandler,
                 new ProgressSyncCoordinator.Listener() {
@@ -305,10 +311,14 @@ public class MainActivity extends Activity {
                                                                  RemoteProgressSnapshot remote) {
                         showRemoteJumpDialog(sessionId, localBookId, remote);
                     }
-                }, localProgressStore, new RemoteProgressStore(preferences),
+                }, localProgressStore, localDatabase == null ? new RemoteProgressStore(preferences)
+                        : new RemoteProgressStore(localDatabase),
                 bookHashCache, syncTokenStore, syncServerConfig,
                 syncApiClient, getVersionName());
         syncCoordinator.start();
+        library = new LibraryController(localDatabase == null ? new BookStore(preferences)
+                : new BookStore(localDatabase), catalog, readerCacheStore, bookHashCache);
+        books = library.books();
         loadBooks();
         showLibrary();
         if (isAutoTocEnabled()) scheduleMissingTocGeneration();
@@ -339,16 +349,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         activityDestroyed = true;
+        if (imports != null) imports.close();
         flushScheduledBooksSave();
         if (syncCoordinator != null) syncCoordinator.shutdown();
         mainHandler.removeCallbacksAndMessages(null);
-        ioExecutor.shutdownNow();
+        readerTasks.close();
         libraryExecutor.shutdownNow();
-        pageExecutor.shutdownNow();
-        indexExecutor.shutdownNow();
-        readerCacheExecutor.shutdownNow();
+        searches.cancel();
         searchExecutor.shutdownNow();
+        catalog.close();
         tocExecutor.shutdownNow();
+        if (localDatabase != null) localDatabase.close();
         super.onDestroy();
     }
 
@@ -368,7 +379,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (searchOpen && currentBook != null) {
-            searchRequestId++;
+            searches.cancel();
             searchOpen = false;
             showReader(currentBook);
             return;
@@ -467,7 +478,7 @@ public class MainActivity extends Activity {
         header.addView(settings, settingsLp);
         root.addView(header);
 
-        if (books.isEmpty() && pendingBookImports.isEmpty()) {
+        if (books.isEmpty() && imports.pending().isEmpty()) {
             LinearLayout empty = new LinearLayout(this);
             empty.setOrientation(LinearLayout.VERTICAL);
             empty.setGravity(Gravity.CENTER);
@@ -553,7 +564,7 @@ public class MainActivity extends Activity {
         libraryList.removeAllViews();
         Set<Long> shown = new HashSet<>();
         int unfinished = 0;
-        for (PendingBookImport entry : pendingBookImports) {
+        for (PendingBookImport entry : imports.pending()) {
             if (entry.canOpen() && books.contains(entry.book)) {
                 libraryList.addView(makeBookRow(entry.book));
                 shown.add(entry.book.id);
@@ -988,8 +999,7 @@ public class MainActivity extends Activity {
                         return;
                     }
                     String author = authorInput.getText().toString().trim();
-                    book.title = title;
-                    book.author = author.equals(originalTxtFileName(book)) ? "" : author;
+                    library.edit(book, title, author.equals(originalTxtFileName(book)) ? "" : author);
                     saveBooks();
                     hideKeyboard(titleInput);
                     dialog.dismiss();
@@ -1050,7 +1060,6 @@ public class MainActivity extends Activity {
 
     private void deleteBook(Book book) {
         removeBookData(book);
-        books.remove(book);
         selectedBookIds.remove(book.id);
         saveBooks();
         showLibrary();
@@ -1058,27 +1067,13 @@ public class MainActivity extends Activity {
 
     private void removeBookData(Book book) {
         cancelReaderCacheWrite(book);
-        deleteReaderCache(book);
-        tocStore.delete(book);
-        bookmarkStore.deleteForBook(book.id);
-        if (bookHashCache != null) bookHashCache.remove(book.id);
-        File file = new File(book.path);
-        if (file.exists()) {
-            boolean ignored = file.delete();
-        }
+        library.delete(book);
     }
 
     private void deleteSelectedBooks() {
-        List<Book> remaining = new ArrayList<>();
-        for (Book book : books) {
-            if (selectedBookIds.contains(book.id)) {
-                removeBookData(book);
-            } else {
-                remaining.add(book);
-            }
+        for (Book book : new ArrayList<>(books)) {
+            if (selectedBookIds.contains(book.id)) removeBookData(book);
         }
-        books.clear();
-        books.addAll(remaining);
         selectedBookIds.clear();
         managingBooks = false;
         saveBooks();
@@ -1113,141 +1108,7 @@ public class MainActivity extends Activity {
     }
 
     private void addBooksFromUris(List<Uri> uris) {
-        if (uris.isEmpty()) return;
-        List<File> existingFiles = new ArrayList<>();
-        for (Book book : books) existingFiles.add(new File(book.path));
-        List<PendingBookImport> batch = new ArrayList<>();
-        for (int i = 0; i < uris.size(); i++) {
-            batch.add(new PendingBookImport("待导入书籍 " + (i + 1)));
-        }
-        pendingBookImports.addAll(0, batch);
-        refreshImportLibrary();
-        libraryExecutor.execute(() -> {
-            int added = 0;
-            int duplicates = 0;
-            int failed = 0;
-            for (int i = 0; i < uris.size() && !activityDestroyed; i++) {
-                PendingBookImport entry = batch.get(i);
-                Uri uri = uris.get(i);
-                String title = null;
-                try { title = queryDisplayName(uri); } catch (Exception ignored) { }
-                String displayTitle = title;
-                mainHandler.post(() -> {
-                    if (!activityDestroyed) {
-                        entry.start(displayTitle);
-                        refreshImportLibrary();
-                    }
-                });
-                try {
-                    Book imported = prepareBookImport(uri, title, existingFiles);
-                    if (activityDestroyed) {
-                        discardPreparedBook(imported);
-                        return;
-                    }
-                    added++;
-                    Book readyBook = imported;
-                    mainHandler.post(() -> {
-                        if (activityDestroyed) {
-                            discardPreparedBook(readyBook);
-                            return;
-                        }
-                        books.add(0, readyBook);
-                        saveBooks();
-                        entry.complete(readyBook);
-                        if (isAutoTocEnabled()) generateTocInBackground(readyBook, false);
-                        refreshImportLibrary();
-                    });
-                } catch (BookImportDeduplicator.DuplicateBookException duplicate) {
-                    duplicates++;
-                    mainHandler.post(() -> {
-                        if (!activityDestroyed) {
-                            entry.skipDuplicate();
-                            refreshImportLibrary();
-                        }
-                    });
-                } catch (Exception error) {
-                    failed++;
-                    mainHandler.post(() -> {
-                        if (!activityDestroyed) {
-                            entry.complete(null);
-                            refreshImportLibrary();
-                        }
-                    });
-                }
-            }
-            int totalAdded = added;
-            int totalDuplicates = duplicates;
-            int totalFailed = failed;
-            mainHandler.post(() -> {
-                if (!activityDestroyed) {
-                    pendingBookImports.removeAll(batch);
-                    refreshImportLibrary();
-                    Toast.makeText(this, "已添加 " + totalAdded + " 本，重复 " + totalDuplicates
-                            + " 本，失败 " + totalFailed + " 本", Toast.LENGTH_LONG).show();
-                }
-            });
-        });
-    }
-
-    private void discardPreparedBook(Book book) {
-        if (book == null || book.path == null) return;
-        boolean ignored = new File(book.path).delete();
-    }
-
-    private Book prepareBookImport(Uri uri, String title, List<File> existingFiles) throws Exception {
-        if (title == null || title.trim().isEmpty()) {
-            title = "book-" + System.currentTimeMillis() + ".txt";
-        }
-        long id = BookImportPolicy.nextId();
-        File directory = new File(getFilesDir(), "books");
-        if (!directory.exists() && !directory.mkdirs()) {
-            throw new IllegalStateException("Cannot create book directory");
-        }
-        String safeName = title.replaceAll("[^A-Za-z0-9._-]", "_");
-        File target = new File(directory, id + "-" + safeName);
-        File temporary = new File(directory, target.getName() + ".tmp");
-        try {
-            try (InputStream input = getContentResolver().openInputStream(uri);
-                 FileOutputStream output = new FileOutputStream(temporary)) {
-                if (input == null) throw new IllegalStateException("Cannot open selected file");
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = input.read(buffer)) != -1) {
-                    output.write(buffer, 0, read);
-                }
-                output.flush();
-            }
-            if (importDeduplicator.isDuplicate(temporary, existingFiles)) {
-                throw new BookImportDeduplicator.DuplicateBookException();
-            }
-            if (!temporary.renameTo(target)) {
-                throw new IOException("Cannot publish imported TXT file");
-            }
-        } catch (Exception error) {
-            boolean ignored = temporary.delete();
-            throw error;
-        }
-
-        Book book = new Book();
-        book.id = id;
-        book.title = title;
-        book.sourceName = title;
-        book.author = "";
-        book.path = target.getAbsolutePath();
-        book.fileSize = target.length();
-        try {
-            book.encoding = detectEncoding(target);
-        } catch (Exception error) {
-            boolean ignored = target.delete();
-            throw error;
-        }
-        book.offset = 0L;
-        book.progress = 0f;
-        book.pageMode = true;
-        // Importing is not a formal reading event.
-        book.updatedAt = 0L;
-        importDeduplicator.accepted(target);
-        return book;
+        imports.importBooks(uris, books);
     }
 
     private void openBook(Book book) {
@@ -1706,42 +1567,23 @@ public class MainActivity extends Activity {
     }
 
     private boolean isAutoTocEnabled() {
-        return preferences != null && preferences.getBoolean(KEY_AUTO_TOC, false);
+        return readingPreferences != null && readingPreferences.autoToc();
     }
 
     private void scheduleMissingTocGeneration() {
         for (Book book : new ArrayList<>(books)) {
-            tocExecutor.execute(() -> {
-                if (!isAutoTocEnabled()) return;
-                if (tocStore.read(book) != null) return;
-                try {
-                    TocDocument document = TocGenerator.generate(
-                            new File(book.path), book.encoding);
-                    if (!isAutoTocEnabled()) return;
-                    tocStore.write(book, document);
-                } catch (Exception ignored) {
-                    // A failed book must not stop indexing the rest of the shelf.
-                }
-            });
+            catalog.generate(book, this::isAutoTocEnabled, true, (document, error) -> { });
         }
     }
 
     private void generateTocInBackground(Book book, boolean notify) {
-        tocExecutor.execute(() -> {
-            try {
-                TocDocument document = TocGenerator.generate(new File(book.path), book.encoding);
-                tocStore.write(book, document);
-                if (notify) mainHandler.post(() -> {
-                    Toast.makeText(this,
-                            document.entries.isEmpty() ? "未识别到目录" : "目录已生成",
-                            Toast.LENGTH_SHORT).show();
-                    if (catalogOpen && currentBook == book && !document.entries.isEmpty()) {
-                        showCatalogPage(book, document);
-                    }
-                });
-            } catch (Exception error) {
-                if (notify) mainHandler.post(() -> Toast.makeText(this,
-                        "目录生成失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
+        catalog.generate(book, () -> true, false, (document, error) -> {
+            if (!notify) return;
+            if (error != null) {
+                Toast.makeText(this, "目录生成失败：" + error.getMessage(), Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(this, document.entries.isEmpty() ? "未识别到目录" : "目录已生成", Toast.LENGTH_SHORT).show();
+                if (catalogOpen && currentBook == book && !document.entries.isEmpty()) showCatalogPage(book, document);
             }
         });
     }
@@ -1749,7 +1591,7 @@ public class MainActivity extends Activity {
     private void openCatalogPage() {
         if (currentBook == null) return;
         if (syncCoordinator != null) syncCoordinator.setReaderActive(false, false);
-        TocDocument document = tocStore.read(currentBook);
+        TocDocument document = catalog.read(currentBook);
         saveCurrentProgress();
         disableAutoPage();
         cancelReaderPipelineWork();
@@ -1761,7 +1603,7 @@ public class MainActivity extends Activity {
     private void saveCurrentBookmark() {
         if (currentBook == null) return;
         saveCurrentProgress();
-        boolean added = bookmarkStore.add(currentBook.id, currentBook.offset);
+        boolean added = catalog.bookmark(currentBook);
         Toast.makeText(this, added ? "书签已保存" : "当前位置已有书签",
                 Toast.LENGTH_SHORT).show();
     }
@@ -1886,7 +1728,7 @@ public class MainActivity extends Activity {
     private void renderBookmarkTab(LinearLayout list, Book book, int surface,
                                    int text, int muted, int accent) {
         list.removeAllViews();
-        List<Bookmark> bookmarks = bookmarkStore.load(book.id);
+        List<Bookmark> bookmarks = catalog.bookmarks(book);
         if (bookmarks.isEmpty()) {
             TextView empty = new TextView(this);
             empty.setText("还没有书签\n在阅读页点击书签按钮即可保存当前位置");
@@ -1923,7 +1765,7 @@ public class MainActivity extends Activity {
             UiKit.styleButton(this, remove, Color.TRANSPARENT, muted, 12);
             remove.setOnClickListener(v -> showModernConfirmDialog("删除此书签？",
                     "只删除这个书签，不改变书籍和阅读进度。", "取消", "删除", true, null, () -> {
-                        bookmarkStore.delete(bookmark);
+                        catalog.deleteBookmark(bookmark);
                         renderBookmarkTab(list, book, surface, text, muted, accent);
                     }));
             row.addView(remove, new LinearLayout.LayoutParams(
@@ -2105,7 +1947,7 @@ public class MainActivity extends Activity {
         tocToggle.setContentDescription("TXT 自动生成目录");
         tocToggle.setOnClickListener(v -> {
             boolean enabled = !isAutoTocEnabled();
-            preferences.edit().putBoolean(KEY_AUTO_TOC, enabled).apply();
+            readingPreferences.setAutoToc(enabled);
             styleSettingsToggleButton(tocToggle, enabled, text, accent, accentContainer, surface);
             if (enabled) scheduleMissingTocGeneration();
         });
@@ -3370,7 +3212,7 @@ public class MainActivity extends Activity {
             button.setOnClickListener(v -> {
                 if (searchFromBeginning == fromBeginning) return;
                 searchFromBeginning = fromBeginning;
-                searchRequestId++;
+                searches.cancel();
                 searchSession = null;
                 results.removeAllViews();
                 continueFromStart.setVisibility(View.GONE);
@@ -3405,7 +3247,7 @@ public class MainActivity extends Activity {
 
     private void startBookSearch(String query, LinearLayout results, TextView status,
                                  Button continueFromStart, Book book) {
-        searchRequestId++;
+        searches.cancel();
         searchSession = null;
         String keyword = SearchTextRules.normalize(query);
         if (keyword.isEmpty()) {
@@ -3440,12 +3282,7 @@ public class MainActivity extends Activity {
 
     private void continueSearchFromBeginning(LinearLayout results, TextView status,
                                             Button continueFromStart) {
-        if (searchSession == null || searchSession.loading || !searchSession.needsWrapConfirmation) {
-            return;
-        }
-        searchSession.wrappedToStart = true;
-        searchSession.needsWrapConfirmation = false;
-        searchSession.nextOffset = 0L;
+        if (!searches.wrap(searchSession)) return;
         loadNextSearchBatch(results, status, continueFromStart);
     }
 
@@ -3456,44 +3293,16 @@ public class MainActivity extends Activity {
                 || session.needsWrapConfirmation || !searchOpen) {
             return;
         }
-        session.loading = true;
-        renderSearchSession(results, status, continueFromStart, false);
-        long requestId = ++searchRequestId;
-        long endOffset = session.wrappedToStart ? session.originOffset : session.fileSize;
-        searchExecutor.execute(() -> {
-            SearchBatch batch;
-            Exception error = null;
-            try {
-                batch = searchBookBatch(session.book, session.query, session.nextOffset, endOffset);
-            } catch (Exception e) {
-                batch = new SearchBatch(new ArrayList<>(), session.nextOffset, true);
-                error = e;
+        searches.load(session, (completed, batch, error) -> {
+            if (!searchOpen || searchSession != completed || currentBook != completed.book) return;
+            if (error != null) {
+                status.setText(getString(R.string.search_failed, error.getMessage()));
+                return;
             }
-            SearchBatch finalBatch = batch;
-            Exception finalError = error;
-            mainHandler.post(() -> {
-                if (!searchOpen || requestId != searchRequestId || searchSession != session
-                        || currentBook != session.book) return;
-                session.loading = false;
-                if (finalError != null) {
-                    status.setText(getString(R.string.search_failed, finalError.getMessage()));
-                    return;
-                }
-                session.results.addAll(finalBatch.results);
-                for (SearchResult result : finalBatch.results) {
-                    results.addView(makeSearchResultRow(result, session.book));
-                }
-                session.nextOffset = finalBatch.nextOffset;
-                if (finalBatch.reachedBoundary) {
-                    if (session.wrappedToStart || session.originOffset == 0L) {
-                        session.complete = true;
-                    } else {
-                        session.needsWrapConfirmation = true;
-                    }
-                }
-                renderSearchSession(results, status, continueFromStart, false);
-            });
+            for (SearchResult result : batch.results) results.addView(makeSearchResultRow(result, completed.book));
+            renderSearchSession(results, status, continueFromStart, false);
         });
+        renderSearchSession(results, status, continueFromStart, false);
     }
 
     private void renderSearchSession(LinearLayout results, TextView status,
@@ -3563,46 +3372,12 @@ public class MainActivity extends Activity {
     }
 
     private void openSearchResult(Book book, long offset) {
-        searchRequestId++;
+        searches.cancel();
         searchOpen = false;
         temporarySearchReading = true;
         book.offset = Math.max(0L, Math.min(offset, Math.max(0L, book.fileSize)));
         book.progress = book.fileSize <= 0 ? 0f : book.offset / (float) book.fileSize;
         showReader(book);
-    }
-
-    private SearchBatch searchBookBatch(Book book, String query, long startOffset, long endOffset)
-            throws Exception {
-        File file = new File(book.path);
-        Charset charset = charsetFor(book.encoding);
-        ReaderTextSearch.Batch batch = ReaderTextSearch.find(
-                file, book.encoding, query, startOffset, endOffset,
-                SEARCH_READ_BYTES, SEARCH_RESULT_LIMIT);
-        int queryByteLength = query.getBytes(charset).length;
-        List<SearchResult> results = new ArrayList<>();
-        for (long offset : batch.offsets) {
-            results.add(new SearchResult(offset, makeSearchSnippet(
-                    file, offset, query, book.encoding, queryByteLength)));
-        }
-        return new SearchBatch(
-                results, batch.nextOffset, batch.reachedBoundary);
-    }
-
-    private String makeSearchSnippet(File file, long matchOffset, String query, String encoding,
-                                     int queryByteLength) throws Exception {
-        long desiredStart = Math.max(0L, matchOffset - SEARCH_CONTEXT_CHARS * 4L);
-        long contextStart = findReadableOffset(file, desiredStart, encoding);
-        long prefixBytes = Math.max(0L, matchOffset - contextStart);
-        if (prefixBytes > SEARCH_SNIPPET_MAX_READ_BYTES / 2L) return query;
-        int readLength = (int) Math.min(SEARCH_SNIPPET_MAX_READ_BYTES,
-                Math.max(2048L, prefixBytes
-                        + SEARCH_CONTEXT_CHARS * 4L + queryByteLength + 1024L));
-        CacheSegment context = readSegment(file, contextStart, readLength, encoding);
-        int index = ByteOffsetMap.create(context.text, charsetFor(encoding))
-                .charIndexForByteOffset(matchOffset - context.offset);
-        int start = Math.max(0, index - SEARCH_CONTEXT_CHARS);
-        int end = Math.min(context.text.length(), index + query.length() + SEARCH_CONTEXT_CHARS);
-        return context.text.substring(start, end).replace('\n', ' ').replace('\r', ' ');
     }
 
     private boolean handlePageSwipe(float dx, float dy) {
@@ -3663,8 +3438,8 @@ public class MainActivity extends Activity {
         loadingChunk = true;
         // Freeze progress only for an explicit seek/open until its initial page window is ready.
         suppressProgressSave = true;
-        ioExecutor.execute(() -> {
-            if (requestId != loadRequestId) return;
+        readerTasks.io.execute(() -> {
+            if (requestId != readerTasks.loadGeneration()) return;
             CacheWindowLoad load = null;
             Exception error = null;
             try {
@@ -3675,11 +3450,11 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 error = e;
             }
-            if (requestId != loadRequestId) return;
+            if (requestId != readerTasks.loadGeneration()) return;
             CacheWindowLoad finalLoad = load;
             Exception finalError = error;
             mainHandler.post(() -> {
-                if (requestId != loadRequestId || currentBook != book) return;
+                if (requestId != readerTasks.loadGeneration() || currentBook != book) return;
                 if (finalError != null) {
                     loadingChunk = false;
                     suppressProgressSave = false;
@@ -3693,9 +3468,8 @@ public class MainActivity extends Activity {
 
     /** Invalidates both asynchronous reader pipelines as one lifecycle operation. */
     private long cancelReaderPipelineWork() {
-        long requestId = ++loadRequestId;
+        long requestId = readerTasks.cancel();
         cacheStackGeneration++;
-        pageBuildRequestId++;
         loadingBackwardSegment = false;
         loadingForwardSegment = false;
         loadingReaderPages = false;
@@ -3803,12 +3577,12 @@ public class MainActivity extends Activity {
                         book, cache, anchorOffset));
                 return;
             }
-            long requestId = ++pageBuildRequestId;
+            long requestId = readerTasks.nextPage();
             loadingReaderPages = true;
             resettingReaderPages = true;
             loadingChunk = true;
             suppressProgressSave = true;
-            pageExecutor.execute(() -> {
+            readerTasks.pages.execute(() -> {
                 List<ReaderPage> pages = readerPagePaginator.paginateAround(
                         cache, anchorOffset, spec, PAGE_WINDOW_PREFETCH_EACH_SIDE);
                 mainHandler.post(() -> finishReaderPageWindow(
@@ -3839,7 +3613,7 @@ public class MainActivity extends Activity {
     private void finishReaderPageWindow(Book book, CombinedCacheSnapshot sourceCache,
                                         long layoutKey, long anchorOffset, long requestId,
                                         List<ReaderPage> pages) {
-        if (requestId != pageBuildRequestId || currentBook != book) return;
+        if (requestId != readerTasks.pageGeneration() || currentBook != book) return;
         loadingReaderPages = false;
         resettingReaderPages = false;
         if (currentCache != sourceCache || pageLayoutGeneration != layoutKey) {
@@ -3871,31 +3645,7 @@ public class MainActivity extends Activity {
         maybeRefillReaderPageWindow();
     }
 
-    private ReaderCache readReaderCache(Book book) {
-        File source = new File(book.path);
-        File cacheFile = readerCacheFile(book);
-        if (!source.exists() || !cacheFile.exists()) return null;
-        try (DataInputStream input = new DataInputStream(new FileInputStream(cacheFile))) {
-            if (input.readInt() != READER_CACHE_MAGIC) return null;
-            long fileSize = input.readLong();
-            long modifiedAt = input.readLong();
-            long windowStart = input.readLong();
-            int bytesRead = input.readInt();
-            int textLength = input.readInt();
-            if (fileSize != source.length() || modifiedAt != source.lastModified()
-                    || windowStart < 0 || windowStart > fileSize || bytesRead < 0
-                    || bytesRead > fileSize - windowStart
-                    || textLength < 0 || textLength > MAX_READER_CACHE_TEXT_BYTES) {
-                return null;
-            }
-            byte[] textBytes = new byte[textLength];
-            input.readFully(textBytes);
-            return new ReaderCache(fileSize, windowStart, bytesRead,
-                    new String(textBytes, StandardCharsets.UTF_8));
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
+    private ReaderCache readReaderCache(Book book) { return readerCacheStore.read(book); }
 
     private void saveReaderCache(Book book, CacheWindowLoad load) {
         if (book == null || load == null || load.cache == null) return;
@@ -3921,41 +3671,7 @@ public class MainActivity extends Activity {
     }
 
     private void writeReaderCache(ReaderCacheWrite cache) {
-        readerCacheExecutor.execute(() -> {
-            byte[] textBytes = cache.text.getBytes(StandardCharsets.UTF_8);
-            if (textBytes.length > MAX_READER_CACHE_TEXT_BYTES) return;
-            File directory = new File(getFilesDir(), "reader-cache");
-            if (!directory.exists() && !directory.mkdirs()) return;
-            File target = readerCacheFile(cache.book);
-            File temporary = new File(directory, target.getName() + ".tmp");
-            try (DataOutputStream output = new DataOutputStream(new FileOutputStream(temporary))) {
-                output.writeInt(READER_CACHE_MAGIC);
-                output.writeLong(cache.fileSize);
-                output.writeLong(cache.modifiedAt);
-                output.writeLong(cache.windowStart);
-                output.writeInt(cache.bytesRead);
-                output.writeInt(textBytes.length);
-                output.write(textBytes);
-                output.flush();
-                if (target.exists() && !target.delete()) return;
-                if (!temporary.renameTo(target)) {
-                    boolean ignored = temporary.delete();
-                }
-            } catch (Exception ignored) {
-                boolean deleted = temporary.delete();
-            }
-        });
-    }
-
-    private File readerCacheFile(Book book) {
-        return new File(new File(getFilesDir(), "reader-cache"), book.id + ".window");
-    }
-
-    private void deleteReaderCache(Book book) {
-        File cacheFile = readerCacheFile(book);
-        if (cacheFile.exists()) {
-            boolean ignored = cacheFile.delete();
-        }
+        readerTasks.cache.execute(() -> readerCacheStore.write(cache));
     }
 
     private boolean hasBookIndex(Book book, long fileSize) {
@@ -3972,7 +3688,7 @@ public class MainActivity extends Activity {
             }
             book.indexBuilding = true;
         }
-        indexExecutor.execute(() -> {
+        readerTasks.index.execute(() -> {
             try {
                 ensureBookIndex(book, new File(book.path));
             } catch (Exception ignored) {
@@ -4000,9 +3716,9 @@ public class MainActivity extends Activity {
         if (loadingBackwardSegment || combineStack.startOffset() <= 0L) return;
         loadingBackwardSegment = true;
         long generation = cacheStackGeneration;
-        long requestId = loadRequestId;
+        long requestId = readerTasks.loadGeneration();
         long segmentEnd = combineStack.startOffset();
-        ioExecutor.execute(() -> {
+        readerTasks.io.execute(() -> {
             CacheSegment segment = null;
             CacheCombineStack preparedStack = null;
             CombinedCacheSnapshot preparedCache = null;
@@ -4038,7 +3754,7 @@ public class MainActivity extends Activity {
                                         CacheSegment loaded,
                                         CacheCombineStack preparedStack,
                                         CombinedCacheSnapshot preparedCache) {
-        if (generation != cacheStackGeneration || requestId != loadRequestId
+        if (generation != cacheStackGeneration || requestId != readerTasks.loadGeneration()
                 || currentBook != book || currentCombineStack != combineStack) {
             return;
         }
@@ -4056,9 +3772,9 @@ public class MainActivity extends Activity {
         if (loadingForwardSegment || combineStack.endOffset() >= book.fileSize) return;
         loadingForwardSegment = true;
         long generation = cacheStackGeneration;
-        long requestId = loadRequestId;
+        long requestId = readerTasks.loadGeneration();
         long segmentStart = combineStack.endOffset();
-        ioExecutor.execute(() -> {
+        readerTasks.io.execute(() -> {
             CacheSegment segment = null;
             CacheCombineStack preparedStack = null;
             CombinedCacheSnapshot preparedCache = null;
@@ -4086,7 +3802,7 @@ public class MainActivity extends Activity {
                                        CacheSegment loaded,
                                        CacheCombineStack preparedStack,
                                        CombinedCacheSnapshot preparedCache) {
-        if (generation != cacheStackGeneration || requestId != loadRequestId
+        if (generation != cacheStackGeneration || requestId != readerTasks.loadGeneration()
                 || currentBook != book || currentCombineStack != combineStack) {
             return;
         }
@@ -4111,7 +3827,7 @@ public class MainActivity extends Activity {
         currentCache = preparedCache;
         boolean restartReset = loadingReaderPages && resettingReaderPages;
         if (loadingReaderPages) {
-            pageBuildRequestId++;
+            readerTasks.nextPage();
             loadingReaderPages = false;
             resettingReaderPages = false;
         }
@@ -4220,11 +3936,11 @@ public class MainActivity extends Activity {
         CombinedCacheSnapshot cache = currentCache;
         long boundaryOffset = direction == PAGE_DIRECTION_FORWARD
                 ? readerPageWindow.lastEndOffset() : readerPageWindow.firstStartOffset();
-        long requestId = ++pageBuildRequestId;
+        long requestId = readerTasks.nextPage();
         loadingReaderPages = true;
         resettingReaderPages = false;
         int batchSize = Math.max(1, requestedPages);
-        pageExecutor.execute(() -> {
+        readerTasks.pages.execute(() -> {
             List<ReaderPage> pages = direction == PAGE_DIRECTION_FORWARD
                     ? readerPagePaginator.paginateForward(
                             cache, boundaryOffset, spec, batchSize)
@@ -4238,7 +3954,7 @@ public class MainActivity extends Activity {
     private void finishReaderPageBatch(Book book, CombinedCacheSnapshot sourceCache,
                                        long layoutKey, long requestId, int direction,
                                        long expectedBoundary, List<ReaderPage> pages) {
-        if (requestId != pageBuildRequestId || currentBook != book) return;
+        if (requestId != readerTasks.pageGeneration() || currentBook != book) return;
         loadingReaderPages = false;
         resettingReaderPages = false;
         boolean sourceIsCurrent = currentCache == sourceCache
@@ -4641,7 +4357,7 @@ public class MainActivity extends Activity {
         if (currentBook == null || currentCache == null) return;
         ReaderPage page = readerPageWindow.current();
         long anchorOffset = page == null ? currentBook.offset : page.startOffset;
-        pageBuildRequestId++;
+        readerTasks.nextPage();
         loadingReaderPages = false;
         resettingReaderPages = false;
         requestReaderPageWindow(currentBook, currentCache, anchorOffset);
@@ -4835,12 +4551,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean applyFormalProgress(Book book, long offset, Long preservedReadAtMs) {
-        if (!FormalReadingProgress.apply(book, offset, preservedReadAtMs, System.currentTimeMillis(),
-                syncCoordinator != null && syncCoordinator.isPreparing(book.id))) return false;
-        pendingProgressPublications.add(book.id);
-        if (syncCoordinator != null) syncCoordinator.onLocalProgressChanged(
-                book.id, book.fileSize, book.offset, book.updatedAt);
-        return true;
+        return syncCoordinator.recordProgress(book, offset, preservedReadAtMs);
     }
 
     private void updateProgressText() {
@@ -4939,75 +4650,20 @@ public class MainActivity extends Activity {
         return UiKit.LIGHT_BACKGROUND;
     }
 
-    private int appTheme() {
-        return preferences == null ? THEME_LIGHT
-                : ReaderSettingsOptions.normalizeTheme(
-                        preferences.getInt(KEY_APP_THEME, THEME_LIGHT));
-    }
-
-    private void setAppTheme(int theme) {
-        preferences.edit().putInt(KEY_APP_THEME,
-                ReaderSettingsOptions.normalizeTheme(theme)).apply();
-    }
-
-    private boolean readingKeepScreenOn() {
-        return preferences.getBoolean(KEY_KEEP_SCREEN_ON, false);
-    }
-
-    private void setReadingKeepScreenOn(boolean enabled) {
-        preferences.edit().putBoolean(KEY_KEEP_SCREEN_ON, enabled).apply();
-    }
-
-    private int readingAutoPageInterval() {
-        return AutoPageOptions.normalizePreference(preferences.getInt(KEY_AUTO_PAGE_INTERVAL,
-                AutoPageOptions.DEFAULT_SECONDS));
-    }
-
-    private void setReadingAutoPageInterval(int seconds) {
-        preferences.edit().putInt(KEY_AUTO_PAGE_INTERVAL,
-                AutoPageOptions.normalizePreference(seconds)).apply();
-    }
-
-    private int readingSensitivity() {
-        return ReaderSettingsOptions.normalizeSensitivity(
-                preferences.getInt(KEY_SENSITIVITY, SENSITIVITY_STANDARD));
-    }
-
-    private void setReadingSensitivity(int sensitivity) {
-        preferences.edit().putInt(KEY_SENSITIVITY,
-                ReaderSettingsOptions.normalizeSensitivity(sensitivity)).apply();
-    }
-
-    private int readingFontFamily() {
-        return ReaderSettingsOptions.normalizeFontFamily(
-                preferences.getInt(KEY_FONT_FAMILY, ReaderSettingsOptions.FONT_SYSTEM));
-    }
-
-    private void setReadingFontFamily(int family) {
-        preferences.edit().putInt(KEY_FONT_FAMILY,
-                ReaderSettingsOptions.normalizeFontFamily(family)).apply();
-    }
-
-    private float readingFontSize() {
-        return ReaderSettingsOptions.normalizeFontSize(
-                preferences.getFloat(KEY_FONT_SIZE, ReaderSettingsOptions.DEFAULT_FONT_SIZE));
-    }
-
-    private void setReadingFontSize(float size) {
-        preferences.edit().putFloat(KEY_FONT_SIZE,
-                ReaderSettingsOptions.normalizeFontSize(size)).apply();
-    }
-
-    private float readingLineSpacingRatio() {
-        return ReaderSettingsOptions.normalizeLineSpacing(
-                preferences.getFloat(KEY_LINE_SPACING,
-                        ReaderSettingsOptions.DEFAULT_LINE_SPACING));
-    }
-
-    private void setReadingLineSpacingRatio(float ratio) {
-        preferences.edit().putFloat(KEY_LINE_SPACING,
-                ReaderSettingsOptions.normalizeLineSpacing(ratio)).apply();
-    }
+    private int appTheme() { return readingPreferences.appTheme(); }
+    private void setAppTheme(int theme) { readingPreferences.setAppTheme(theme); }
+    private boolean readingKeepScreenOn() { return readingPreferences.readingKeepScreenOn(); }
+    private void setReadingKeepScreenOn(boolean enabled) { readingPreferences.setReadingKeepScreenOn(enabled); }
+    private int readingAutoPageInterval() { return readingPreferences.readingAutoPageInterval(); }
+    private void setReadingAutoPageInterval(int seconds) { readingPreferences.setReadingAutoPageInterval(seconds); }
+    private int readingSensitivity() { return readingPreferences.readingSensitivity(); }
+    private void setReadingSensitivity(int sensitivity) { readingPreferences.setReadingSensitivity(sensitivity); }
+    private int readingFontFamily() { return readingPreferences.readingFontFamily(); }
+    private void setReadingFontFamily(int family) { readingPreferences.setReadingFontFamily(family); }
+    private float readingFontSize() { return readingPreferences.readingFontSize(); }
+    private void setReadingFontSize(float size) { readingPreferences.setReadingFontSize(size); }
+    private float readingLineSpacingRatio() { return readingPreferences.readingLineSpacingRatio(); }
+    private void setReadingLineSpacingRatio(float ratio) { readingPreferences.setReadingLineSpacingRatio(ratio); }
 
     private boolean isDarkTheme(int theme) {
         return ReaderDisplayPolicy.isDarkTheme(theme);
@@ -5037,10 +4693,7 @@ public class MainActivity extends Activity {
     }
 
     private void migrateLegacySystemTheme() {
-        if (preferences.getInt(KEY_APP_THEME, THEME_LIGHT)
-                != ReaderSettingsOptions.LEGACY_THEME_SYSTEM) return;
-        preferences.edit().putInt(KEY_APP_THEME,
-                isSystemNight() ? THEME_DARK : THEME_LIGHT).apply();
+        readingPreferences.migrateSystemTheme(isSystemNight());
     }
 
     private int dp(int value) {
@@ -5056,10 +4709,6 @@ public class MainActivity extends Activity {
         }
         String fallback = uri.getLastPathSegment();
         return fallback == null ? null : new File(fallback).getName();
-    }
-
-    private String detectEncoding(File file) {
-        return TextFileUtils.detectEncoding(file);
     }
 
     private String getVersionText() {
@@ -5086,8 +4735,7 @@ public class MainActivity extends Activity {
     }
 
     private void loadBooks() {
-        books.clear();
-        books.addAll(bookStore.load());
+        library.load();
     }
 
     private void saveBooks() {
@@ -5096,18 +4744,9 @@ public class MainActivity extends Activity {
         Book preservedBook = temporarySearchReading && searchSession != null ? currentBook : null;
         long preservedOffset = preservedBook == null ? 0L : searchSession.returnOffset;
         float preservedProgress = preservedBook == null ? 0f : searchSession.returnProgress;
-        if (bookStore.save(books, preservedBook, preservedOffset, preservedProgress)
-                && syncCoordinator != null && !pendingProgressPublications.isEmpty()) {
-            for (Book book : books) {
-                if (pendingProgressPublications.contains(book.id)) {
-                    long publishedOffset = book == preservedBook ? preservedOffset : book.offset;
-                    long publishedReadAt = book == preservedBook && searchSession != null
-                            ? searchSession.returnUpdatedAt : book.updatedAt;
-                    syncCoordinator.onLocalProgressChanged(book.id, book.fileSize,
-                            publishedOffset, publishedReadAt);
-                }
-            }
-            pendingProgressPublications.clear();
+        if (library.save(preservedBook, preservedOffset, preservedProgress) && syncCoordinator != null) {
+            syncCoordinator.onLibrarySaved(books, preservedBook, preservedOffset,
+                    preservedBook == null ? 0L : searchSession.returnUpdatedAt);
         }
     }
 
@@ -5122,88 +4761,6 @@ public class MainActivity extends Activity {
         mainHandler.removeCallbacks(booksSaveRunnable);
         booksSavePending = false;
         saveBooks();
-    }
-
-    private static class ReaderCache {
-        final long fileSize;
-        final long windowStart;
-        final int bytesRead;
-        final String text;
-
-        ReaderCache(long fileSize, long windowStart, int bytesRead, String text) {
-            this.fileSize = fileSize;
-            this.windowStart = windowStart;
-            this.bytesRead = bytesRead;
-            this.text = text;
-        }
-    }
-
-    private static class ReaderCacheWrite {
-        final Book book;
-        final long fileSize;
-        final long modifiedAt;
-        final long windowStart;
-        final int bytesRead;
-        final String text;
-
-        ReaderCacheWrite(Book book, long fileSize, long modifiedAt, long windowStart,
-                         int bytesRead, String text) {
-            this.book = book;
-            this.fileSize = fileSize;
-            this.modifiedAt = modifiedAt;
-            this.windowStart = windowStart;
-            this.bytesRead = bytesRead;
-            this.text = text;
-        }
-    }
-
-    private static class SearchResult {
-        final long offset;
-        final String snippet;
-
-        SearchResult(long offset, String snippet) {
-            this.offset = offset;
-            this.snippet = snippet;
-        }
-    }
-
-    private static class SearchBatch {
-        final List<SearchResult> results;
-        final long nextOffset;
-        final boolean reachedBoundary;
-
-        SearchBatch(List<SearchResult> results, long nextOffset, boolean reachedBoundary) {
-            this.results = results;
-            this.nextOffset = nextOffset;
-            this.reachedBoundary = reachedBoundary;
-        }
-    }
-
-    private static class SearchSession {
-        final Book book;
-        final String query;
-        final long originOffset;
-        final long fileSize;
-        final long returnOffset;
-        final float returnProgress;
-        final long returnUpdatedAt;
-        final List<SearchResult> results = new ArrayList<>();
-        long nextOffset;
-        boolean loading;
-        boolean wrappedToStart;
-        boolean needsWrapConfirmation;
-        boolean complete;
-
-        SearchSession(Book book, String query, long originOffset, long fileSize) {
-            this.book = book;
-            this.query = query;
-            this.originOffset = originOffset;
-            this.fileSize = fileSize;
-            this.returnOffset = originOffset;
-            this.returnProgress = book.progress;
-            this.returnUpdatedAt = book.updatedAt;
-            this.nextOffset = originOffset;
-        }
     }
 
     private static class CacheWindowLoad {

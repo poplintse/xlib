@@ -11,12 +11,17 @@ import java.util.List;
 final class BookmarkStore {
     private static final String KEY_BOOKMARKS = "bookmarks";
     private final SharedPreferences preferences;
+    private final LocalDatabase database;
 
     BookmarkStore(SharedPreferences preferences) {
         this.preferences = preferences;
+        this.database = null;
     }
 
+    BookmarkStore(LocalDatabase database) { this.preferences = null; this.database = database; }
+
     List<Bookmark> load(long bookId) {
+        if (database != null) return database.loadBookmarks(bookId);
         ArrayList<Bookmark> result = new ArrayList<>();
         for (Bookmark bookmark : loadAll()) {
             if (bookmark.bookId == bookId) result.add(bookmark);
@@ -25,6 +30,7 @@ final class BookmarkStore {
     }
 
     boolean add(long bookId, long offset) {
+        if (database != null) return database.addBookmark(bookId, offset);
         ArrayList<Bookmark> all = loadAll();
         for (Bookmark bookmark : all) {
             if (bookmark.bookId == bookId && bookmark.offset == offset) return false;
@@ -36,6 +42,7 @@ final class BookmarkStore {
     }
 
     void deleteForBook(long bookId) {
+        if (database != null) { database.deleteBookmarks(bookId); return; }
         ArrayList<Bookmark> remaining = new ArrayList<>();
         for (Bookmark bookmark : loadAll()) {
             if (bookmark.bookId != bookId) remaining.add(bookmark);
@@ -44,6 +51,7 @@ final class BookmarkStore {
     }
 
     void delete(Bookmark target) {
+        if (database != null) { database.deleteBookmark(target); return; }
         ArrayList<Bookmark> all = loadAll();
         for (int i = 0; i < all.size(); i++) {
             Bookmark item = all.get(i);

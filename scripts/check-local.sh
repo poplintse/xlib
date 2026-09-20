@@ -4,6 +4,7 @@ set -eu
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 
 ruby "$root/scripts/check-contract.rb"
+ruby "$root/scripts/check-contract-fixtures.rb"
 ruby "$root/scripts/test-release-check.rb"
 "$root/scripts/release-check.sh"
 "$root/scripts/test-backend.sh"

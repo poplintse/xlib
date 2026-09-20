@@ -1,0 +1,70 @@
+[
+  {
+    "id": "equal-device-order",
+    "stored": {
+      "offset": 600,
+      "readAtMs": 1000,
+      "deviceId": "10000000-0000-4000-8000-000000000001"
+    },
+    "incoming": {
+      "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fileSize": 9007199254740991,
+      "offset": 9007199254740990,
+      "readAtMs": 1000
+    },
+    "deviceId": "20000000-0000-4000-8000-000000000002",
+    "serverTimeMs": 2000,
+    "decision": "accepted",
+    "timeAdjusted": false
+  },
+  {
+    "id": "idempotent",
+    "stored": {
+      "offset": 9007199254740990,
+      "readAtMs": 1000,
+      "deviceId": "10000000-0000-4000-8000-000000000001"
+    },
+    "incoming": {
+      "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fileSize": 9007199254740991,
+      "offset": 9007199254740990,
+      "readAtMs": 1000
+    },
+    "deviceId": "10000000-0000-4000-8000-000000000001",
+    "serverTimeMs": 2000,
+    "decision": "unchanged",
+    "timeAdjusted": false
+  },
+  {
+    "id": "future-clamped",
+    "stored": {
+      "offset": 600,
+      "readAtMs": 3000,
+      "deviceId": "10000000-0000-4000-8000-000000000001"
+    },
+    "incoming": {
+      "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fileSize": 9007199254740991,
+      "offset": 9007199254740990,
+      "readAtMs": 302001
+    },
+    "deviceId": "20000000-0000-4000-8000-000000000002",
+    "serverTimeMs": 2000,
+    "decision": "server_kept",
+    "timeAdjusted": true
+  },
+  {
+    "id": "future-limit",
+    "stored": null,
+    "incoming": {
+      "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fileSize": 9007199254740991,
+      "offset": 9007199254740990,
+      "readAtMs": 302000
+    },
+    "deviceId": "20000000-0000-4000-8000-000000000002",
+    "serverTimeMs": 2000,
+    "decision": "accepted",
+    "timeAdjusted": false
+  }
+]

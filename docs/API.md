@@ -39,3 +39,7 @@ bookHash 必须是小写 64 位十六进制，fileSize 路径参数为无前导�
 常见状态：400 格式/设备头错误，401 无效凭据，403 身份或设备不可用，404 资源/路由不存在，413 请求过大，422 校验失败，429 限流，500/503 服务失败。受保护请求认证先于业务字段校验。
 
 部署与数据库操作见 [服务 README](../services/backend/README.md)，实现职责见 [同步服务设计](features/sync-server.md)。
+
+## 契约回归入口
+
+[共享 JSON 样例](../contracts/fixtures/README.md) 由 Backend、Android、iOS 按职责直接消费；`scripts/check-contract-fixtures.rb` 校验当前 OpenAPI Schema 的报文正例与反例，已接入 `make check` 和 CI。字段/行为差异及验证限制在该说明维护。Schema 验证不替代跨字段业务约束、数据库集成或真实跨设备测试。

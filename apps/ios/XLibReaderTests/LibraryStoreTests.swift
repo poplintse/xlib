@@ -3,6 +3,27 @@ import XCTest
 @testable import XLibReader
 
 final class LibraryStoreTests: XCTestCase {
+    func testImportAndReloadPreserveUnknownAndRealReadingTimes() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appending(path: "source.txt")
+        try Data("阅读时间测试正文".utf8).write(to: source)
+        let libraryRoot = root.appending(path: "library")
+        let store = LibraryStore(root: libraryRoot)
+        var book = try await store.importBook(from: source)
+        XCTAssertEqual(book.updatedAt.timeIntervalSince1970, 0)
+        book.title = "编辑不产生阅读时间"
+        try await store.updateBook(book)
+        let unread = try await LibraryStore(root: libraryRoot).load()
+        XCTAssertEqual(unread.first?.updatedAt.timeIntervalSince1970, 0)
+        let realTime = Date(timeIntervalSince1970: 1_700_000_000)
+        try await store.saveProgress(bookID: book.id, offset: 3, updatedAt: realTime)
+        let read = try await LibraryStore(root: libraryRoot).load()
+        XCTAssertEqual(read.first?.updatedAt, realTime)
+        XCTAssertEqual(read.first?.offset, 3)
+    }
+
     func testBookmarkUniquenessPreservesOriginalAndOtherPositions() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

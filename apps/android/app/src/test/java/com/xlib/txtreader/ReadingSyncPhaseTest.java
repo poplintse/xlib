@@ -9,16 +9,16 @@ public class ReadingSyncPhaseTest {
         phase.complete();
         assertFalse(phase.canRead());
         assertFalse(phase.canUpload());
-        phase.positioned = true;
+        phase.positionReady();
         assertTrue(phase.canRead());
         assertTrue(phase.canUpload());
-        phase.awaitingChoice = true;
+        phase.awaitChoice();
         assertFalse(phase.canRead());
         assertFalse(phase.canUpload());
     }
     @Test public void offlineAllowsLocalReadingButRecoveryMustCompare() {
         ReadingSyncPhase phase = new ReadingSyncPhase();
-        phase.positioned = true;
+        phase.positionReady();
         phase.offline();
         assertTrue(phase.canRead());
         assertFalse(phase.canUpload());
@@ -29,15 +29,15 @@ public class ReadingSyncPhaseTest {
     }
     @Test public void deletionPauseSurvivesEveryComparisonUntilNewOpen() {
         ReadingSyncPhase phase = new ReadingSyncPhase();
-        phase.positioned = true;
-        phase.uploadPaused = true;
+        phase.positionReady();
+        phase.pauseUpload(true);
         phase.offline();
         phase.requireComparison();
         phase.complete();
         assertTrue(phase.canRead());
         assertFalse(phase.canUpload());
         ReadingSyncPhase reopened = new ReadingSyncPhase();
-        reopened.positioned = true;
+        reopened.positionReady();
         reopened.complete();
         assertTrue(reopened.canUpload());
     }

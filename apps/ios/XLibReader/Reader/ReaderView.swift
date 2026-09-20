@@ -157,21 +157,12 @@ struct ReaderView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .preferredColorScheme(settings.settings.theme.colorScheme)
-        .task {
-            guard persistsProgress else { return }
-            syncPrepared = false
-            let fileURL = await store.url(for: book)
-            guard !Task.isCancelled else { return }
-            await sync.beginReading(book: coordinator.readingBook, fileURL: fileURL, sessionID: readingSessionID, positionReady: false)
-            guard !Task.isCancelled else { return }
-            syncPrepared = true
-            updateReadingReadiness()
-        }
+        .task { await prepareReading() }
         .onChange(of: coordinator.isLoading) { _, _ in updateReadingReadiness() }
         .onChange(of: sync.isPreparingReading(bookID: book.id)) { _, _ in updateReadingReadiness() }
         .onChange(of: coordinator.progressEvent) { _, event in
             guard persistsProgress, let event else { return }
-            sync.recordLocalProgress(bookID: book.id, offset: event.offset, changedAt: event.changedAt)
+            sync.recordLocalProgress(bookID: book.id, offset: event.offset, changedAt: event.changedAt, sessionID: readingSessionID)
         }
         .onChange(of: scenePhase) { _, phase in
             flushReaderIfNeeded(for: phase)
@@ -186,6 +177,17 @@ struct ReaderView: View {
         .modifier(ReaderAlertsModifier(coordinator: coordinator, sync: sync, dismiss: dismiss, allowsSync: persistsProgress))
     }
 
+    private func prepareReading() async {
+        guard persistsProgress else { return }
+        syncPrepared = false
+        let fileURL = await store.url(for: book)
+        guard !Task.isCancelled else { return }
+        await sync.beginReading(book: coordinator.readingBook, fileURL: fileURL, sessionID: readingSessionID, positionReady: false)
+        guard !Task.isCancelled else { return }
+        syncPrepared = true
+        updateReadingReadiness()
+    }
+
     private func flushReaderIfNeeded(for phase: ScenePhase) {
         guard phase != .active else { return }
         Task { await coordinator.flush() }
@@ -193,7 +195,7 @@ struct ReaderView: View {
 
     private func updateReadingReadiness() {
         if persistsProgress, syncPrepared, !coordinator.isLoading, coordinator.errorMessage == nil {
-            sync.readingPositionReady(bookID: book.id)
+            sync.readingPositionReady(bookID: book.id, sessionID: readingSessionID)
         }
         coordinator.interactionEnabled = !coordinator.isLoading && (!persistsProgress || (syncPrepared && !sync.isPreparingReading(bookID: book.id)))
     }

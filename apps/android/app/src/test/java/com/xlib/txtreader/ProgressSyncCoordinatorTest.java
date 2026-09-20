@@ -18,7 +18,7 @@ import static org.mockito.ArgumentMatchers.*;
 public class ProgressSyncCoordinatorTest {
     private static final String HASH = "a".repeat(64);
     private ProgressSyncCoordinator coordinator;
-    private SyncApiClient api;
+    private SyncTransport api;
     private LocalProgressStore locals;
     private SyncTokenStore tokens;
     private final List<String> calls = new CopyOnWriteArrayList<>();
@@ -47,7 +47,7 @@ public class ProgressSyncCoordinatorTest {
         doAnswer(a -> { matches.set(true); return null; }).when(tokens).saveActiveConfiguration(anyString(), anyString(), anyString());
         BookHashCache hash = mock(BookHashCache.class);
         when(hash.resolve(anyLong(), any())).thenReturn(new BookHashCache.HashResult(HASH, 1000, 1));
-        api = mock(SyncApiClient.class);
+        api = mock(SyncTransport.class);
         when(api.configured()).thenReturn(true);
         when(api.startSync(anyString(), anyString(), anyString(), anyString())).thenAnswer(a -> {
             calls.add("register");
@@ -70,7 +70,7 @@ public class ProgressSyncCoordinatorTest {
                     public void onSyncStateChanged(SyncUiState state) { }
                     public void onRemoteJumpAvailable(String id, long book, RemoteProgressSnapshot value) { prompt.set(id); }
                 }, locals, new RemoteProgressStore(MemoryPreferences.create()), hash, tokens,
-                new SyncServerConfig(MemoryPreferences.create()), api, "test");
+                new SyncServerConfig(MemoryPreferences.create()), api, "test", () -> 12345L, new SyncExecution());
         coordinator.onForeground();
         await(() -> calls.contains("pull"));
     }
@@ -86,6 +86,23 @@ public class ProgressSyncCoordinatorTest {
         AtomicBoolean done = new AtomicBoolean();
         coordinator.refreshRemote(result -> done.set(true));
         await(done::get);
+    }
+
+    @Test public void injectedClockCommitsOnlyFormalMovementAfterComparison() throws Exception {
+        remote.set(List.of(progress(600, 200)));
+        open(200, 100);
+        await(() -> prompt.get() != null);
+        Book book = new Book(); book.id = 1; book.fileSize = 1000; book.offset = 200; book.updatedAt = 100;
+        assertFalse(coordinator.recordProgress(book, 250, null));
+        assertEquals(100, book.updatedAt);
+        coordinator.onJumpDeclined(prompt.get());
+        await(() -> !coordinator.isPreparing(1));
+        assertTrue(coordinator.recordProgress(book, 250, null));
+        assertEquals(12345, book.updatedAt);
+        assertEquals(12345, locals.get(1).readAtMs);
+        assertFalse(coordinator.recordProgress(book, 250, null));
+        assertTrue(coordinator.recordProgress(book, 260, null));
+        assertEquals(12346, book.updatedAt);
     }
 
     @Test public void preReadingWaitsForChoiceAndRemotePositioningWithoutChangingReadTime() throws Exception {

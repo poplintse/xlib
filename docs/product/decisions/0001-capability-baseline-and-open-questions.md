@@ -23,7 +23,7 @@
 | 差异 | 用户已确认的决定 | 当前实现跟踪 |
 |---|---|---|
 | 同步裁决 | [0002](0002-latest-reading-time-wins.md) 最近阅读时间优先，提示当前进度 | 服务及 Android/iOS 已实现；真实跨设备验收待执行 |
-| 阅读前与恢复 | [0003](0003-pre-reading-progress-comparison.md) 先比较定位，再正式阅读 | 两端已有阶段门控；iOS 导入时间进入同步仍违反实际阅读时间规则，见 iOS 客户端文档；真机生命周期待验收 |
+| 阅读前与恢复 | [0003](0003-pre-reading-progress-comparison.md) 先比较定位，再正式阅读 | 两端已有阶段门控；iOS 已修复新导入时间进入同步，增加未读/首次位移及旧云端进度回归；真机生命周期待验收 |
 | 配置应用 | [0004](0004-sync-configuration-auto-apply.md) 首次手动、之后有效修改自动应用 | Android/iOS 已补齐并有协调器回归测试 |
 | 上传范围 | [0005](0005-sync-only-current-reading-book.md) 仅当前正式阅读书籍 | iOS 全书库上传已移除，仅活动正式阅读书籍上传 |
 | 搜索 | [0006](0006-search-case-insensitive.md)、[0007](0007-search-non-overlapping-matches.md)、[0012](0012-search-results-in-batches.md)、[0013](0013-search-wrap-with-user-choice.md)、[0014](0014-search-query-character-count.md) | Android/iOS 已补齐续查、手动回绕及边界测试 |

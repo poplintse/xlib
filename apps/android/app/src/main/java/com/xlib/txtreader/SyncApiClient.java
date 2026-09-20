@@ -12,7 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
-final class SyncApiClient {
+final class SyncApiClient implements SyncTransport {
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 15_000;
     private static final int MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -23,15 +23,15 @@ final class SyncApiClient {
         this.baseUrl = SyncServerConfig.normalize(baseUrl);
     }
 
-    boolean configured() {
+    public boolean configured() {
         return SyncServerConfig.isValid(baseUrl);
     }
 
-    void setBaseUrl(String baseUrl) {
+    public void setBaseUrl(String baseUrl) {
         this.baseUrl = SyncServerConfig.normalize(baseUrl);
     }
 
-    StartSyncResponse startSync(String email, String deviceId, String deviceName,
+    public StartSyncResponse startSync(String email, String deviceId, String deviceName,
                                 String appVersion) throws Exception {
         JSONObject device = new JSONObject();
         device.put("deviceId", deviceId);
@@ -61,7 +61,7 @@ final class SyncApiClient {
         return new StartSyncResponse(token, normalizedEmail);
     }
 
-    List<RemoteProgressSnapshot> pullProgress(String token, String deviceId) throws Exception {
+    public List<RemoteProgressSnapshot> pullProgress(String token, String deviceId) throws Exception {
         JSONObject response = requestJson("GET", "/v1/progress", null, token, deviceId);
         requireServerTime(response);
         JSONArray items = response.getJSONArray("items");
@@ -72,7 +72,7 @@ final class SyncApiClient {
         return result;
     }
 
-    RemoteProgressSnapshot syncProgress(String token, String deviceId,
+    public RemoteProgressSnapshot syncProgress(String token, String deviceId,
                                         LocalProgressSnapshot snapshot) throws Exception {
         JSONObject item = new JSONObject();
         item.put("bookHash", snapshot.bookHash);
@@ -96,7 +96,7 @@ final class SyncApiClient {
         return parseRemote(result.getJSONObject("state"));
     }
 
-    List<SyncDevice> listDevices(String token, String deviceId) throws Exception {
+    public List<SyncDevice> listDevices(String token, String deviceId) throws Exception {
         JSONObject response = requestJson("GET", "/v1/devices", null, token, deviceId);
         requireServerTime(response);
         JSONArray items = response.optJSONArray("items");
@@ -116,11 +116,11 @@ final class SyncApiClient {
         return devices;
     }
 
-    void revokeDevice(String token, String deviceId, String targetDeviceId) throws Exception {
+    public void revokeDevice(String token, String deviceId, String targetDeviceId) throws Exception {
         requestNoContent("DELETE", "/v1/devices/" + targetDeviceId, token, deviceId);
     }
 
-    void deleteBookProgress(String token, String deviceId, BookKey book) throws Exception {
+    public void deleteBookProgress(String token, String deviceId, BookKey book) throws Exception {
         requestNoContent("DELETE", bookProgressPath(book), token, deviceId);
     }
 
@@ -132,7 +132,7 @@ final class SyncApiClient {
         return "/v1/progress/" + book.bookHash + "/" + book.fileSize;
     }
 
-    void health() throws Exception {
+    public void health() throws Exception {
         JSONObject response = requestJson("GET", "/health", null, null, null);
         if (!"ok".equals(requiredString(response, "status"))) {
             throw new ProtocolException("health response is not ok");

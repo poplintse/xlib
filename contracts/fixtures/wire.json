@@ -1,0 +1,100 @@
+{
+  "ProgressSyncRequest": {
+    "items": [
+      {
+        "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "fileSize": 9007199254740991,
+        "offset": 9007199254740990,
+        "readAtMs": 253402300799999
+      }
+    ]
+  },
+  "ProgressSyncResponse": {
+    "serverTimeMs": 253402300799999,
+    "results": [
+      {
+        "decision": "accepted",
+        "timeAdjusted": false,
+        "state": {
+          "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "fileSize": 9007199254740991,
+          "offset": 9007199254740990,
+          "readAtMs": 253402300799999,
+          "progress": 0.9999999999999999,
+          "version": "9007199254740993",
+          "device": {
+            "deviceId": "10000000-0000-4000-8000-000000000001",
+            "deviceName": "测试设备",
+            "platform": "android"
+          }
+        }
+      }
+    ]
+  },
+  "ProgressListResponse": {
+    "serverTimeMs": 253402300799999,
+    "items": [
+      {
+        "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "fileSize": 9007199254740991,
+        "offset": 9007199254740990,
+        "readAtMs": 253402300799999,
+        "progress": 0.9999999999999999,
+        "version": "9007199254740993",
+        "device": {
+          "deviceId": "10000000-0000-4000-8000-000000000001",
+          "deviceName": "测试设备",
+          "platform": "android"
+        }
+      }
+    ]
+  },
+  "ErrorEnvelope": {
+    "error": {
+      "code": "DEVICE_FORBIDDEN",
+      "message": "device revoked",
+      "retryable": false,
+      "requestId": "fixture-request"
+    }
+  },
+  "DeviceListResponse": {
+    "serverTimeMs": 1000,
+    "items": [
+      {
+        "deviceId": "10000000-0000-4000-8000-000000000001",
+        "deviceName": "测试设备",
+        "platform": "android",
+        "appVersion": "0.9.11",
+        "lastSeenAtMs": 1000,
+        "createdAtMs": 500,
+        "revokedAtMs": null,
+        "current": true
+      }
+    ]
+  },
+  "StartSyncRequest": {
+    "email": "reader@example.com",
+    "device": {
+      "deviceId": "10000000-0000-4000-8000-000000000001",
+      "deviceName": "测试设备",
+      "platform": "android",
+      "appVersion": "0.9.11"
+    }
+  },
+  "StartSyncResponse": {
+    "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "user": {
+      "userId": "20000000-0000-4000-8000-000000000002",
+      "email": "reader@example.com"
+    },
+    "device": {
+      "deviceId": "10000000-0000-4000-8000-000000000001",
+      "deviceName": "测试设备",
+      "platform": "android"
+    },
+    "serverTimeMs": 1000
+  },
+  "HealthResponse": {
+    "status": "ok"
+  }
+}

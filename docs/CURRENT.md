@@ -1,6 +1,6 @@
 # 当前实现与验收状态
 
-更新：2026-09-17。本文记录当前工作树，不代表已部署或已发布；产品规则以 [docs/product](product/README.md) 为准。
+更新：2026-09-20。本文记录当前工作树，不代表已部署或已发布；产品规则以 [docs/product](product/README.md) 为准。
 
 ## 组件与版本
 
@@ -29,7 +29,7 @@
 | 搜索 | 已补齐匹配/计数，包含跨 segment、续查和手动回绕测试 | 已补齐 200 条续查、主动回绕至原起点、当前页起搜、Unicode 测试及临时阅读同步隔离 |
 | 书签 | 已补齐单条删除及空列表，保持位置唯一 | 已补齐同位置唯一及重复提示；历史重复记录未自动清理 |
 | 同步配置 | 已补齐自动应用、凭据/缓存/旧提示失效 | 已补齐旧异步响应隔离和凭据串行写入；延迟登录/拉取测试通过 |
-| 阅读阶段 | 已实现定位/比较门控及仅实际位移生成时间；导入与缺失时间不生成阅读事件，需真机验证 | partial：已有准备门控及恢复时间保留，但导入时刻仍作为阅读时间进入同步，可能以 0% 覆盖真实云端状态 |
+| 阅读阶段 | 已实现定位/比较门控及仅实际位移生成时间；导入与缺失时间不生成阅读事件，需真机验证 | 已有准备门控及恢复时间保留；新导入时间为 0，未知时间禁止上传，先比较真实云端状态，实际位移才生成时间 |
 | 同步范围 | 仅活动正式阅读书籍；离线恢复比较最新状态，退出不补传 | 已移除全书库上传；仅活动正式会话，离线恢复先比较，失败不上传 |
 | 跳转提示 | 已显示当前本地与云端进度；旧提示失效有回归测试 | 已显示双方进度；模拟器可见，旧提示随配置/网络失效 |
 | 单书云端删除 | 已补齐入口、串行请求、暂停及关闭重开恢复测试 | 已补齐入口、确认、串行请求、同会话暂停和重开恢复；失败不暂停 |
@@ -42,7 +42,57 @@
 
 ## 验证
 
-当前文档审查覆盖产品基线 `30af692`、其后的 Android `fcd06a1`、iOS `b54600c` 及未提交工作区。仅修改文档。`make check` 首次因 Swift 缓存沙箱权限中断，重跑通过：合同/发布清单、Backend 54 项测试及 lint/typecheck/build、AppleShared 2 项测试、Android 单元测试/lint（任务复用缓存）、iOS Debug 构建。PostgreSQL 5 项集成测试仍跳过，未重跑 UI/真机/真实服务测试。文档本地链接、能力结构和状态及 `git diff --check` 通过。未发现本次文档修改引入权限或凭据风险；iOS 导入时间冲突及真实服务验收完成前不建议发布。
+### P5：Backend PostgreSQL 边界与集成
+
+Backend 保持 PostgreSQL，不改为 SQLite。身份和进度 SQL 已分别收口到 `IdentityRepository`、`ProgressRepository`；Service 继续控制事务和业务顺序。身份级 user lock 串行化容量检查、上传、单书删除与设备撤销，并在等待后重新查询设备状态，避免排队请求使用撤销前快照。没有修改 OpenAPI、路由、响应、PostgreSQL migration、同步规则或组件版本。
+
+`make test-backend-postgres` 使用临时 PostgreSQL 17、私有 Unix socket、独立 owner 与受限应用角色执行完整 Backend 检查：lint、typecheck、build 和 71 项测试通过，其中 13 项真实数据库集成测试覆盖受限角色、Token/身份隔离、并发注册与上传、批次回滚、10,000 条容量并发、上传/删除顺序及撤销后排队请求拒绝。此前各节记载的“PostgreSQL 测试跳过”是当时的历史验证记录，不再代表当前 P5 状态。
+
+安全复核未发现新增凭据输出或权限扩大；应用角色无 superuser、createdb、createrole、bypassrls 和 schema DDL 权限。P5 没有生产数据库迁移，也没有访问或部署真实服务。真实双端服务联调和发布验收仍未执行，因此当前不建议部署。
+
+### P6：Mobile Local Storage Consolidation
+
+[本地存储审计](architecture/local-storage-audit.md) 保留迁移前事实；[Local Storage Contract](architecture/local-storage-contract.md) 是当前共享数据语义和 Schema v1 约束。Android/iOS 生产路径现已把书库、正式进度、书签、目录、非敏感设置与同步状态写入各端 `xlib.db`。TXT 仍在文件系统；Android Token 保持 Keystore 保护，iOS Credential 保持原 Keychain service/account。Backend 继续使用 PostgreSQL。
+
+首次迁移在业务 Store 写入前运行：正式数据先完整解析和校验，再与设置、可用缓存及 migration ledger 在一个 SQLite 事务中提交。相同 fingerprint 重开直接使用 SQLite；来源变化、正文缺失、孤立书签或正式快照不可恢复时拒绝覆盖并回退 legacy。成功后生产路径不双写，legacy 数据只读保留到 P7。删书在数据库事务中登记正文待删除路径，失败会在下次书库加载重试。
+
+Android Robolectric 真实运行 SQLite 的新增 6 项迁移测试通过，Android 共 167 项单元测试通过；iOS Simulator 新增 4 项迁移测试覆盖正式数据、设置/同步配置、重复执行、来源变化、孤立书签和 last-good 恢复，iOS 共 86 项单元测试通过。Android 另验证损坏 TOC 缓存不会留下空文档；iOS 的嵌套 SQLite 写入使用 savepoint，缓存写入失败只回滚该缓存。最终 `make check` 通过契约与发布清单、Backend lint/typecheck/build 与 58 项非 PostgreSQL 测试、AppleShared 2 项测试、Android 测试/lint 和 iOS Debug 构建；P5 的独立 PostgreSQL 17 检查仍为 71 项全部通过，其中 13 项使用真实数据库。P6 没有修改 OpenAPI、Backend PostgreSQL Schema、认证、跨设备规则、组件版本或 Product Capability。真实设备升级、磁盘耗尽和性能仍属 P8；通过回退窗口前不开始 P7，也不建议部署。
+
+### P7：Legacy Persistence Cleanup
+
+[P7 清理合同](architecture/legacy-persistence-cleanup.md) 已完成 P7.0 就绪审计和逐项删除清单。当前只有 0.9.0 标记为 released，包含 SQLite migrator 的 0.9.11 仍为 draft；Android 没有连接设备，已登记 iOS 真机处于 offline，因此没有双端真实升级或回退窗口证据。P7.1 旧运行时路径和 P7.2 设备 legacy 数据尚未删除。
+
+即使回退窗口结束，只要仍支持从 0.9.0 等 pre-SQLite 版本直接升级，也必须保留一次性 migrator 和迁移夹具；P7.3 需等待最低受支持升级来源已经包含 SQLite。该拆分避免长期未升级用户直接安装新版时丢失书库。当前阶段只修改架构文档，没有删除用户数据、Store、凭据或迁移代码，也没有修改 Capability、API、Backend Schema 或版本。
+
+### P4：iOS 同步与进度
+
+已拆出 ReadingSyncSession、SyncConfigurationSession、SyncRequestExecution 和 FormalReadingProgress；ReaderView 只转发准备与带会话 ID 的生命周期事件。保留 MainActor/actor 边界、现有 API 和时钟注入，未改本地 Schema、版本或其他客户端业务实现。修复边界裁剪后无实际位移仍可能递增时间、旧页面回调干扰同书新会话、启动凭据清理绕过串行写入的问题，均遵循既有产品定义。
+
+验证：`make check` 通过（契约、发布清单、Backend 58 项测试及 lint/typecheck/build、AppleShared 2 项测试、Android 161 项测试/lint、iOS Debug 构建）。`xcodebuild test` 全部 11 项 UI 测试通过；最终代码全部 82 项 iOS 单元测试通过，受最后会话回调改动影响的 3 项 UI 复测全部通过。文档本地链接与 `git diff --check` 通过。P1/P2/P3 未提交工作保留。共享行为样例仍是同步比较回归来源，不将 Android 平台实现传播到 iOS。专项审查未发现新增凭据泄漏、权限扩大或传输安全降低；凭据写入和上传/删除仍保持顺序。PostgreSQL 5 项测试因缺少专用测试数据库跳过；真实双端服务、真实设备和性能验收未执行，发布仍受既有兼容缺陷和数据库验收限制，暂不建议部署。没有 commit、push 或发布。
+
+### P2 / P3：Android 用例与同步核心
+
+P2 已完成导入、书库、搜索、目录/书签、偏好及阅读任务/缓存边界拆分；原生页面和持久格式保留。修复未发布导入文件的销毁清理、删除后异步目录/缓存重建，以及书首搜索误用正式返回位置的问题，均按已有能力定义处理。P3 已完成唯一比较状态、配置会话、可注入网络/时钟/执行器及统一正式进度提交。具体职责见 [architecture](architecture.md) 和 [重构计划](refactoring-plan.md)。
+
+验证通过：`make check`（契约/共享样例、发布清单、Backend lint/typecheck/58 项测试/build、AppleShared 2 项测试、Android 单元测试/lint、iOS Debug 构建）；`./gradlew :app:testDebugUnitTest lintDebug assembleDebug`。新增应用层与同步回归覆盖生命周期、旧任务隔离、旧存储兼容、正式时间、配置失效与删除暂停。Android 最终 161 项测试全部通过，lint 与 Debug 构建通过。首次新增偏好兼容测试因测试替身缺少 int/float 支持失败，补齐替身后通过，产品代码未因此改变。
+
+P2/P3 不改变 HTTP/Data/Auth/Sync 契约、权限、签名或组件版本；未改其他客户端业务代码，保留此前 P0/P1 工作。专项检查未发现新增凭据泄漏、明文传输放行或跨身份删除权限。PostgreSQL 5 项集成测试因缺少专用测试数据库跳过；Android 真机 UI、真实跨设备同步和性能比较未执行，iOS 仅构建未重复运行其单元/UI 测试。P1 已发现的来源设备名称兼容缺陷仍未解决，不建议据此直接部署或发布。没有 commit、push 或部署。
+
+### P1：共享行为样例与契约校验
+
+新增 `contracts/fixtures/` 唯一合成样例源，由三端按职责消费。OpenAPI 当前 Schema 子集校验覆盖正例、反例及额外边界，接入 `make check` 与 CI；Android 本机测试传输及 iOS URLProtocol 经过实际客户端编码/解码与错误映射，不访问真实账户。
+
+`make check` 通过：Backend 58 项测试、Android 142 项测试及 lint、AppleShared 2 项、iOS Debug 构建与合同/发布清单检查。iOS 完整单元测试 75 项通过，随后新增传输测试，定向复跑 ContractFixturesTests 的 3 项全部通过。PostgreSQL 5 项仍因无专用数据库跳过；未运行 UI/真机/真实跨设备或远程 CI。首轮检查的测试类型声明和 Android JDK/JSON API 兼容问题已修正。
+
+已知契约差异：Android 进度响应限制来源设备名 20 字符，后端登记允许 80，矩阵标为 partial；OpenAPI 的数值安全上限和跨字段约束表达不足，Backend 另有规则测试。P1 未修改 API、认证/权限或业务代码，未引入依赖；HTTP 放行仅存在于本机测试范围，未发现新增安全风险。上述兼容缺陷与真实服务验收完成前不建议发布。P2/P3 的当前结果见本节前的重构验收说明。
+
+### P0：阅读时间基线与修复
+
+新增三项回归测试在修复前全部失败；修复后 `xcodebuild test -only-testing:XLibReaderTests` 完整 73 项通过。覆盖隔离书库导入/编辑/保存/重开、未知时间禁止上传、准备期与原地停留、首次实际位移、旧真实云端进度的提示及接受/拒绝。`make check` 通过，包含 Backend 54 项测试、AppleShared 2 项、Android 单元测试/lint（缓存任务）、iOS Debug 构建和版本清单校验。PostgreSQL 5 项测试因缺少专用数据库跳过；本轮未运行 UI 自动化、真机、真实跨设备联调或 Alpha 发布验收。
+
+数据 Schema、HTTP 契约和组件版本均未修改；历史时间不清零。同步修改只收紧未知时间上传，未放宽身份或删除权限，未访问真实账户；未发现新增安全风险。真实服务及发布验收前不建议直接发布。文档链接及 `git diff --check` 通过，P1 结果见下方。
+
+当前文档审查覆盖产品基线 `30af692`、其后的 Android `fcd06a1`、iOS `b54600c` 及未提交工作区。仅修改文档。`make check` 首次因 Swift 缓存沙箱权限中断，重跑通过：合同/发布清单、Backend 54 项测试及 lint/typecheck/build、AppleShared 2 项测试、Android 单元测试/lint（任务复用缓存）、iOS Debug 构建。PostgreSQL 5 项集成测试仍跳过，未重跑 UI/真机/真实服务测试。文档本地链接、能力结构和状态及 `git diff --check` 通过。未发现本次文档修改引入权限或凭据风险；该轮发现的导入时间冲突已在 P0 修复；真实服务验收仍待执行。
 
 ### Android 正文复制菜单隔离（2026-09-17）
 
@@ -107,4 +157,4 @@
 
 接口安全检查：认证先于参数校验；单书删除 SQL 同时限制 user_id、book_hash、file_size，并在事务内重新检查设备权限；旧全量路径返回 404，缺失或无效书籍身份不能扩大删除范围。未发现本轮新增的凭据泄露或越权删除问题，但真实 PostgreSQL 测试尚待执行；Alpha 邮箱恢复固定 Token 的既有风险仍存在。
 
-本文件描述源码与验收边界，不推断已部署或已发布状态。Android 已确认范围暂无已知缺口；iOS 进度同步存在导入时间误作阅读时间的实现冲突，状态以当前能力矩阵为准。删除接口是破坏性变更，专用数据库测试及发布验收前不建议部署。
+本文件描述源码与验收边界，不推断已部署或已发布状态。Android 进度同步仍有 P1 发现的来源设备名称长度兼容缺陷；iOS 新导入时间误作阅读时间的问题已修复，历史数据保持不变，状态以当前能力矩阵为准。删除接口是破坏性变更，专用数据库测试及发布验收前不建议部署。

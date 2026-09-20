@@ -281,8 +281,7 @@ final class ReaderCoordinator {
                         }
                     case .remote(let changedAt):
                         self.lastProgressDate = changedAt
-                        self.book.offset = target
-                        self.book.updatedAt = changedAt
+                        FormalReadingProgress.apply(to: &self.book, offset: target, date: changedAt)
                         self.scheduleProgressSave(changedAt: changedAt)
                     }
                 }
@@ -445,10 +444,9 @@ final class ReaderCoordinator {
     }
 
     private func commitProgressChange(changedAt: Date, publishesEvent: Bool) {
-        let monotonicDate = max(changedAt, lastProgressDate.addingTimeInterval(0.001))
+        let monotonicDate = FormalReadingProgress.nextDate(changedAt, after: lastProgressDate)
         lastProgressDate = monotonicDate
-        book.offset = offset
-        book.updatedAt = monotonicDate
+        FormalReadingProgress.apply(to: &book, offset: offset, date: monotonicDate)
         if publishesEvent {
             progressSequence &+= 1
             progressEvent = ProgressEvent(offset: offset, changedAt: monotonicDate, sequence: progressSequence)

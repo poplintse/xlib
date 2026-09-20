@@ -14,9 +14,11 @@ actor SyncStateStore {
     }
 
     private let url: URL
+    private let database: LocalDatabase?
     private var state: State
 
-    init(root: URL? = nil) {
+    init(root: URL? = nil, database: LocalDatabase? = nil) {
+        self.database = database
         let base = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "XLibReader", directoryHint: .isDirectory)
             .appending(path: "Sync", directoryHint: .isDirectory)
@@ -29,6 +31,9 @@ actor SyncStateStore {
     }
 
     func identity(for book: Book, fileURL: URL) throws -> SyncBookIdentity {
+        if let database, let hash = try database.cachedIdentity(for: book) {
+            return SyncBookIdentity(localBookID: book.id, key: SyncBookKey(bookHash: hash, fileSize: book.fileSize))
+        }
         if let cached = state.hashes[book.id],
            cached.fileSize == book.fileSize,
            abs(cached.modifiedAt.timeIntervalSince(book.modifiedAt)) < 1 {
@@ -39,6 +44,10 @@ actor SyncStateStore {
         }
 
         let hash = try hashFile(at: fileURL)
+        if let database {
+            try database.saveIdentity(hash, for: book)
+            return SyncBookIdentity(localBookID: book.id, key: SyncBookKey(bookHash: hash, fileSize: book.fileSize))
+        }
         state.hashes[book.id] = HashEntry(fileSize: book.fileSize, modifiedAt: book.modifiedAt, hash: hash)
         try persist()
         return SyncBookIdentity(
@@ -48,15 +57,18 @@ actor SyncStateStore {
     }
 
     func replaceRemote(_ items: [RemoteProgressSnapshot]) throws {
+        if let database { try database.replaceRemote(items); return }
         state.remote = Dictionary(uniqueKeysWithValues: items.map { (Self.storageKey($0.key), $0) })
         try persist()
     }
 
     func cachedRemote() -> [RemoteProgressSnapshot] {
-        Array(state.remote.values)
+        if let database { return (try? database.cachedRemote()) ?? [] }
+        return Array(state.remote.values)
     }
 
     func clearRemote() throws {
+        if let database { try database.clearRemote(); return }
         state.remote.removeAll()
         try persist()
     }

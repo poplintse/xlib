@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AB0000000000000000000001 /* Contract fixtures in Resources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000002; };
 		AA0000000000000000000001 /* AppleShared in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000003 /* AppleShared */; };
 		AA0000000000000000000002 /* AppleShared in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000003 /* AppleShared */; };
 /* End PBXBuildFile section */
@@ -29,6 +30,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AB0000000000000000000002 /* Contract fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ../../contracts/fixtures; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000001 /* XLibReader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XLibReader.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000002 /* XLibReaderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XLibReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000003 /* XLibReaderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XLibReaderUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -97,6 +99,7 @@
 			children = (
 				A20000000000000000000001 /* XLibReader */,
 				A20000000000000000000002 /* XLibReaderTests */,
+				AB0000000000000000000002 /* Contract fixtures */,
 				A20000000000000000000003 /* XLibReaderUITests */,
 				A40000000000000000000002 /* Products */,
 			);
@@ -244,6 +247,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AB0000000000000000000001 /* Contract fixtures in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

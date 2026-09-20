@@ -1,8 +1,8 @@
-import type { PoolClient } from "pg";
+import { IdentityRepository, type UserRow, type DeviceRow } from "./identity-repository.js";
 import type { AppConfig } from "./config.js";
 import { Database } from "./database.js";
 import { ApiError } from "./errors.js";
-import { deviceIdHeaderSchema, type DeviceInput, type StartSyncInput } from "./schemas.js";
+import { deviceIdHeaderSchema, type StartSyncInput } from "./schemas.js";
 import {
   createSyncToken,
   decryptToken,
@@ -11,32 +11,6 @@ import {
   newPublicId,
   tokenMatchesHash,
 } from "./security.js";
-
-interface UserRow {
-  id: string;
-  public_id: string;
-  email_normalized: string;
-  token_hash: Buffer;
-  token_ciphertext: Buffer;
-  status: "active" | "disabled" | "deleting";
-}
-
-interface AuthenticatedUserRow {
-  id: string;
-  public_id: string;
-  status: UserRow["status"];
-}
-
-interface DeviceRow {
-  id: string;
-  device_uid: string;
-  device_name: string;
-  platform: "ios" | "android";
-  app_version: string;
-  last_seen_at: Date;
-  revoked_at: Date | null;
-  created_at: Date;
-}
 
 export interface AuthContext {
   userId: string;
@@ -84,12 +58,7 @@ export class AuthService {
 
   async startSync(input: StartSyncInput): Promise<StartSyncResult> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const found = await this.database.pool.query<UserRow>(
-        `select id, public_id, email_normalized, token_hash, token_ciphertext, status
-         from users where email_normalized = $1`,
-        [input.email],
-      );
-      const existing = found.rows[0];
+      const existing = await new IdentityRepository(this.database.pool).findByEmail(input.email);
       if (existing) {
         if (existing.status !== "active") {
           throw new ApiError(403, "SYNC_UNAVAILABLE", "sync identity is not available");
@@ -103,18 +72,14 @@ export class AuthService {
           throw new Error("stored sync token failed integrity verification");
         }
         const result = await this.database.transaction(async (client) => {
-          const locked = await client.query<UserRow>(
-            `select id, public_id, email_normalized, token_hash, token_ciphertext, status
-             from users where id = $1 and email_normalized = $2 for update`,
-            [existing.id, input.email],
-          );
-          const user = locked.rows[0];
+          const repository = new IdentityRepository(client);
+          const user = await repository.lockUser(existing.id, input.email);
           if (!user) return null;
           if (user.status !== "active") {
             throw new ApiError(403, "SYNC_UNAVAILABLE", "sync identity is not available");
           }
           if (!user.token_ciphertext.equals(existing.token_ciphertext)) return null;
-          const device = await this.upsertAuthorizedDevice(client, user.id, input.device);
+          const device = await repository.upsertAuthorizedDevice(user.id, input.device);
           return startSyncResponse(user, device, token, Date.now());
         });
         if (result) return result;
@@ -126,15 +91,15 @@ export class AuthService {
       const tokenCiphertext = encryptToken(token, this.config.tokenEncryptionKey, input.email);
       try {
         return await this.database.transaction(async (client) => {
-          const inserted = await client.query<UserRow>(
-            `insert into users (
-               public_id, email_normalized, token_hash, token_ciphertext
-             ) values ($1, $2, $3, $4)
-             returning id, public_id, email_normalized, token_hash, token_ciphertext, status`,
-            [newPublicId(), input.email, tokenHash, tokenCiphertext],
+          const repository = new IdentityRepository(client);
+          const user = await repository.insertUser(
+            newPublicId(),
+            input.email,
+            tokenHash,
+            tokenCiphertext,
           );
-          const user = inserted.rows[0] as UserRow;
-          const device = await this.insertDevice(client, user.id, input.device);
+          if (!user) throw new Error("user insert did not produce a row");
+          const device = await repository.insertDevice(user.id, input.device);
           return startSyncResponse(user, device, token, Date.now());
         });
       } catch (error: unknown) {
@@ -156,31 +121,18 @@ export class AuthService {
       throw new ApiError(400, "DEVICE_ID_REQUIRED", "X-Device-Id must be a valid UUID");
     }
 
-    const userResult = await this.database.pool.query<AuthenticatedUserRow>(
-      `select id, public_id, status from users where token_hash = $1`,
-      [hashToken(match[1])],
-    );
-    const user = userResult.rows[0];
+    const repository = new IdentityRepository(this.database.pool);
+    const user = await repository.findByTokenHash(hashToken(match[1]));
     if (!user) throw new ApiError(401, "INVALID_SYNC_TOKEN", "sync token is invalid");
     if (user.status !== "active") {
       throw new ApiError(403, "SYNC_UNAVAILABLE", "sync identity is not available");
     }
 
-    const deviceResult = await this.database.pool.query<DeviceRow>(
-      `select id, device_uid, device_name, platform, app_version,
-              last_seen_at, revoked_at, created_at
-       from devices where user_id = $1 and device_uid = $2`,
-      [user.id, parsedDeviceId.data],
-    );
-    const device = deviceResult.rows[0];
+    const device = await repository.findDevice(user.id, parsedDeviceId.data);
     if (!device || device.revoked_at) {
       throw new ApiError(403, "DEVICE_FORBIDDEN", "device is not registered or has been revoked");
     }
-    await this.database.pool.query(
-      `update devices set last_seen_at = now()
-       where id = $1 and user_id = $2 and last_seen_at < now() - interval '5 minutes'`,
-      [device.id, user.id],
-    );
+    await repository.touchDevice(device.id, user.id);
     return {
       userId: user.id,
       userPublicId: user.public_id,
@@ -192,14 +144,10 @@ export class AuthService {
   }
 
   async listDevices(auth: AuthContext) {
-    const result = await this.database.pool.query<DeviceRow>(
-      `select id, device_uid, device_name, platform, app_version, last_seen_at, revoked_at, created_at
-       from devices where user_id = $1 order by created_at, device_uid`,
-      [auth.userId],
-    );
+    const devices = await new IdentityRepository(this.database.pool).listDevices(auth.userId);
     return {
       serverTimeMs: Date.now(),
-      items: result.rows.map((device) => ({
+      items: devices.map((device) => ({
         deviceId: device.device_uid,
         deviceName: device.device_name,
         platform: device.platform,
@@ -214,63 +162,10 @@ export class AuthService {
 
   async revokeDevice(auth: AuthContext, deviceUid: string): Promise<void> {
     await this.database.transaction(async (client) => {
-      await this.lockActiveRequester(client, auth);
-      const device = await client.query<{ id: string }>(
-        `update devices set revoked_at = coalesce(revoked_at, now())
-         where user_id = $1 and device_uid = $2 returning id`,
-        [auth.userId, deviceUid],
-      );
-      if (!device.rows[0]) throw new ApiError(404, "DEVICE_NOT_FOUND", "device was not found");
+      const repository = new IdentityRepository(client);
+      await repository.lockActiveRequester(auth);
+      const revoked = await repository.revokeDevice(auth.userId, deviceUid);
+      if (!revoked) throw new ApiError(404, "DEVICE_NOT_FOUND", "device was not found");
     });
-  }
-
-  private async lockActiveRequester(client: PoolClient, auth: AuthContext): Promise<void> {
-    const requester = await client.query<{ id: string }>(
-      `select u.id
-       from users u
-       join devices d on d.user_id = u.id and d.id = $2 and d.device_uid = $3
-       where u.id = $1 and u.status = 'active' and d.revoked_at is null
-       for update of u`,
-      [auth.userId, auth.deviceDbId, auth.deviceId],
-    );
-    if (!requester.rows[0]) {
-      throw new ApiError(403, "DEVICE_FORBIDDEN", "sync identity or device is not available");
-    }
-  }
-
-  private async insertDevice(
-    client: PoolClient,
-    userId: string,
-    input: DeviceInput,
-  ): Promise<DeviceRow> {
-    const result = await client.query<DeviceRow>(
-      `insert into devices (user_id, device_uid, device_name, platform, app_version)
-       values ($1, $2, $3, $4, $5)
-       returning id, device_uid, device_name, platform, app_version,
-                 last_seen_at, revoked_at, created_at`,
-      [userId, input.deviceId, input.deviceName, input.platform, input.appVersion],
-    );
-    return result.rows[0] as DeviceRow;
-  }
-
-  private async upsertAuthorizedDevice(
-    client: PoolClient,
-    userId: string,
-    input: DeviceInput,
-  ): Promise<DeviceRow> {
-    const result = await client.query<DeviceRow>(
-      `insert into devices (user_id, device_uid, device_name, platform, app_version)
-       values ($1, $2, $3, $4, $5)
-       on conflict (user_id, device_uid) do update set
-         device_name = excluded.device_name,
-         platform = excluded.platform,
-         app_version = excluded.app_version,
-         last_seen_at = now(),
-         revoked_at = null
-       returning id, device_uid, device_name, platform, app_version,
-                 last_seen_at, revoked_at, created_at`,
-      [userId, input.deviceId, input.deviceName, input.platform, input.appVersion],
-    );
-    return result.rows[0] as DeviceRow;
   }
 }

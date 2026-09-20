@@ -1,0 +1,117 @@
+[
+  {
+    "id": "empty-items",
+    "schema": "ProgressSyncRequest",
+    "value": {
+      "items": []
+    }
+  },
+  {
+    "id": "null-time",
+    "schema": "ProgressSyncRequest",
+    "value": {
+      "items": [
+        {
+          "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "fileSize": 9007199254740991,
+          "offset": 9007199254740990,
+          "readAtMs": null
+        }
+      ]
+    }
+  },
+  {
+    "id": "string-offset",
+    "schema": "ProgressSyncRequest",
+    "value": {
+      "items": [
+        {
+          "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "fileSize": 9007199254740991,
+          "offset": "10",
+          "readAtMs": 253402300799999
+        }
+      ]
+    }
+  },
+  {
+    "id": "invalid-hash",
+    "schema": "ProgressSyncRequest",
+    "value": {
+      "items": [
+        {
+          "bookHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "fileSize": 9007199254740991,
+          "offset": 9007199254740990,
+          "readAtMs": 253402300799999
+        }
+      ]
+    }
+  },
+  {
+    "id": "negative-offset",
+    "schema": "ProgressSyncRequest",
+    "value": {
+      "items": [
+        {
+          "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "fileSize": 9007199254740991,
+          "offset": -1,
+          "readAtMs": 253402300799999
+        }
+      ]
+    }
+  },
+  {
+    "id": "unknown-request-field",
+    "schema": "ProgressSyncRequest",
+    "value": {
+      "items": [
+        {
+          "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "fileSize": 9007199254740991,
+          "offset": 9007199254740990,
+          "readAtMs": 253402300799999
+        }
+      ],
+      "title": "private"
+    }
+  },
+  {
+    "id": "unknown-decision",
+    "schema": "ProgressSyncResponse",
+    "value": {
+      "serverTimeMs": 1,
+      "results": [
+        {
+          "decision": "merged",
+          "timeAdjusted": false,
+          "state": {
+            "bookHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "fileSize": 9007199254740991,
+            "offset": 9007199254740990,
+            "readAtMs": 253402300799999,
+            "progress": 0.9999999999999999,
+            "version": "9007199254740993",
+            "device": {
+              "deviceId": "10000000-0000-4000-8000-000000000001",
+              "deviceName": "测试设备",
+              "platform": "android"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "missing-error-field",
+    "schema": "ErrorEnvelope",
+    "value": {
+      "error": {
+        "code": "BAD",
+        "message": "bad",
+        "requestId": "x"
+      }
+    }
+  }
+]

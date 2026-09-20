@@ -18,11 +18,13 @@ actor LibraryStore {
     }
 
     private let paths: Paths
+    private let database: LocalDatabase?
     private var snapshot = LibrarySnapshot()
     private var bookmarkSnapshot = BookmarksSnapshot()
     private var loaded = false
 
-    init(root: URL? = nil) {
+    init(root: URL? = nil, database: LocalDatabase? = nil) {
+        self.database = database
         if let root {
             paths = Paths(root: root)
         } else {
@@ -33,6 +35,7 @@ actor LibraryStore {
 
     func load() throws -> [Book] {
         try prepareIfNeeded()
+        if let database { return try database.loadBooks() }
         return visibleBooks()
     }
 
@@ -61,10 +64,19 @@ actor LibraryStore {
                 modifiedAt: values.contentModificationDate ?? .now,
                 encoding: encoding,
                 offset: 0,
-                updatedAt: .now,
+                // Importing is not a reading event; retain the existing Date storage format.
+                updatedAt: Date(timeIntervalSince1970: 0),
                 schemaVersion: Book.schemaVersion
             )
             book.title = book.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名书籍" : book.title
+            if let database {
+                do { try database.insertBook(book) }
+                catch {
+                    try? FileManager.default.removeItem(at: destination)
+                    throw error
+                }
+                return book
+            }
             snapshot.books.append(book)
             do { try persistSnapshot() } catch {
                 try? FileManager.default.removeItem(at: destination)
@@ -80,6 +92,7 @@ actor LibraryStore {
 
     func updateBook(_ book: Book) throws {
         try prepareIfNeeded()
+        if let database { try database.updateBook(book); return }
         guard let index = snapshot.books.firstIndex(where: { $0.id == book.id }) else { return }
         snapshot.books[index] = book
         try persistSnapshot()
@@ -87,6 +100,7 @@ actor LibraryStore {
 
     func saveProgress(bookID: UUID, offset: Int64, updatedAt: Date = .now) throws {
         try prepareIfNeeded()
+        if let database { try database.saveProgress(bookID: bookID, offset: offset, updatedAt: updatedAt); return }
         guard let index = snapshot.books.firstIndex(where: { $0.id == bookID }) else { return }
         snapshot.books[index].offset = min(snapshot.books[index].fileSize, max(0, offset))
         snapshot.books[index].updatedAt = updatedAt
@@ -95,6 +109,10 @@ actor LibraryStore {
 
     func deleteBooks(ids: Set<UUID>) throws {
         try prepareIfNeeded()
+        if let database {
+            try database.deleteBooks(ids: ids)
+            return
+        }
         snapshot.tombstones.append(contentsOf: ids.filter { !snapshot.tombstones.contains($0) })
         try persistSnapshot()
         for id in ids {
@@ -112,11 +130,17 @@ actor LibraryStore {
 
     func bookmarks(for bookID: UUID) throws -> [Bookmark] {
         try prepareIfNeeded()
+        if let database { return try database.bookmarks(bookID: bookID) }
         return bookmarkSnapshot.bookmarks.filter { $0.bookID == bookID }.sorted { $0.offset < $1.offset }
     }
 
     func addBookmark(bookID: UUID, offset: Int64, excerpt: String) throws -> Bookmark {
         try prepareIfNeeded()
+        if let database {
+            let bookmark = Bookmark(id: UUID(), bookID: bookID, offset: offset, excerpt: excerpt, createdAt: .now)
+            try database.addBookmark(bookmark)
+            return bookmark
+        }
         guard !bookmarkSnapshot.bookmarks.contains(where: { $0.bookID == bookID && $0.offset == offset }) else {
             throw BookmarkError.duplicatePosition
         }
@@ -128,12 +152,14 @@ actor LibraryStore {
 
     func removeBookmark(id: UUID) throws {
         try prepareIfNeeded()
+        if let database { try database.removeBookmark(id: id); return }
         bookmarkSnapshot.bookmarks.removeAll { $0.id == id }
         try persistBookmarks()
     }
 
     func cachedTOC(for book: Book) throws -> [TocEntry]? {
         try prepareIfNeeded()
+        if let database { return try database.cachedTOC(for: book) }
         let tocURL = tocURL(for: book.id)
         guard let document = try decode(TocDocument.self, primary: tocURL, fallback: nil),
               tocDocument(document, matches: book) else { return nil }
@@ -142,6 +168,7 @@ actor LibraryStore {
 
     func booksWithCachedTOC(_ books: [Book]) throws -> Set<UUID> {
         try prepareIfNeeded()
+        if let database { return try database.booksWithCachedTOC(books) }
         return Set(books.compactMap { book in
             guard let document = try? decode(TocDocument.self, primary: tocURL(for: book.id), fallback: nil),
                   tocDocument(document, matches: book) else { return nil }
@@ -157,11 +184,13 @@ actor LibraryStore {
             modifiedAt: book.modifiedAt,
             entries: entries
         )
-        try atomicWrite(document, to: tocURL(for: book.id))
+        if let database { try database.saveTOC(document, bookID: book.id) }
+        else { try atomicWrite(document, to: tocURL(for: book.id)) }
     }
 
     func deleteTOC(for bookID: UUID) throws {
         try prepareIfNeeded()
+        if let database { try database.deleteTOC(bookID: bookID); return }
         let url = tocURL(for: bookID)
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         try FileManager.default.removeItem(at: url)
@@ -173,6 +202,10 @@ actor LibraryStore {
         try FileManager.default.createDirectory(at: paths.metadata, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: paths.toc, withIntermediateDirectories: true)
         try? (paths.toc as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+        if database != nil {
+            loaded = true
+            return
+        }
         snapshot = try decode(LibrarySnapshot.self, primary: paths.snapshot, fallback: paths.lastGoodSnapshot) ?? LibrarySnapshot()
         bookmarkSnapshot = try decode(BookmarksSnapshot.self, primary: paths.bookmarks, fallback: nil) ?? BookmarksSnapshot()
         loaded = true

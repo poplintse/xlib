@@ -15,10 +15,14 @@ final class BookHashCache {
     private static final int BUFFER_SIZE = 128 * 1024;
 
     private final SharedPreferences preferences;
+    private final LocalDatabase database;
 
     BookHashCache(SharedPreferences preferences) {
         this.preferences = preferences;
+        this.database = null;
     }
+
+    BookHashCache(LocalDatabase database) { this.preferences = null; this.database = database; }
 
     HashResult resolve(long localBookId, File file) throws Exception {
         long fileSize = file.length();
@@ -48,10 +52,12 @@ final class BookHashCache {
     }
 
     void remove(long localBookId) {
+        if (database != null) { database.removeHash(localBookId); return; }
         preferences.edit().remove(PREFIX + localBookId).apply();
     }
 
     private HashResult read(long localBookId) {
+        if (database != null) return database.readHash(localBookId);
         String raw = preferences.getString(PREFIX + localBookId, null);
         if (raw == null) return null;
         try {
@@ -66,6 +72,7 @@ final class BookHashCache {
     }
 
     private void write(long localBookId, HashResult result) throws Exception {
+        if (database != null) { database.writeHash(localBookId, result); return; }
         JSONObject object = new JSONObject();
         object.put("hash", result.bookHash);
         object.put("fileSize", result.fileSize);

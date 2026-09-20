@@ -16,16 +16,18 @@ struct XLibReaderApp: App {
            let id = UUID(uuidString: value) {
             let root = FileManager.default.temporaryDirectory.appending(path: "XLibUITests-\(id.uuidString)")
             let defaults = UserDefaults(suiteName: "com.xlib.uitests.\(id.uuidString)")!
-            let store = LibraryStore(root: root)
+            let database = try? LocalDatabase.open(root: root, defaults: defaults)
+            let store = LibraryStore(root: root, database: database)
             let sync = ProgressSyncCoordinator(
                 api: Self.fixtureAPI,
                 vault: SyncCredentialVault(load: { nil }, save: { _ in }, clear: {}),
-                stateStore: SyncStateStore(root: root.appending(path: "Sync")),
+                stateStore: SyncStateStore(root: root.appending(path: "Sync"), database: database),
                 connectivity: SyncConnectivityMonitor(started: false),
-                defaults: defaults
+                defaults: defaults,
+                database: database
             )
             self.store = store
-            _settings = State(initialValue: SettingsStore(defaults: defaults))
+            _settings = State(initialValue: SettingsStore(defaults: defaults, database: database))
             _library = State(initialValue: LibraryModel(store: store))
             _sync = State(initialValue: sync)
             let scenario = ProcessInfo.processInfo.environment["XLIB_UI_TEST_SCENARIO"]
@@ -46,11 +48,15 @@ struct XLibReaderApp: App {
             return
         }
         #endif
-        let store = LibraryStore()
+        let database = try? LocalDatabase.open()
+        let store = LibraryStore(database: database)
         self.store = store
-        _settings = State(initialValue: SettingsStore())
+        _settings = State(initialValue: SettingsStore(database: database))
         _library = State(initialValue: LibraryModel(store: store))
-        _sync = State(initialValue: ProgressSyncCoordinator())
+        _sync = State(initialValue: ProgressSyncCoordinator(
+            stateStore: SyncStateStore(database: database),
+            database: database
+        ))
     }
 
     var body: some Scene {

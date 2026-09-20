@@ -5,50 +5,54 @@ import UIKit
 @MainActor
 @Observable
 final class ProgressSyncCoordinator {
-    private struct ReaderSession {
-        let id: UUID
-        let bookID: UUID
-        var local: LocalProgressSnapshot
-        var comparisonState: ReaderSyncComparisonState
-        var promptedRemoteVersion: String?
-        var lastObservedSequence: UInt64?
-        var positionReady: Bool
-    }
 
     private var api: SyncAPIClient
+    private let execution: SyncRequestExecution
     private let vault: SyncCredentialVault
     private let stateStore: SyncStateStore
     private let connectivity: SyncConnectivityMonitor
-    private let defaults: UserDefaults
     private let managesLiveAPI: Bool
     private let syncInterval: Duration
     private let healthProbeDelays: [Duration]
     private let now: @Sendable () -> Date
-    private var deviceRegistration: SyncDeviceRegistration
-    private var configuredEmailValue: String?
-
-    private var credentials: SyncCredentials?
+    private let configuration: SyncConfigurationSession
+    private var deviceRegistration: SyncDeviceRegistration {
+        get { configuration.deviceRegistration }
+        set { configuration.deviceRegistration = newValue }
+    }
+    private var configuredEmailValue: String? {
+        get { configuration.configuredEmailValue }
+        set { configuration.configuredEmailValue = newValue }
+    }
+    private var credentials: SyncCredentials? {
+        get { configuration.credentials }
+        set { configuration.credentials = newValue }
+    }
     private var remoteByKey: [SyncBookKey: RemoteProgressSnapshot] = [:]
-    private var currentSession: ReaderSession?
+    private var currentSession: ReadingSyncSession?
     private var syncTimerTask: Task<Void, Never>?
     private var healthProbeTask: Task<Void, Never>?
     private var started = false
     private var appIsActive = true
     private var freshPullCompleted = false
-    private var configurationGeneration = UUID()
+    private var configurationGeneration: UUID {
+        get { configuration.generation }
+        set { configuration.generation = newValue }
+    }
+    private var readingActivation = UUID()
     private var pullGeneration = UUID()
     private var pausedReadingSessions: Set<UUID> = []
     private var deletingKeys: Set<SyncBookKey> = []
-    private var mutationBusy = false
-    private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
-    private var credentialWrite: Task<Void, Never>?
 
     private(set) var availability: SyncAvailability = .available
     private(set) var lastSuccessAt: Date?
     private(set) var lastFailureMessage: String?
     private(set) var isWorking = false
     private(set) var devices: [SyncDevice] = []
-    private(set) var serverAddress: String
+    private(set) var serverAddress: String {
+        get { configuration.serverAddress }
+        set { configuration.serverAddress = newValue }
+    }
     var jumpSuggestion: SyncJumpSuggestion?
 
     init(
@@ -57,12 +61,14 @@ final class ProgressSyncCoordinator {
         stateStore: SyncStateStore = SyncStateStore(),
         connectivity: SyncConnectivityMonitor = SyncConnectivityMonitor(),
         defaults: UserDefaults = .standard,
+        database: LocalDatabase? = nil,
         syncInterval: Duration = .seconds(20),
         healthProbeDelays: [Duration] = [.seconds(30), .seconds(60), .seconds(120), .seconds(300)],
         now: @escaping @Sendable () -> Date = { .now }
     ) {
-        let address = SyncServerConfiguration.resolvedAddress(defaults: defaults)
-        serverAddress = address
+        let configuration = SyncConfigurationSession(defaults: defaults, database: database)
+        self.configuration = configuration
+        let address = configuration.serverAddress
         if let api {
             self.api = api
             managesLiveAPI = false
@@ -70,15 +76,13 @@ final class ProgressSyncCoordinator {
             self.api = .live(address: address)
             managesLiveAPI = true
         }
+        self.execution = SyncRequestExecution(vault: vault)
         self.vault = vault
         self.stateStore = stateStore
         self.connectivity = connectivity
-        self.defaults = defaults
         self.syncInterval = syncInterval
         self.healthProbeDelays = healthProbeDelays
         self.now = now
-        deviceRegistration = Self.loadDeviceRegistration(defaults: defaults)
-        configuredEmailValue = Self.loadConfiguredEmail(defaults: defaults)
 
         connectivity.setCallback { [weak self] online in
             Task { @MainActor [weak self] in
@@ -112,24 +116,25 @@ final class ProgressSyncCoordinator {
         credentials = loaded
         if configuredEmailValue == nil, let email = credentials?.email {
             configuredEmailValue = email
-            defaults.set(email, forKey: Self.emailKey)
+            configuration.set(email, for: SyncConfigurationSession.emailKey)
         }
         if credentials != nil {
-            if let credentialServer = defaults.string(
-                forKey: SyncServerConfiguration.credentialServerKey
-            ), credentialServer != serverAddress {
+            if let credentialServer = configuration.string(for: SyncServerConfiguration.credentialServerKey),
+               credentialServer != serverAddress {
                 credentials = nil
-                await vault.clear()
+                let clearing = execution.enqueueCredentialWrite(nil)
                 remoteByKey.removeAll()
                 try? await stateStore.clearRemote()
+                await clearing.value
+                guard generation == configurationGeneration else { return }
             } else {
                 // Tokens created before server-address configuration are treated as
                 // belonging to the currently resolved server, then scoped from here on.
-                defaults.set(serverAddress, forKey: SyncServerConfiguration.credentialServerKey)
+                configuration.set(serverAddress, for: SyncServerConfiguration.credentialServerKey)
             }
         }
         if credentials != nil {
-            defaults.set(true, forKey: Self.hasStartedSyncKey)
+            configuration.set(true, for: SyncConfigurationSession.hasStartedSyncKey)
         }
         if credentials != nil {
             guard connectivity.isOnline() else {
@@ -199,14 +204,14 @@ final class ProgressSyncCoordinator {
             let response = try await api.startSync(request)
             guard generation == configurationGeneration, !Task.isCancelled else { return false }
             deviceRegistration = registration
-            defaults.set(registration.deviceName, forKey: Self.deviceNameKey)
+            configuration.set(registration.deviceName, for: SyncConfigurationSession.deviceNameKey)
             credentials = response.credentials
             configuredEmailValue = response.credentials.email
-            defaults.set(response.credentials.email, forKey: Self.emailKey)
-            await saveCredentials(response.credentials)
+            configuration.set(response.credentials.email, for: SyncConfigurationSession.emailKey)
+            await execution.saveCredentials(response.credentials)
             guard generation == configurationGeneration else { return false }
-            defaults.set(serverAddress, forKey: SyncServerConfiguration.credentialServerKey)
-            defaults.set(true, forKey: Self.hasStartedSyncKey)
+            configuration.set(serverAddress, for: SyncServerConfiguration.credentialServerKey)
+            configuration.set(true, for: SyncConfigurationSession.hasStartedSyncKey)
             availability = .available
             freshPullCompleted = false
             await pullOnly()
@@ -225,16 +230,7 @@ final class ProgressSyncCoordinator {
 
     @discardableResult
     func saveConfiguredEmail(_ value: String) async -> Bool {
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let parts = normalized.split(separator: "@", omittingEmptySubsequences: false)
-        guard parts.count == 2,
-              !parts[0].isEmpty,
-              parts[1].contains("."),
-              !parts[1].hasPrefix("."),
-              !parts[1].hasSuffix(".") else { return false }
-        let changed = normalized != configuredEmailValue
-        configuredEmailValue = normalized
-        defaults.set(normalized, forKey: Self.emailKey)
+        guard let changed = configuration.saveConfiguredEmail(value) else { return false }
         if changed {
             await clearSyncInformationAfterConfigurationChange()
             startSyncTimerIfNeeded()
@@ -244,11 +240,7 @@ final class ProgressSyncCoordinator {
 
     @discardableResult
     func saveDeviceName(_ value: String) async -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= Self.maximumDeviceNameLength else { return false }
-        let changed = trimmed != deviceRegistration.deviceName
-        deviceRegistration.deviceName = trimmed
-        defaults.set(trimmed, forKey: Self.deviceNameKey)
+        guard let changed = configuration.saveDeviceName(value) else { return false }
         if changed {
             await clearSyncInformationAfterConfigurationChange()
             startSyncTimerIfNeeded()
@@ -273,25 +265,23 @@ final class ProgressSyncCoordinator {
     }
 
     private func clearSyncInformation() async {
-        configurationGeneration = UUID()
+        configuration.invalidate()
         pullGeneration = UUID()
         isWorking = false
         syncTimerTask?.cancel()
         healthProbeTask?.cancel()
-        credentials = nil
         currentSession?.comparisonState = .pending
         currentSession?.promptedRemoteVersion = nil
         jumpSuggestion = nil
         devices = []
         freshPullCompleted = false
         remoteByKey.removeAll()
-        defaults.removeObject(forKey: SyncServerConfiguration.credentialServerKey)
         availability = .available
         lastSuccessAt = nil
         lastFailureMessage = nil
         // Enqueue the credential clear before yielding, so a new login always
         // saves after this clear even if persistence suspends.
-        let clearing = enqueueCredentialWrite(nil)
+        let clearing = execution.enqueueCredentialWrite(nil)
         try? await stateStore.clearRemote()
         await clearing.value
     }
@@ -302,13 +292,13 @@ final class ProgressSyncCoordinator {
             return false
         }
         if normalized == serverAddress {
-            defaults.set(normalized, forKey: SyncServerConfiguration.storageKey)
+            configuration.set(normalized, for: SyncServerConfiguration.storageKey)
             lastFailureMessage = nil
             return true
         }
 
         serverAddress = normalized
-        defaults.set(normalized, forKey: SyncServerConfiguration.storageKey)
+        configuration.set(normalized, for: SyncServerConfiguration.storageKey)
         if managesLiveAPI { api = .live(address: normalized) }
         await clearSyncInformation()
         lastSuccessAt = nil
@@ -360,8 +350,8 @@ final class ProgressSyncCoordinator {
             defer { deletingKeys.remove(key) }
             // Waiting for the previous upload is essential: cancellation alone
             // cannot ensure the server has finished processing that request.
-            await acquireMutation()
-            defer { releaseMutation() }
+            await execution.acquireMutation()
+            defer { execution.releaseMutation() }
             guard generation == configurationGeneration, !Task.isCancelled else { return false }
             try await authorized { authorization in
                 try await self.api.deleteBookProgress(key, authorization)
@@ -390,34 +380,6 @@ final class ProgressSyncCoordinator {
         }
     }
 
-    private func acquireMutation() async {
-        if !mutationBusy {
-            mutationBusy = true
-            return
-        }
-        await withCheckedContinuation { mutationWaiters.append($0) }
-    }
-
-    private func enqueueCredentialWrite(_ value: SyncCredentials?) -> Task<Void, Never> {
-        let previous = credentialWrite
-        let task = Task { [vault] in
-            await previous?.value
-            if let value { await vault.save(value) }
-            else { await vault.clear() }
-        }
-        credentialWrite = task
-        return task
-    }
-
-    private func saveCredentials(_ value: SyncCredentials) async {
-        await enqueueCredentialWrite(value).value
-    }
-
-    private func releaseMutation() {
-        if mutationWaiters.isEmpty { mutationBusy = false }
-        else { mutationWaiters.removeFirst().resume() }
-    }
-
     func loadDevices() async {
         guard credentials != nil else { return }
         do {
@@ -444,9 +406,11 @@ final class ProgressSyncCoordinator {
     }
 
     func beginReading(book: Book, fileURL: URL, sessionID: UUID = UUID(), positionReady: Bool = true) async {
+        let activation = UUID()
+        readingActivation = activation
         syncTimerTask?.cancel()
         jumpSuggestion = nil
-        currentSession = ReaderSession(
+        currentSession = ReadingSyncSession(
             id: sessionID,
             bookID: book.id,
             local: LocalProgressSnapshot(
@@ -464,7 +428,8 @@ final class ProgressSyncCoordinator {
 
         do {
             let identity = try await stateStore.identity(for: book, fileURL: fileURL)
-            guard var session = currentSession, session.id == sessionID else { return }
+            guard readingActivation == activation, !Task.isCancelled,
+                  var session = currentSession, session.id == sessionID else { return }
             session.local = LocalProgressSnapshot(
                 bookID: book.id,
                 key: identity.key,
@@ -476,7 +441,7 @@ final class ProgressSyncCoordinator {
         } catch is CancellationError {
             return
         } catch {
-            guard currentSession?.id == sessionID else { return }
+            guard readingActivation == activation, !Task.isCancelled, currentSession?.id == sessionID else { return }
             currentSession?.comparisonState = .unavailable
             lastFailureMessage = "暂时无法计算当前书籍的同步标识。"
             return
@@ -490,19 +455,14 @@ final class ProgressSyncCoordinator {
         }
         freshPullCompleted = false
         await pullOnly()
-        guard currentSession?.id == sessionID else { return }
+        guard readingActivation == activation, !Task.isCancelled, currentSession?.id == sessionID else { return }
         compareCurrentSession()
     }
 
-    func recordLocalProgress(bookID: UUID, offset: Int64, changedAt: Date) {
+    func recordLocalProgress(bookID: UUID, offset: Int64, changedAt: Date, sessionID: UUID? = nil) {
         guard var session = currentSession, session.bookID == bookID else { return }
-        guard session.positionReady,
-              session.comparisonState == .completed || session.comparisonState == .unavailable,
-              offset != session.local.offset else { return }
-        let previous = session.local.readAtMs
-        session.local.offset = max(0, min(session.local.key?.fileSize ?? .max, offset))
-        session.local.readAtMs = max(Self.milliseconds(changedAt), previous + 1)
-        session.local.localSequence &+= 1
+        guard sessionID == nil || session.id == sessionID else { return }
+        session.record(offset: offset, changedAt: changedAt)
         currentSession = session
     }
 
@@ -531,6 +491,7 @@ final class ProgressSyncCoordinator {
     func suspendReading(bookID: UUID, sessionID: UUID? = nil) {
         guard currentSession?.bookID == bookID else { return }
         if let sessionID, currentSession?.id != sessionID { return }
+        readingActivation = UUID()
         syncTimerTask?.cancel()
         syncTimerTask = nil
         currentSession = nil
@@ -538,14 +499,15 @@ final class ProgressSyncCoordinator {
         startSyncTimerIfNeeded()
     }
 
-    func readingPositionReady(bookID: UUID) {
+    func readingPositionReady(bookID: UUID, sessionID: UUID? = nil) {
         guard currentSession?.bookID == bookID else { return }
+        guard sessionID == nil || currentSession?.id == sessionID else { return }
         currentSession?.positionReady = true
     }
 
     func isPreparingReading(bookID: UUID) -> Bool {
         guard let session = currentSession, session.bookID == bookID else { return false }
-        return !session.positionReady || session.comparisonState == .pending || session.comparisonState == .awaitingJumpDecision
+        return session.isPreparing
     }
 
     static func shouldSuggestJump(
@@ -553,13 +515,7 @@ final class ProgressSyncCoordinator {
         remote: RemoteProgressSnapshot,
         currentDeviceID: UUID
     ) -> Bool {
-        guard let key = local.key,
-              key == remote.key,
-              remote.device.deviceId != currentDeviceID,
-              remote.readAtMs > local.readAtMs,
-              key.fileSize > 0 else { return false }
-        let difference = Double(abs(remote.offset - local.offset)) / Double(key.fileSize)
-        return difference > 0.000_01
+        ReadingSyncSession.shouldSuggestJump(local: local, remote: remote, currentDeviceID: currentDeviceID)
     }
 
     private func compareCurrentSession() {
@@ -589,7 +545,7 @@ final class ProgressSyncCoordinator {
     private func startSyncTimerIfNeeded() {
         syncTimerTask?.cancel()
         guard appIsActive,
-              defaults.bool(forKey: Self.hasStartedSyncKey),
+              configuration.bool(for: SyncConfigurationSession.hasStartedSyncKey),
               api.isConfigured,
               configuredEmail != nil,
               !currentDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -628,14 +584,17 @@ final class ProgressSyncCoordinator {
     private func syncCurrentProgress(forceLatest: Bool) async {
         let generation = configurationGeneration
         let sessionID = currentSession?.id
-        await acquireMutation()
-        defer { releaseMutation() }
-        guard generation == configurationGeneration, currentSession?.id == sessionID, !Task.isCancelled else { return }
+        let activation = readingActivation
+        await execution.acquireMutation()
+        defer { execution.releaseMutation() }
+        guard generation == configurationGeneration, readingActivation == activation,
+              currentSession?.id == sessionID, !Task.isCancelled else { return }
         guard credentials != nil,
               availability == .available,
               connectivity.isOnline(),
               var session = currentSession,
               session.positionReady,
+              session.local.readAtMs > 0,
               !pausedReadingSessions.contains(session.id),
               session.comparisonState == .completed,
               freshPullCompleted,
@@ -657,7 +616,7 @@ final class ProgressSyncCoordinator {
             let response = try await authorized { authorization in
                 try await self.api.syncProgress(request, authorization)
             }
-            guard currentSession?.id == session.id, connectivity.isOnline() else { return }
+            guard readingActivation == activation, currentSession?.id == session.id, connectivity.isOnline() else { return }
             if let state = response.results.first?.state {
                 remoteByKey[state.key] = state
                 try? await stateStore.replaceRemote(Array(remoteByKey.values))
@@ -815,36 +774,9 @@ final class ProgressSyncCoordinator {
     }
 
     private static func milliseconds(_ date: Date) -> Int64 {
-        Int64((date.timeIntervalSince1970 * 1_000).rounded())
+        FormalReadingProgress.milliseconds(date)
     }
 
-    private static func loadDeviceRegistration(defaults: UserDefaults) -> SyncDeviceRegistration {
-        let key = "sync.device.id.v1"
-        let deviceID: UUID
-        if let raw = defaults.string(forKey: key), let existing = UUID(uuidString: raw) {
-            deviceID = existing
-        } else {
-            deviceID = UUID()
-            defaults.set(deviceID.uuidString.lowercased(), forKey: key)
-        }
-        let storedName = defaults.string(forKey: deviceNameKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let defaultName = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return SyncDeviceRegistration(
-            deviceId: deviceID,
-            deviceName: storedName.flatMap({ $0.isEmpty ? nil : $0 })
-                ?? (defaultName.isEmpty ? "iOS 设备" : defaultName),
-            platform: "ios",
-            appVersion: AppVersion.displayText
-        )
-    }
+    static let maximumDeviceNameLength = SyncConfigurationSession.maximumDeviceNameLength
 
-    private static let deviceNameKey = "sync.device.name.v1"
-    private static let emailKey = "sync.email.v1"
-    private static let hasStartedSyncKey = "sync.has.started.v1"
-    static let maximumDeviceNameLength = 20
-
-    private static func loadConfiguredEmail(defaults: UserDefaults) -> String? {
-        let value = defaults.string(forKey: emailKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.flatMap { $0.isEmpty ? nil : $0 }
-    }
 }

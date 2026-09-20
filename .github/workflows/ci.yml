@@ -21,6 +21,7 @@ jobs:
       - name: Validate contract and release manifest
         run: |
           ruby scripts/check-contract.rb
+          ruby scripts/check-contract-fixtures.rb
           ruby scripts/test-release-check.rb
           # Match local defaults; a missing or mismatched manifest must fail.
           ./scripts/release-check.sh

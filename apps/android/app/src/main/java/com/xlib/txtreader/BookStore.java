@@ -13,12 +13,17 @@ final class BookStore {
     private static final String KEY_BOOKS = "books";
 
     private final SharedPreferences preferences;
+    private final LocalDatabase database;
 
     BookStore(SharedPreferences preferences) {
         this.preferences = preferences;
+        this.database = null;
     }
 
+    BookStore(LocalDatabase database) { this.preferences = null; this.database = database; }
+
     List<Book> load() {
+        if (database != null) return database.loadBooks();
         List<Book> books = new ArrayList<>();
         String raw = preferences.getString(KEY_BOOKS, "[]");
         try {
@@ -43,6 +48,8 @@ final class BookStore {
 
     boolean save(List<Book> books, Book preservedBook, long preservedOffset,
                  float preservedProgress) {
+        if (database != null) return database.saveBooks(books, preservedBook, preservedOffset,
+                preservedProgress);
         try {
             JSONArray array = new JSONArray();
             for (Book book : books) {
@@ -56,6 +63,12 @@ final class BookStore {
             // Keep the last valid snapshot if serialization ever fails.
             return false;
         }
+    }
+
+    void delete(Book book) {
+        if (database != null) { database.deleteBook(book); return; }
+        File file = new File(book.path);
+        if (file.exists()) { boolean ignored = file.delete(); }
     }
 
     private Book fromJson(JSONObject item) {

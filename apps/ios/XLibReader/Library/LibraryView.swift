@@ -276,6 +276,7 @@ private struct BookRow: View {
     }
 
     private var relativeTime: String {
+        guard book.updatedAt.timeIntervalSince1970 > 0 else { return "暂无阅读记录" }
         let seconds = max(0, Date().timeIntervalSince(book.updatedAt))
         if seconds < 3_600 { return "刚刚" }
         if seconds < 86_400 { return "\(Int(seconds / 3_600)) 小时前" }

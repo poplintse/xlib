@@ -1,6 +1,6 @@
 release: 0.9.11
 channel: alpha
-status: draft
+status: released
 contract:
   version: v1
   file: contracts/openapi.yaml

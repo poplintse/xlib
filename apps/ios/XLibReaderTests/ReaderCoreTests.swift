@@ -10,10 +10,15 @@ final class ReaderCoreTests: XCTestCase {
     func testReturningWithSameLayoutRestartsInterruptedLoad() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let libraryRoot = root.appending(path: "library")
+        let database = testDatabase(root: libraryRoot)
+        defer {
+            database.closeForTesting()
+            try? FileManager.default.removeItem(at: root)
+        }
         let source = root.appending(path: "lifecycle.txt")
         try Data(String(repeating: "阅读生命周期测试。\n", count: 500).utf8).write(to: source)
-        let store = LibraryStore(root: root.appending(path: "library"))
+        let store = LibraryStore(root: libraryRoot, database: database)
         let book = try await store.importBook(from: source)
         let reader = ReaderCoordinator(book: book, store: store)
         let size = CGSize(width: 320, height: 540)
@@ -35,10 +40,15 @@ final class ReaderCoreTests: XCTestCase {
     func testRestorationAndUnchangedSeekPreserveTimeAndRemoteTimeIsExact() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let libraryRoot = root.appending(path: "library")
+        let database = testDatabase(root: libraryRoot)
+        defer {
+            database.closeForTesting()
+            try? FileManager.default.removeItem(at: root)
+        }
         let source = root.appending(path: "source.txt")
         try Data(String(repeating: "阅读位置与时间的测试。\n", count: 500).utf8).write(to: source)
-        let store = LibraryStore(root: root.appending(path: "library"))
+        let store = LibraryStore(root: libraryRoot, database: database)
         var book = try await store.importBook(from: source)
         book.offset = 60
         book.updatedAt = Date(timeIntervalSince1970: 1_900_000_000)
@@ -329,13 +339,15 @@ final class ReaderCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testCommittedSeekKeepsTheExactDisplayedProgressUntilNavigation() {
+    func testCommittedSeekKeepsTheExactDisplayedProgressUntilNavigation() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
         let book = Book(
             id: UUID(), title: "测试", sourceName: "test.txt", author: "", relativePath: "Books/test.txt",
             fileSize: 1_000, modifiedAt: .now, encoding: .utf8, offset: 200, updatedAt: .now,
             schemaVersion: Book.schemaVersion
         )
-        let coordinator = ReaderCoordinator(book: book, store: LibraryStore(), persistsProgress: false)
+        let coordinator = ReaderCoordinator(book: book, store: testLibraryStore(root: root), persistsProgress: false)
 
         coordinator.seek(progress: 0.735)
         XCTAssertEqual(coordinator.progress, 0.735, accuracy: 0.000_001)
@@ -570,7 +582,7 @@ final class ReaderCoreTests: XCTestCase {
         )
         let coordinator = ReaderCoordinator(
             book: book,
-            store: LibraryStore(root: root),
+            store: testLibraryStore(root: root),
             persistsProgress: false
         )
         coordinator.configure(size: CGSize(width: 320, height: 540), settings: ReaderSettings())

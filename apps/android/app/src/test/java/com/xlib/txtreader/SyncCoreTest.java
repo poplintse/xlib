@@ -1,12 +1,38 @@
 package com.xlib.txtreader;
 
 import android.content.SharedPreferences;
+import android.content.Context;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.annotation.Config;
 import java.util.List;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 35)
 public class SyncCoreTest {
+    private Context context;
+    private SharedPreferences preferences;
+    private LocalDatabase database;
+
+    @Before public void setUp() throws Exception {
+        context = RuntimeEnvironment.getApplication();
+        context.deleteDatabase("xlib.db");
+        preferences = context.getSharedPreferences("sync-core-test", Context.MODE_PRIVATE);
+        preferences.edit().clear().commit();
+        database = LocalDatabase.open(context, preferences);
+    }
+
+    @After public void tearDown() {
+        database.close();
+        context.deleteDatabase("xlib.db");
+        preferences.edit().clear().commit();
+    }
     private Book book() {
         Book book = new Book(); book.id = 1; book.fileSize = 1000; book.offset = 200; book.updatedAt = 100;
         return book;
@@ -32,8 +58,7 @@ public class SyncCoreTest {
         recorder.saved(List.of(book),null,0,0); assertEquals(250,local.get(1).offset);
     }
     @Test public void invalidConfigurationNeverPartiallyWritesOrChangesTransport() {
-        SharedPreferences prefs=MemoryPreferences.create();
-        SyncTokenStore tokens=new SyncTokenStore(prefs); SyncServerConfig server=new SyncServerConfig(prefs);
+        SyncTokenStore tokens=new SyncTokenStore(preferences,database); SyncServerConfig server=new SyncServerConfig(database);
         SyncTransport transport=mock(SyncTransport.class);
         SyncConfigurationSession config=new SyncConfigurationSession(tokens,server,transport);
         assertNull(config.save("first@example.com","Reader","https://sync.example.com"));
@@ -45,7 +70,7 @@ public class SyncCoreTest {
     }
     @Test public void configurationGenerationAdvancesOnlyWhenInvalidatedOrDisabled() {
         SyncTokenStore tokens=mock(SyncTokenStore.class); SyncTransport transport=mock(SyncTransport.class);
-        SyncConfigurationSession config=new SyncConfigurationSession(tokens,new SyncServerConfig(MemoryPreferences.create()),transport);
+        SyncConfigurationSession config=new SyncConfigurationSession(tokens,new SyncServerConfig(database),transport);
         long generation=config.generation();
         assertNull(config.saveEmail("ONE@example.com")); assertEquals(generation,config.generation());
         config.invalidate(); assertEquals(generation+1,config.generation()); verify(tokens).invalidateCredentials();

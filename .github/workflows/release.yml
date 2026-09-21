@@ -6,7 +6,7 @@ on:
       release:
         description: Monorepo release manifest version
         required: true
-        default: 0.9.11
+        default: 0.11.0
   push:
     tags:
       - "*.*.*"
@@ -21,6 +21,7 @@ jobs:
       release: ${{ steps.release.outputs.value }}
     steps:
       - uses: actions/checkout@v6
+      - run: ./scripts/check-sensitive-data.py
       - id: release
         shell: bash
         run: |
@@ -36,6 +37,24 @@ jobs:
   backend:
     needs: verify
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: xlib_test
+          POSTGRES_USER: xlib_test_owner
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xlib_test_owner -d xlib_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://xlib_test_owner:test@127.0.0.1:5432/xlib_test
+      TEST_DATABASE_APP_URL: postgresql://xlib_test_app:test@127.0.0.1:5432/xlib_test
+      PGPASSWORD: test
     defaults:
       run:
         working-directory: services/backend
@@ -51,6 +70,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: services/backend/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Create restricted application role
+        run: >-
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1
+          -c "CREATE ROLE xlib_test_app LOGIN PASSWORD 'test' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;"
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
@@ -66,6 +89,7 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v6
+      - run: cd apps/android && ./gradlew :app:testDebugUnitTest lintDebug
       - run: ./scripts/build-android-debug.sh
       - uses: actions/upload-artifact@v7
         with:
@@ -80,6 +104,27 @@ jobs:
       - run: ./scripts/build-ios-debug.sh
         env:
           XLIB_DERIVED_DATA: ${{ runner.temp }}/xlib-derived-data/ios-debug
+      - name: Test iOS unit and UI targets
+        shell: bash
+        run: |
+          device_id="$(xcrun simctl list devices available -j | ruby -rjson -e '
+            data = JSON.parse(STDIN.read)
+            devices = data.fetch("devices").values.flatten
+            device = devices.find { |item| item["name"].start_with?("iPhone") }
+            abort "no available iPhone Simulator" unless device
+            puts device.fetch("udid")
+          ')"
+          xcodebuild \
+            -project apps/ios/XLibReader.xcodeproj \
+            -scheme XLibReader \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=${device_id}" \
+            -derivedDataPath "${RUNNER_TEMP}/xlib-ios-tests" \
+            CODE_SIGNING_ALLOWED=NO \
+            -parallel-testing-enabled NO \
+            test
+      - name: Verify iOS tests did not change versions
+        run: git diff --exit-code -- apps/ios/XLibReader.xcodeproj/project.pbxproj apps/ios/XLibReader/Resources/Info.plist
       - uses: actions/upload-artifact@v7
         with:
           name: xlib-ios-simulator-debug-${{ needs.verify.outputs.release }}

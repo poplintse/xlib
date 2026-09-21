@@ -7,7 +7,7 @@ final class ProgressSyncTests: XCTestCase {
     func testImportedUnreadBookOnlyUploadsAfterActualMovement() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let store = LibraryStore(root: fixture.root.appending(path: "library"))
+        let store = LibraryStore(root: fixture.root, database: fixture.database)
         let book = try await store.importBook(from: fixture.fileURL)
         let url = await store.url(for: book)
         let spy = SyncAPISpy(pullItems: [])
@@ -35,10 +35,10 @@ final class ProgressSyncTests: XCTestCase {
         for acceptsRemote in [false, true] {
             let fixture = try makeFixture()
             defer { fixture.cleanup() }
-            let store = LibraryStore(root: fixture.root.appending(path: "library"))
+            let store = LibraryStore(root: fixture.root, database: fixture.database)
             let book = try await store.importBook(from: fixture.fileURL)
             let url = await store.url(for: book)
-            let stateStore = SyncStateStore(root: fixture.stateRoot)
+            let stateStore = SyncStateStore(database: fixture.database)
             let key = try await stateStore.identity(for: book, fileURL: url).key
             let remote = Self.remote(key: key, offset: 600, readAtMs: 1_700_000_000_000,
                 device: .init(deviceId: UUID(), deviceName: "其他设备", platform: "android"), version: "old-real")
@@ -122,7 +122,7 @@ final class ProgressSyncTests: XCTestCase {
     func testRemoteChoiceWaitsForPositionAndShowsBothProgressValues() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let stateStore = SyncStateStore(root: fixture.stateRoot)
+        let stateStore = SyncStateStore(database: fixture.database)
         let key = try await stateStore.identity(for: fixture.book, fileURL: fixture.fileURL).key
         let remote = Self.remote(key: key, offset: 50, readAtMs: milliseconds(fixture.book.updatedAt) + 10,
                                  device: .init(deviceId: UUID(), deviceName: "另一设备", platform: "ios"), version: "new")
@@ -236,7 +236,8 @@ final class ProgressSyncTests: XCTestCase {
         let spy = SyncAPISpy(pullItems: [])
         let monitor = SyncConnectivityMonitor(started: false, initialOnline: false)
         let coordinator = ProgressSyncCoordinator(api: await spy.client(), vault: .constant(fixture.credentials),
-            stateStore: SyncStateStore(root: fixture.stateRoot), connectivity: monitor, defaults: fixture.defaults)
+            stateStore: SyncStateStore(database: fixture.database), connectivity: monitor,
+            database: fixture.database)
         await coordinator.start()
         await coordinator.beginReading(book: fixture.book, fileURL: fixture.fileURL)
         let readAt = fixture.book.updatedAt.addingTimeInterval(30)
@@ -417,12 +418,8 @@ final class ProgressSyncTests: XCTestCase {
     }
 
     func testServerAddressDefaultsToXUnitAndNormalizesSavedValue() {
-        let suiteName = "ProgressSyncServerAddress.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
         XCTAssertEqual(
-            SyncServerConfiguration.resolvedAddress(defaults: defaults, environment: [:]),
+            SyncServerConfiguration.resolvedAddress(environment: [:]),
             "https://xunit.cc/xlib/backend"
         )
         XCTAssertEqual(
@@ -459,9 +456,9 @@ final class ProgressSyncTests: XCTestCase {
             api: await SyncAPISpy(pullItems: []).client()
         )
 
-        fixture.defaults.set(
+        try fixture.database.setSyncString(
             SyncServerConfiguration.defaultAddress,
-            forKey: SyncServerConfiguration.credentialServerKey
+            for: SyncServerConfiguration.credentialServerKey
         )
         await coordinator.start()
         XCTAssertTrue(coordinator.isSyncEnabled)
@@ -472,7 +469,7 @@ final class ProgressSyncTests: XCTestCase {
         XCTAssertEqual(coordinator.serverAddress, "https://example.com/custom/backend")
         XCTAssertFalse(coordinator.isSyncEnabled)
         XCTAssertEqual(
-            fixture.defaults.string(forKey: SyncServerConfiguration.storageKey),
+            fixture.database.syncString(for: SyncServerConfiguration.storageKey),
             "https://example.com/custom/backend"
         )
     }
@@ -490,7 +487,7 @@ final class ProgressSyncTests: XCTestCase {
             version: "v1"
         )
         let spy = SyncAPISpy(pullItems: [cloud], startCredentials: fixture.credentials)
-        let stateStore = SyncStateStore(root: fixture.stateRoot)
+        let stateStore = SyncStateStore(database: fixture.database)
         let coordinator = makeCoordinator(
             fixture: fixture,
             api: await spy.client(),
@@ -530,7 +527,7 @@ final class ProgressSyncTests: XCTestCase {
     func testCurrentBookComparesBeforeAnyUploadAndPromptsForNewerCloudProgress() async throws {
         let fixture = try makeFixture(fileByteCount: 100_000)
         defer { fixture.cleanup() }
-        let stateStore = SyncStateStore(root: fixture.stateRoot)
+        let stateStore = SyncStateStore(database: fixture.database)
         let identity = try await stateStore.identity(for: fixture.book, fileURL: fixture.fileURL)
         let cloud = Self.remote(
             key: identity.key,
@@ -590,7 +587,7 @@ final class ProgressSyncTests: XCTestCase {
     func testScheduledSyncNeverUploadsStoredProgressWithoutAnActiveReader() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let libraryStore = LibraryStore(root: fixture.root.appending(path: "library"))
+        let libraryStore = testLibraryStore(root: fixture.root.appending(path: "library"))
         let book = try await libraryStore.importBook(from: fixture.fileURL)
         try await libraryStore.saveProgress(bookID: book.id, offset: 42)
         let spy = SyncAPISpy(pullItems: [])
@@ -636,7 +633,8 @@ final class ProgressSyncTests: XCTestCase {
     func testBookIdentityUsesSHA256AndPersistsCachedSnapshot() async throws {
         let fixture = try makeFixture(contents: Data("abc".utf8))
         defer { fixture.cleanup() }
-        let store = SyncStateStore(root: fixture.stateRoot)
+        try fixture.database.setSyncString(fixture.credentials.email, for: "sync.email.v1")
+        let store = SyncStateStore(database: fixture.database)
 
         let identity = try await store.identity(for: fixture.book, fileURL: fixture.fileURL)
         XCTAssertEqual(
@@ -653,7 +651,7 @@ final class ProgressSyncTests: XCTestCase {
             version: "v1"
         )
         try await store.replaceRemote([snapshot])
-        let reloaded = SyncStateStore(root: fixture.stateRoot)
+        let reloaded = SyncStateStore(database: fixture.database)
         let cached = await reloaded.cachedRemote()
         XCTAssertEqual(cached, [snapshot])
     }
@@ -738,9 +736,9 @@ final class ProgressSyncTests: XCTestCase {
         ProgressSyncCoordinator(
             api: api,
             vault: vault ?? .constant(fixture.credentials),
-            stateStore: stateStore ?? SyncStateStore(root: fixture.stateRoot),
+            stateStore: stateStore ?? SyncStateStore(database: fixture.database),
             connectivity: SyncConnectivityMonitor(started: false, initialOnline: true),
-            defaults: fixture.defaults,
+            database: fixture.database,
             syncInterval: syncInterval,
             healthProbeDelays: healthProbeDelays,
             now: { Date(timeIntervalSince1970: 2_000_000_000) }
@@ -752,10 +750,9 @@ final class ProgressSyncTests: XCTestCase {
         contents: Data? = nil
     ) throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-        let fileURL = root.appending(path: "book.txt")
-        let stateRoot = root.appending(path: "sync-state")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appending(path: "Books"), withIntermediateDirectories: true)
         let data = contents ?? Data(repeating: 0x61, count: fileByteCount)
+        let fileURL = root.appending(path: "Books/book.txt")
         try data.write(to: fileURL)
         let changedAt = Date(timeIntervalSince1970: 1_900_000_000)
         let book = Book(
@@ -763,7 +760,7 @@ final class ProgressSyncTests: XCTestCase {
             title: "测试书籍",
             sourceName: "book.txt",
             author: "",
-            relativePath: "book.txt",
+            relativePath: "Books/book.txt",
             fileSize: Int64(data.count),
             modifiedAt: changedAt,
             encoding: .utf8,
@@ -780,13 +777,15 @@ final class ProgressSyncTests: XCTestCase {
         )
         let suiteName = "ProgressSyncTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.set(device.deviceId.uuidString, forKey: "sync.device.id.v1")
+        let database = try LocalDatabase.open(root: root, defaults: defaults)
+        try database.insertBook(book)
+        try database.setSyncString(device.deviceId.uuidString, for: "sync.device.id.v1")
         return Fixture(
             root: root,
             fileURL: fileURL,
-            stateRoot: stateRoot,
             book: book,
             credentials: credentials,
+            database: database,
             defaults: defaults,
             defaultsSuiteName: suiteName
         )
@@ -841,13 +840,14 @@ final class ProgressSyncTests: XCTestCase {
 private struct Fixture {
     let root: URL
     let fileURL: URL
-    let stateRoot: URL
     let book: Book
     let credentials: SyncCredentials
+    let database: LocalDatabase
     let defaults: UserDefaults
     let defaultsSuiteName: String
 
     func cleanup() {
+        database.closeForTesting()
         try? FileManager.default.removeItem(at: root)
         defaults.removePersistentDomain(forName: defaultsSuiteName)
     }

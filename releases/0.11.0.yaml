@@ -1,31 +1,33 @@
-release: 0.9.11
+release: 0.11.0
 channel: alpha
-status: released
+status: draft
 contract:
   version: v1
   file: contracts/openapi.yaml
 upgrade:
   local_storage:
     contains_legacy_migrator: false
-    minimum_direct_from: 0.9.0
-    required_intermediate:
+    minimum_direct_from: 0.10.0
+    required_intermediate: 0.10.0
 components:
   android:
     status: active
-    version_name: 0.9.11
-    version_code: 67
+    version_name: 0.11.0
+    version_code: 69
   ios:
     status: active
-    marketing_version: 0.9.9
-    build_number: 43
+    marketing_version: 0.11.0
+    build_number: 45
   backend:
     status: active
-    version: 0.9.9
+    version: 0.10.0
   macos:
     status: planned
 checks:
+  - sensitive-data
   - contract
   - backend
+  - postgresql-integration
   - apple-shared
   - android
   - ios

@@ -1,41 +1,24 @@
 package com.xlib.txtreader;
 
-import android.content.SharedPreferences;
-
 import java.net.URI;
 
 final class SyncServerConfig {
     static final String DEFAULT_URL = "https://xunit.cc/xlib/backend";
     private static final String KEY_SERVER_URL = "sync_server_url";
 
-    private final SharedPreferences preferences;
     private final LocalDatabase database;
 
-    SyncServerConfig(SharedPreferences preferences) {
-        this.preferences = preferences;
-        this.database = null;
-        if (!preferences.contains(KEY_SERVER_URL)) {
-            preferences.edit().putString(KEY_SERVER_URL, DEFAULT_URL).apply();
-        }
-    }
-
     SyncServerConfig(LocalDatabase database) {
-        this.preferences = null;
         this.database = database;
         if (!database.hasSyncValue(KEY_SERVER_URL)) database.putSyncValue(KEY_SERVER_URL, DEFAULT_URL);
     }
 
-    synchronized String url() {
-        if (database != null) return normalize(database.syncValue(KEY_SERVER_URL, DEFAULT_URL));
-        String value = preferences.getString(KEY_SERVER_URL, DEFAULT_URL);
-        return normalize(value == null ? DEFAULT_URL : value);
-    }
+    synchronized String url() { return normalize(database.syncValue(KEY_SERVER_URL, DEFAULT_URL)); }
 
     synchronized boolean save(String value) {
         String normalized = normalize(value);
         if (!isValid(normalized)) return false;
-        if (database != null) database.putSyncValue(KEY_SERVER_URL, normalized);
-        else preferences.edit().putString(KEY_SERVER_URL, normalized).apply();
+        database.putSyncValue(KEY_SERVER_URL, normalized);
         return true;
     }
 

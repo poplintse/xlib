@@ -11,19 +11,13 @@ actor LibraryStore {
         let root: URL
         var books: URL { root.appending(path: "Books", directoryHint: .isDirectory) }
         var metadata: URL { root.appending(path: "Metadata", directoryHint: .isDirectory) }
-        var toc: URL { root.appending(path: "TOC", directoryHint: .isDirectory) }
-        var snapshot: URL { metadata.appending(path: "books.json") }
-        var lastGoodSnapshot: URL { metadata.appending(path: "books.last-good.json") }
-        var bookmarks: URL { metadata.appending(path: "bookmarks.json") }
     }
 
     private let paths: Paths
-    private let database: LocalDatabase?
-    private var snapshot = LibrarySnapshot()
-    private var bookmarkSnapshot = BookmarksSnapshot()
+    private let database: LocalDatabase
     private var loaded = false
 
-    init(root: URL? = nil, database: LocalDatabase? = nil) {
+    init(root: URL? = nil, database: LocalDatabase) {
         self.database = database
         if let root {
             paths = Paths(root: root)
@@ -35,8 +29,7 @@ actor LibraryStore {
 
     func load() throws -> [Book] {
         try prepareIfNeeded()
-        if let database { return try database.loadBooks() }
-        return visibleBooks()
+        return try database.loadBooks()
     }
 
     func url(for book: Book) -> URL { paths.root.appending(path: book.relativePath) }
@@ -69,18 +62,9 @@ actor LibraryStore {
                 schemaVersion: Book.schemaVersion
             )
             book.title = book.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名书籍" : book.title
-            if let database {
-                do { try database.insertBook(book) }
-                catch {
-                    try? FileManager.default.removeItem(at: destination)
-                    throw error
-                }
-                return book
-            }
-            snapshot.books.append(book)
-            do { try persistSnapshot() } catch {
+            do { try database.insertBook(book) }
+            catch {
                 try? FileManager.default.removeItem(at: destination)
-                snapshot.books.removeAll { $0.id == id }
                 throw error
             }
             return book
@@ -92,88 +76,44 @@ actor LibraryStore {
 
     func updateBook(_ book: Book) throws {
         try prepareIfNeeded()
-        if let database { try database.updateBook(book); return }
-        guard let index = snapshot.books.firstIndex(where: { $0.id == book.id }) else { return }
-        snapshot.books[index] = book
-        try persistSnapshot()
+        try database.updateBook(book)
     }
 
     func saveProgress(bookID: UUID, offset: Int64, updatedAt: Date = .now) throws {
         try prepareIfNeeded()
-        if let database { try database.saveProgress(bookID: bookID, offset: offset, updatedAt: updatedAt); return }
-        guard let index = snapshot.books.firstIndex(where: { $0.id == bookID }) else { return }
-        snapshot.books[index].offset = min(snapshot.books[index].fileSize, max(0, offset))
-        snapshot.books[index].updatedAt = updatedAt
-        try persistSnapshot()
+        try database.saveProgress(bookID: bookID, offset: offset, updatedAt: updatedAt)
     }
 
     func deleteBooks(ids: Set<UUID>) throws {
         try prepareIfNeeded()
-        if let database {
-            try database.deleteBooks(ids: ids)
-            return
-        }
-        snapshot.tombstones.append(contentsOf: ids.filter { !snapshot.tombstones.contains($0) })
-        try persistSnapshot()
-        for id in ids {
-            if let book = snapshot.books.first(where: { $0.id == id }) {
-                try? FileManager.default.removeItem(at: url(for: book))
-            }
-            try? FileManager.default.removeItem(at: paths.toc.appending(path: "\(id.uuidString).json"))
-        }
-        bookmarkSnapshot.bookmarks.removeAll { ids.contains($0.bookID) }
-        snapshot.books.removeAll { ids.contains($0.id) }
-        snapshot.tombstones.removeAll { ids.contains($0) }
-        try persistBookmarks()
-        try persistSnapshot()
+        try database.deleteBooks(ids: ids)
     }
 
     func bookmarks(for bookID: UUID) throws -> [Bookmark] {
         try prepareIfNeeded()
-        if let database { return try database.bookmarks(bookID: bookID) }
-        return bookmarkSnapshot.bookmarks.filter { $0.bookID == bookID }.sorted { $0.offset < $1.offset }
+        return try database.bookmarks(bookID: bookID)
     }
 
     func addBookmark(bookID: UUID, offset: Int64, excerpt: String) throws -> Bookmark {
         try prepareIfNeeded()
-        if let database {
-            let bookmark = Bookmark(id: UUID(), bookID: bookID, offset: offset, excerpt: excerpt, createdAt: .now)
-            try database.addBookmark(bookmark)
-            return bookmark
-        }
-        guard !bookmarkSnapshot.bookmarks.contains(where: { $0.bookID == bookID && $0.offset == offset }) else {
-            throw BookmarkError.duplicatePosition
-        }
         let bookmark = Bookmark(id: UUID(), bookID: bookID, offset: offset, excerpt: excerpt, createdAt: .now)
-        bookmarkSnapshot.bookmarks.append(bookmark)
-        try persistBookmarks()
+        try database.addBookmark(bookmark)
         return bookmark
     }
 
     func removeBookmark(id: UUID) throws {
         try prepareIfNeeded()
-        if let database { try database.removeBookmark(id: id); return }
-        bookmarkSnapshot.bookmarks.removeAll { $0.id == id }
-        try persistBookmarks()
+        try database.removeBookmark(id: id)
     }
 
     func cachedTOC(for book: Book) throws -> [TocEntry]? {
         try prepareIfNeeded()
-        if let database { return try database.cachedTOC(for: book) }
-        let tocURL = tocURL(for: book.id)
-        guard let document = try decode(TocDocument.self, primary: tocURL, fallback: nil),
-              tocDocument(document, matches: book) else { return nil }
-        return document.entries
+        return try database.cachedTOC(for: book)
     }
 
     func booksWithCachedTOC(_ books: [Book]) throws -> Set<UUID> {
         try prepareIfNeeded()
-        if let database { return try database.booksWithCachedTOC(books) }
-        return Set(books.compactMap { book in
-            guard let document = try? decode(TocDocument.self, primary: tocURL(for: book.id), fallback: nil),
-                  tocDocument(document, matches: book) else { return nil }
-            return book.id
-        })
+        return try database.booksWithCachedTOC(books)
     }
 
     func saveTOC(_ entries: [TocEntry], for book: Book) throws {
@@ -184,84 +124,21 @@ actor LibraryStore {
             modifiedAt: book.modifiedAt,
             entries: entries
         )
-        if let database { try database.saveTOC(document, bookID: book.id) }
-        else { try atomicWrite(document, to: tocURL(for: book.id)) }
+        try database.saveTOC(document, bookID: book.id)
     }
 
     func deleteTOC(for bookID: UUID) throws {
         try prepareIfNeeded()
-        if let database { try database.deleteTOC(bookID: bookID); return }
-        let url = tocURL(for: bookID)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+        try database.deleteTOC(bookID: bookID)
     }
 
     private func prepareIfNeeded() throws {
         guard !loaded else { return }
         try FileManager.default.createDirectory(at: paths.books, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: paths.metadata, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: paths.toc, withIntermediateDirectories: true)
-        try? (paths.toc as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
-        if database != nil {
-            loaded = true
-            return
-        }
-        snapshot = try decode(LibrarySnapshot.self, primary: paths.snapshot, fallback: paths.lastGoodSnapshot) ?? LibrarySnapshot()
-        bookmarkSnapshot = try decode(BookmarksSnapshot.self, primary: paths.bookmarks, fallback: nil) ?? BookmarksSnapshot()
         loaded = true
-        try repairInterruptedWork()
-    }
-
-    private func repairInterruptedWork() throws {
         let contents = try FileManager.default.contentsOfDirectory(at: paths.books, includingPropertiesForKeys: nil)
         for url in contents where url.lastPathComponent.hasSuffix(".importing") { try? FileManager.default.removeItem(at: url) }
-        if !snapshot.tombstones.isEmpty { try deleteBooks(ids: Set(snapshot.tombstones)) }
-    }
-
-    private func visibleBooks() -> [Book] {
-        snapshot.books.filter { !snapshot.tombstones.contains($0.id) }.sorted { $0.updatedAt > $1.updatedAt }
-    }
-
-    private func persistSnapshot() throws {
-        if FileManager.default.fileExists(atPath: paths.snapshot.path) {
-            try? FileManager.default.removeItem(at: paths.lastGoodSnapshot)
-            try FileManager.default.copyItem(at: paths.snapshot, to: paths.lastGoodSnapshot)
-        }
-        try atomicWrite(snapshot, to: paths.snapshot)
-    }
-
-    private func persistBookmarks() throws { try atomicWrite(bookmarkSnapshot, to: paths.bookmarks) }
-
-    private func tocURL(for bookID: UUID) -> URL {
-        paths.toc.appending(path: "\(bookID.uuidString).json")
-    }
-
-    private func tocDocument(_ document: TocDocument, matches book: Book) -> Bool {
-        document.schemaVersion == TocDocument.schemaVersion
-            && document.fileSize == book.fileSize
-            && abs(document.modifiedAt.timeIntervalSince(book.modifiedAt)) < 1
-    }
-
-    private func atomicWrite<T: Encodable>(_ value: T, to url: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(value)
-        let temp = url.deletingLastPathComponent().appending(path: ".\(UUID().uuidString).tmp")
-        try data.write(to: temp, options: [.atomic, .completeFileProtection])
-        if FileManager.default.fileExists(atPath: url.path) {
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
-        } else {
-            try FileManager.default.moveItem(at: temp, to: url)
-        }
-    }
-
-    private func decode<T: Decodable>(_ type: T.Type, primary: URL, fallback: URL?) throws -> T? {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        for url in [primary, fallback].compactMap({ $0 }) where FileManager.default.fileExists(atPath: url.path) {
-            if let value = try? decoder.decode(type, from: Data(contentsOf: url)) { return value }
-        }
-        return nil
     }
 
     private func coordinatedCopy(from source: URL, to destination: URL) throws {

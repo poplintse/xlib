@@ -201,8 +201,12 @@ Backend 仍是单个 TypeScript 服务，持久化继续使用 PostgreSQL。路�
 
 Android/iOS 生产路径已经把 Book、Progress、Bookmark、TOC、非敏感 Setting 与 SyncState 收敛到各端 `xlib.db`，由 typed Store/Repository 和 `LocalDatabase` 访问。TXT 正文继续使用文件系统，Android Keystore 保护的凭据和 iOS Keychain 凭据继续使用 Secure Store。删书事务记录待删除相对路径，正文删除失败会在下次书库加载重试。
 
-两端共享数据语义、约束与迁移夹具，不共享平台数据库实现。首次迁移校验 legacy 正式数据，在一个事务中写入 Schema v1 和 ledger；重复执行按 migration ID + fingerprint 跳过，来源变化拒绝覆盖。旧存储只读保留到独立 P7 清理阶段，生产路径不双写。该工程迁移不新增 Capability，也不修改同步 API、Backend PostgreSQL Schema 或跨设备业务规则。
+两端共享数据语义与约束，不共享平台数据库实现。0.10.0 曾在一个事务中把 legacy 正式数据迁入 Schema v1 并写入 ledger。当前 Schema v2 只使用 SQLite 业务运行时，并根据该 ledger 安全清理旧数据；新安装没有 ledger，不执行 legacy 清理。该工程迁移不新增 Capability，也不修改同步 API、Backend PostgreSQL Schema 或跨设备业务规则。
 
 ## P7 legacy 清理边界
 
-P7 分为旧运行时路径、已迁移设备数据和一次性 migrator 三类清理。前两类等待迁移版本发布、双端真实设备升级与回退窗口；migrator 还必须保留到最低受支持的直接升级来源已经包含 SQLite，避免 pre-SQLite 版本跳跃升级时断链。P7.0 与 pre-P7.1–pre-P7.3 已完成本地准备：双端模拟器安装覆盖通过，设备删除 allowlist 保持 disabled，发布链检查阻止当前删除 migrator。双端真机、发布和回退窗口仍待完成。详见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md)、[Pre-P7.1 Upgrade Validation](architecture/pre-p7-upgrade-validation.md)、[Pre-P7.2 Device Data Cleanup](architecture/pre-p7-data-cleanup.md) 和 [Pre-P7.3 Migrator Retirement](architecture/pre-p7-migrator-retirement.md)。
+P7 已在 0.11.0 draft 完成。业务 Store 没有 JSON/Preferences/UserDefaults 回退；Schema v2 的 `legacy_cleanup` 以 ledger、fingerprint、数据库完整性和受管 TXT 为删除前置条件，只删除 allowlist。Token/Keystore、Keychain、TXT、SQLite 和未知项永久排除。一次性旧格式 parser 与历史安装覆盖脚本已退役；发布清单强制 0.9.x 设备先经过含 migrator 的 0.10.0。详见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md) 和 [Pre-P7.1 Upgrade Validation](architecture/pre-p7-upgrade-validation.md)。
+
+## P8 系统验收边界
+
+P8 不改变产品能力或运行时分层。它把隔离 PostgreSQL 17、双端测试/构建、版本源不变和 tracked-sensitive-data 扫描收口为 Alpha 发布门禁，并用同一 SQLite 连接的容量限制验证 Android/iOS 写入失败时的原子回滚。真实双端真机接续、实际分发渠道版本下限及固定样本性能仍是独立证据，不能由本地自动化替代。详见 [P8 System Validation](architecture/p8-system-validation.md)。

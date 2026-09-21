@@ -30,6 +30,11 @@ def release_statuses() -> dict[str, str]:
     return result
 
 
+def manifest_value(text: str, field: str) -> str | None:
+    match = re.search(rf"^\s+{re.escape(field)}:\s*(.*?)\s*$", text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
 def git_tags() -> set[str]:
     completed = subprocess.run(
         ["git", "-C", str(ROOT), "tag", "--list"],
@@ -56,10 +61,6 @@ def main() -> int:
         raise AssertionError(f"migration baseline {first_sqlite} must declare contains_legacy_migrator: true")
     if not re.search(r"^\s+minimum_direct_from:\s+0\.9\.0\s*$", baseline_manifest, re.MULTILINE):
         raise AssertionError(f"migration baseline {first_sqlite} must accept direct upgrades from 0.9.0")
-    for relative in plan["migration_sources"] + plan["migration_fixtures"]:
-        if not (ROOT / relative).is_file():
-            raise AssertionError(f"required migrator source/fixture is missing: {relative}")
-
     released_pre_sqlite = sorted(
         (release for release, status in statuses.items() if status == "released" and version(release) < first_sqlite_version),
         key=version,
@@ -94,7 +95,26 @@ def main() -> int:
     if enabled and blockers:
         raise AssertionError("migrator retirement was enabled while blocked: " + "; ".join(blockers))
     if enabled:
-        print("migrator retirement is enabled and all declared release-chain gates pass")
+        retirement = plan["retirement_release"]
+        manifest_path = ROOT / "releases" / f"{retirement}.yaml"
+        if not manifest_path.is_file():
+            raise AssertionError(f"missing retirement release manifest: {retirement}")
+        retirement_manifest = manifest_path.read_text()
+        if manifest_value(retirement_manifest, "contains_legacy_migrator") != "false":
+            raise AssertionError("retirement release must declare contains_legacy_migrator: false")
+        if manifest_value(retirement_manifest, "minimum_direct_from") != minimum:
+            raise AssertionError("retirement release minimum direct-upgrade source mismatch")
+        if manifest_value(retirement_manifest, "required_intermediate") != intermediate:
+            raise AssertionError("retirement release required intermediate mismatch")
+        for relative, markers in plan["retired_source_markers"].items():
+            source = (ROOT / relative).read_text()
+            for marker in markers:
+                if marker in source:
+                    raise AssertionError(f"retired migrator marker remains in {relative}: {marker}")
+        for relative in plan["retired_fixtures"]:
+            if (ROOT / relative).exists():
+                raise AssertionError(f"retired migration fixture still exists: {relative}")
+        print("migrator retirement is enabled; release-chain policy and source retirement pass")
     else:
         print("migrator retirement remains disabled")
         for blocker in blockers:

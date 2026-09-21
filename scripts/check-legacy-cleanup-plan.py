@@ -151,13 +151,13 @@ def main() -> int:
     plan = json.loads(PLAN_PATH.read_text())
     if plan.get("schema_version") != 1:
         fail("unsupported cleanup plan schema")
-    if plan.get("enabled") is not False:
-        fail("legacy cleanup must remain disabled during pre-P7.2")
+    if plan.get("enabled") is not True:
+        fail("legacy cleanup must remain enabled after P7.2")
     validate_android(plan["android"])
     validate_ios(plan["ios"])
     simulate_interrupted_cleanup("android", plan["android"]["remove"], plan["android"]["preserve"])
     simulate_interrupted_cleanup("ios", plan["ios"]["remove"], plan["ios"]["preserve"])
-    print("legacy cleanup plan is disabled, source-aligned, idempotent, and does not target protected data")
+    print("legacy cleanup is enabled, source-aligned, idempotent, and does not target protected data")
     return 0
 
 

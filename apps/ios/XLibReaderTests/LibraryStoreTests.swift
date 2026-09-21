@@ -10,16 +10,16 @@ final class LibraryStoreTests: XCTestCase {
         let source = root.appending(path: "source.txt")
         try Data("阅读时间测试正文".utf8).write(to: source)
         let libraryRoot = root.appending(path: "library")
-        let store = LibraryStore(root: libraryRoot)
+        let store = testLibraryStore(root: libraryRoot)
         var book = try await store.importBook(from: source)
         XCTAssertEqual(book.updatedAt.timeIntervalSince1970, 0)
         book.title = "编辑不产生阅读时间"
         try await store.updateBook(book)
-        let unread = try await LibraryStore(root: libraryRoot).load()
+        let unread = try await testLibraryStore(root: libraryRoot).load()
         XCTAssertEqual(unread.first?.updatedAt.timeIntervalSince1970, 0)
         let realTime = Date(timeIntervalSince1970: 1_700_000_000)
         try await store.saveProgress(bookID: book.id, offset: 3, updatedAt: realTime)
-        let read = try await LibraryStore(root: libraryRoot).load()
+        let read = try await testLibraryStore(root: libraryRoot).load()
         XCTAssertEqual(read.first?.updatedAt, realTime)
         XCTAssertEqual(read.first?.offset, 3)
     }
@@ -27,16 +27,21 @@ final class LibraryStoreTests: XCTestCase {
     func testBookmarkUniquenessPreservesOriginalAndOtherPositions() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = LibraryStore(root: root)
-        let bookID = UUID()
+        let store = testLibraryStore(root: root)
+        let firstSource = root.appending(path: "first.txt")
+        let secondSource = root.appending(path: "second.txt")
+        try Data("first".utf8).write(to: firstSource)
+        try Data("second".utf8).write(to: secondSource)
+        let bookID = try await store.importBook(from: firstSource).id
+        let otherBookID = try await store.importBook(from: secondSource).id
         let original = try await store.addBookmark(bookID: bookID, offset: 100, excerpt: "原摘要")
         do {
             _ = try await store.addBookmark(bookID: bookID, offset: 100, excerpt: "新摘要")
             XCTFail("Duplicate position accepted")
         } catch BookmarkError.duplicatePosition { }
         let adjacent = try await store.addBookmark(bookID: bookID, offset: 101, excerpt: "邻近位置")
-        let other = try await store.addBookmark(bookID: UUID(), offset: 100, excerpt: "另一书")
-        let reopened = LibraryStore(root: root)
+        let other = try await store.addBookmark(bookID: otherBookID, offset: 100, excerpt: "另一书")
+        let reopened = testLibraryStore(root: root)
         let marks = try await reopened.bookmarks(for: bookID)
         XCTAssertEqual(marks.map(\.id), [original.id, adjacent.id])
         XCTAssertEqual(marks.first?.excerpt, "原摘要")
@@ -56,7 +61,7 @@ final class LibraryStoreTests: XCTestCase {
         let source = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).txt")
         try "第一章\n你好，世界🙂\n".data(using: .utf8)!.write(to: source)
         defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: source) }
-        let store = LibraryStore(root: root)
+        let store = testLibraryStore(root: root)
         var book = try await store.importBook(from: source)
         let importedBooks = try await store.load()
         XCTAssertEqual(importedBooks.count, 1)
@@ -67,7 +72,15 @@ final class LibraryStoreTests: XCTestCase {
         let mark = try await store.addBookmark(bookID: book.id, offset: 4, excerpt: "你好")
         let marks = try await store.bookmarks(for: book.id)
         let updatedBooks = try await store.load()
-        XCTAssertEqual(marks, [mark])
+        XCTAssertEqual(marks.map(\.id), [mark.id])
+        XCTAssertEqual(marks.first?.bookID, mark.bookID)
+        XCTAssertEqual(marks.first?.offset, mark.offset)
+        XCTAssertEqual(marks.first?.excerpt, mark.excerpt)
+        XCTAssertEqual(
+            try XCTUnwrap(marks.first).createdAt.timeIntervalSince1970,
+            mark.createdAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
         XCTAssertEqual(updatedBooks.first?.title, "新书名")
         XCTAssertEqual(updatedBooks.first?.offset, 4)
         try await store.deleteBooks(ids: [book.id])
@@ -76,9 +89,11 @@ final class LibraryStoreTests: XCTestCase {
     }
 
     func testSettingsNormalization() async {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = testDatabase(root: root)
         await MainActor.run {
-            let suite = UserDefaults(suiteName: UUID().uuidString)!
-            let store = SettingsStore(defaults: suite)
+            let store = SettingsStore(database: database)
             store.update { $0.fontSize = 100; $0.autoPageSeconds = 1 }
             XCTAssertEqual(store.settings.fontSize, 34)
             XCTAssertEqual(store.settings.autoPageSeconds, 3)
@@ -93,37 +108,13 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(settings.screenLockIconName, "lock.fill")
     }
 
-    func testSettingsLoadsDataContainingRemovedAutomaticTOCPreference() async throws {
-        let legacyJSON = """
-        {
-          "theme": "dark",
-          "fontName": ".AppleSystemUIFont",
-          "fontSize": 22,
-          "lineSpacing": 4,
-          "keepScreenAwake": false,
-          "autoBuildTOC": true,
-          "autoPageSeconds": 8,
-          "turnSensitivity": 0.45
-        }
-        """
-
-        await MainActor.run {
-            let suite = UserDefaults(suiteName: UUID().uuidString)!
-            suite.set(Data(legacyJSON.utf8), forKey: "reader.settings.v1")
-            let store = SettingsStore(defaults: suite)
-
-            XCTAssertEqual(store.settings.theme, .dark)
-            XCTAssertEqual(store.settings.fontSize, 22)
-        }
-    }
-
     func testTOCCachePresenceAndDeletion() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let source = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).txt")
         try "第一章 开始\n正文\n".data(using: .utf8)!.write(to: source)
         defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: source) }
 
-        let store = LibraryStore(root: root)
+        let store = testLibraryStore(root: root)
         let book = try await store.importBook(from: source)
         var cachedBookIDs = try await store.booksWithCachedTOC([book])
         XCTAssertTrue(cachedBookIDs.isEmpty)
@@ -148,7 +139,7 @@ final class LibraryStoreTests: XCTestCase {
         try "第一章 开始\n正文\n第二章 继续\n".data(using: .utf8)!.write(to: source)
         defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: source) }
 
-        let store = LibraryStore(root: root)
+        let store = testLibraryStore(root: root)
         let book = try await store.importBook(from: source)
         let model = LibraryModel(store: store)
         await model.load()

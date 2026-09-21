@@ -9,13 +9,13 @@ private let localSyncStartedKey = "sync.has.started.v1"
 
 enum LocalDatabaseError: LocalizedError {
     case sqlite(String)
-    case invalidLegacyData(String)
+    case invalidStoredData(String)
     case migrationSourceChanged
 
     var errorDescription: String? {
         switch self {
         case .sqlite(let message): message
-        case .invalidLegacyData(let message): message
+        case .invalidStoredData(let message): message
         case .migrationSourceChanged: "旧版存储在迁移完成后发生变化"
         }
     }
@@ -23,7 +23,7 @@ enum LocalDatabaseError: LocalizedError {
 
 /// The single iOS SQLite boundary. TXT content and Keychain credentials stay outside this database.
 final class LocalDatabase: @unchecked Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     static let migrationID = "ios-local-storage-v1"
 
     private enum Value {
@@ -33,22 +33,12 @@ final class LocalDatabase: @unchecked Sendable {
         case null
     }
 
-    private struct LegacySyncHash: Codable {
-        let fileSize: Int64
-        let modifiedAt: Date
-        let hash: String
-    }
-
-    private struct LegacySyncState: Codable {
-        var hashes: [UUID: LegacySyncHash] = [:]
-        var remote: [String: RemoteProgressSnapshot] = [:]
-    }
-
     private let connection: OpaquePointer
     private let root: URL
     private let defaults: UserDefaults
     private let lock = NSRecursiveLock()
     private var savepointSequence = 0
+    private var closedForTesting = false
 
     static func open(root: URL? = nil, defaults: UserDefaults = .standard) throws -> LocalDatabase {
         let base = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -73,14 +63,16 @@ final class LocalDatabase: @unchecked Sendable {
         do {
             try execute("PRAGMA foreign_keys = ON")
             try execute("PRAGMA journal_mode = WAL")
-            try createSchema()
-            try migrateLegacyIfNeeded()
+            try prepareSchema()
+            try cleanupLegacyIfEligible()
         } catch {
             throw error
         }
     }
 
-    deinit { sqlite3_close(connection) }
+    deinit {
+        if !closedForTesting { sqlite3_close(connection) }
+    }
 
     // MARK: - Library
 
@@ -391,10 +383,25 @@ final class LocalDatabase: @unchecked Sendable {
         try locked { try execute("DELETE FROM remote_progress_cache") }
     }
 
-    // MARK: - Schema and legacy migration
+    // MARK: - Schema and retired-storage cleanup
+
+    private func prepareSchema() throws {
+        let version = try scalar("PRAGMA user_version")
+        switch version {
+        case 0:
+            try createSchema()
+            try execute("PRAGMA user_version = \(Self.schemaVersion)")
+        case 1:
+            try createLegacyCleanupTable()
+            try execute("PRAGMA user_version = \(Self.schemaVersion)")
+        case Self.schemaVersion:
+            break
+        default:
+            throw LocalDatabaseError.sqlite("不支持的本地数据库版本 \(version)")
+        }
+    }
 
     private func createSchema() throws {
-        try execute("PRAGMA user_version = \(Self.schemaVersion)")
         try execute("""
             CREATE TABLE IF NOT EXISTS books(
                 local_id TEXT PRIMARY KEY,title TEXT NOT NULL,source_name TEXT NOT NULL,author TEXT NOT NULL,
@@ -453,131 +460,108 @@ final class LocalDatabase: @unchecked Sendable {
                 migration_id TEXT PRIMARY KEY,source_fingerprint TEXT NOT NULL,completed_at_ms INTEGER NOT NULL,
                 imported_rows INTEGER NOT NULL)
             """)
+        try createLegacyCleanupTable()
     }
 
-    private func migrateLegacyIfNeeded() throws {
-        let fingerprint = try legacyFingerprint()
-        var existing: String?
+    private func createLegacyCleanupTable() throws {
+        try execute("""
+            CREATE TABLE IF NOT EXISTS legacy_cleanup(
+                migration_id TEXT PRIMARY KEY REFERENCES legacy_migrations(migration_id),
+                source_fingerprint TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('in_progress','completed')),
+                started_at_ms INTEGER NOT NULL,completed_at_ms INTEGER,
+                removed_items INTEGER NOT NULL DEFAULT 0 CHECK(removed_items>=0))
+            """)
+    }
+
+    private func cleanupLegacyIfEligible() throws {
+        var ledgerFingerprint: String?
         try query("SELECT source_fingerprint FROM legacy_migrations WHERE migration_id=?",
-                  [.text(Self.migrationID)]) { existing = text($0, 0) }
-        if let existing {
-            guard existing == fingerprint else { throw LocalDatabaseError.migrationSourceChanged }
-            return
+                  [.text(Self.migrationID)]) { ledgerFingerprint = text($0, 0) }
+        guard let ledgerFingerprint else { return }
+
+        var state: String?
+        try query("SELECT state FROM legacy_cleanup WHERE migration_id=?", [.text(Self.migrationID)]) {
+            state = text($0, 0)
+        }
+        if state == "completed" { return }
+        if state == nil {
+            guard try legacyFingerprint() == ledgerFingerprint else {
+                throw LocalDatabaseError.migrationSourceChanged
+            }
+            try verifyDatabaseForCleanup()
+            try execute("INSERT INTO legacy_cleanup VALUES(?,?,?,?,?,?)",
+                        [.text(Self.migrationID), .text(ledgerFingerprint), .text("in_progress"),
+                         .int(milliseconds(.now)), .null, .int(0)])
         }
 
-        let legacy = try loadLegacyData()
-        try transaction {
-            var imported = 0
-            for book in legacy.books {
-                try validate(book: book)
-                try upsertBook(book)
-                try execute("INSERT INTO reading_progress(book_id,offset_bytes,read_at_ms) VALUES(?,?,?)",
-                            [.text(key(book.id)), .int(clamp(book.offset, size: book.fileSize)), nullableDate(book.updatedAt)])
-                imported += 2
+        let removed = try removeLegacyStorage()
+        try verifyLegacyRemoved()
+        try verifyDatabaseForCleanup()
+        try execute("""
+            UPDATE legacy_cleanup SET state='completed',completed_at_ms=?,removed_items=? WHERE migration_id=?
+            """, [.int(milliseconds(.now)), .int(Int64(removed)), .text(Self.migrationID)])
+    }
+
+    private var legacyDefaultsKeys: [String] {
+        ["reader.settings.v1", SyncServerConfiguration.storageKey,
+         SyncServerConfiguration.credentialServerKey, localSyncDeviceNameKey,
+         localSyncEmailKey, localSyncStartedKey, "sync.device.id.v1"]
+    }
+
+    private var legacyFiles: [URL] {
+        ["Metadata/books.json", "Metadata/books.last-good.json", "Metadata/bookmarks.json", "Sync/sync-state.json"]
+            .map { root.appending(path: $0) }
+    }
+
+    private func removeLegacyStorage() throws -> Int {
+        var removed = 0
+        for key in legacyDefaultsKeys where defaults.object(forKey: key) != nil {
+            defaults.removeObject(forKey: key)
+            removed += 1
+        }
+        for url in legacyFiles where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+            removed += 1
+        }
+        let toc = root.appending(path: "TOC", directoryHint: .isDirectory)
+        if let files = try? FileManager.default.contentsOfDirectory(at: toc, includingPropertiesForKeys: nil) {
+            for url in files where url.pathExtension.lowercased() == "json" {
+                try FileManager.default.removeItem(at: url)
+                removed += 1
             }
-            let bookIDs = Set(legacy.books.map(\.id))
-            for bookmark in legacy.bookmarks {
-                guard bookIDs.contains(bookmark.bookID) else {
-                    throw LocalDatabaseError.invalidLegacyData("书签无法关联现存书籍")
-                }
-                try execute("INSERT INTO bookmarks(local_id,book_id,offset_bytes,excerpt,created_at_ms) VALUES(?,?,?,?,?)",
-                            [.text(key(bookmark.id)), .text(key(bookmark.bookID)), .int(bookmark.offset),
-                             .text(bookmark.excerpt), .int(milliseconds(bookmark.createdAt))])
-                imported += 1
-            }
-            for (bookID, document) in legacy.toc where bookIDs.contains(bookID) {
-                try? saveTOC(document, bookID: bookID)
-            }
-            if let settings = legacy.readerSettings { try saveReaderSettings(settings) }
-            for (storageKey, value) in legacy.syncConfiguration { try setSyncString(value, for: storageKey) }
-            for (bookID, entry) in legacy.syncState.hashes where bookIDs.contains(bookID) {
-                try execute("""
-                    INSERT INTO book_hash_cache(book_id,source_file_size,source_modified_at_ms,book_hash) VALUES(?,?,?,?)
-                    """, [.text(key(bookID)), .int(entry.fileSize), .int(milliseconds(entry.modifiedAt)), .text(entry.hash)])
-            }
-            if let scope = legacy.accountScope {
-                for item in legacy.syncState.remote.values { try insertRemote(item, accountScope: scope) }
-            }
-            guard try scalar("SELECT COUNT(*) FROM books") == legacy.books.count,
-                  try scalar("SELECT COUNT(*) FROM bookmarks") == legacy.bookmarks.count else {
-                throw LocalDatabaseError.invalidLegacyData("迁移后的正式数据计数不一致")
-            }
-            try execute("INSERT INTO legacy_migrations VALUES(?,?,?,?)",
-                        [.text(Self.migrationID), .text(fingerprint), .int(milliseconds(.now)), .int(Int64(imported))])
+        }
+        return removed
+    }
+
+    private func verifyLegacyRemoved() throws {
+        guard legacyDefaultsKeys.allSatisfy({ defaults.object(forKey: $0) == nil }),
+              legacyFiles.allSatisfy({ !FileManager.default.fileExists(atPath: $0.path) }) else {
+            throw LocalDatabaseError.sqlite("旧版持久化数据清理未完成")
+        }
+        let toc = root.appending(path: "TOC", directoryHint: .isDirectory)
+        let remaining = (try? FileManager.default.contentsOfDirectory(at: toc, includingPropertiesForKeys: nil)) ?? []
+        guard !remaining.contains(where: { $0.pathExtension.lowercased() == "json" }) else {
+            throw LocalDatabaseError.sqlite("旧版目录缓存清理未完成")
         }
     }
 
-    private struct LegacyData {
-        let books: [Book]
-        let bookmarks: [Bookmark]
-        let toc: [UUID: TocDocument]
-        let readerSettings: ReaderSettings?
-        let syncConfiguration: [String: String]
-        let syncState: LegacySyncState
-        let accountScope: String?
-    }
-
-    private func loadLegacyData() throws -> LegacyData {
-        let metadata = root.appending(path: "Metadata", directoryHint: .isDirectory)
-        let snapshotURL = metadata.appending(path: "books.json")
-        let lastGoodURL = metadata.appending(path: "books.last-good.json")
-        let snapshot: LibrarySnapshot
-        if FileManager.default.fileExists(atPath: snapshotURL.path) {
-            if let value = decode(LibrarySnapshot.self, at: snapshotURL) { snapshot = value }
-            else if let value = decode(LibrarySnapshot.self, at: lastGoodURL) { snapshot = value }
-            else { throw LocalDatabaseError.invalidLegacyData("书库主快照与恢复快照均无法读取") }
-        } else if FileManager.default.fileExists(atPath: lastGoodURL.path) {
-            guard let value = decode(LibrarySnapshot.self, at: lastGoodURL) else {
-                throw LocalDatabaseError.invalidLegacyData("书库恢复快照无法读取")
-            }
-            snapshot = value
-        } else {
-            snapshot = LibrarySnapshot()
+    private func verifyDatabaseForCleanup() throws {
+        var integrity = ""
+        try query("PRAGMA integrity_check") { integrity = text($0, 0) }
+        guard integrity.lowercased() == "ok" else {
+            throw LocalDatabaseError.sqlite("本地数据库完整性检查失败")
         }
-        let visibleBooks = snapshot.books.filter { !snapshot.tombstones.contains($0.id) }
-        let bookmarksURL = metadata.appending(path: "bookmarks.json")
-        let bookmarks: BookmarksSnapshot
-        if FileManager.default.fileExists(atPath: bookmarksURL.path) {
-            guard let decoded = decode(BookmarksSnapshot.self, at: bookmarksURL) else {
-                throw LocalDatabaseError.invalidLegacyData("书签快照无法读取")
-            }
-            bookmarks = decoded
-        } else {
-            bookmarks = BookmarksSnapshot()
-        }
-
-        var toc: [UUID: TocDocument] = [:]
-        let tocDirectory = root.appending(path: "TOC", directoryHint: .isDirectory)
-        for book in visibleBooks {
-            if let document = decode(TocDocument.self, at: tocDirectory.appending(path: "\(book.id.uuidString).json")),
-               document.fileSize == book.fileSize,
-               abs(document.modifiedAt.timeIntervalSince(book.modifiedAt)) < 1 {
-                toc[book.id] = document
+        var foreignKeyFailure = false
+        try query("PRAGMA foreign_key_check") { _ in foreignKeyFailure = true }
+        guard !foreignKeyFailure else { throw LocalDatabaseError.sqlite("本地数据库外键检查失败") }
+        try query("SELECT relative_path FROM books") { statement in
+            let relative = text(statement, 0)
+            guard !relative.hasPrefix("/"), !relative.split(separator: "/").contains(".."),
+                  relative.hasPrefix("Books/"),
+                  FileManager.default.fileExists(atPath: root.appending(path: relative).path) else {
+                throw LocalDatabaseError.invalidStoredData("书籍正文缺失或路径无效")
             }
         }
-
-        var readerSettings: ReaderSettings?
-        if let data = defaults.data(forKey: "reader.settings.v1"),
-           var value = try? JSONDecoder().decode(ReaderSettings.self, from: data) {
-            value.normalize()
-            readerSettings = value
-        }
-        let syncKeys = [
-            SyncServerConfiguration.storageKey, SyncServerConfiguration.credentialServerKey,
-            localSyncDeviceNameKey, localSyncEmailKey, localSyncStartedKey, "sync.device.id.v1"
-        ]
-        var configuration: [String: String] = [:]
-        for key in syncKeys {
-            if let value = defaults.string(forKey: key) { configuration[key] = value }
-            else if defaults.object(forKey: key) is Bool { configuration[key] = String(defaults.bool(forKey: key)) }
-        }
-        let syncStateURL = root.appending(path: "Sync", directoryHint: .isDirectory).appending(path: "sync-state.json")
-        let syncState = (try? Data(contentsOf: syncStateURL)).flatMap { try? JSONDecoder().decode(LegacySyncState.self, from: $0) }
-            ?? LegacySyncState()
-        let accountScope = configuration[localSyncEmailKey]?.lowercased()
-        return LegacyData(books: visibleBooks, bookmarks: bookmarks.bookmarks, toc: toc,
-                          readerSettings: readerSettings, syncConfiguration: configuration,
-                          syncState: syncState, accountScope: accountScope)
     }
 
     private func legacyFingerprint() throws -> String {
@@ -598,18 +582,6 @@ final class LocalDatabase: @unchecked Sendable {
             else if let value = defaults.object(forKey: key) as? NSNumber { hasher.update(data: Data(value.stringValue.utf8)) }
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func validate(book: Book) throws {
-        guard book.fileSize >= 0, book.offset >= 0, book.offset <= book.fileSize,
-              !book.relativePath.hasPrefix("/"), !book.relativePath.split(separator: "/").contains(".."),
-              book.relativePath.hasPrefix("Books/") else {
-            throw LocalDatabaseError.invalidLegacyData("书籍 metadata 不符合本地存储约束")
-        }
-        let url = root.appending(path: book.relativePath)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw LocalDatabaseError.invalidLegacyData("书籍正文缺失")
-        }
     }
 
     // MARK: - SQLite helpers
@@ -681,18 +653,33 @@ final class LocalDatabase: @unchecked Sendable {
         return String(cString: value)
     }
 
-    private func decode<T: Decodable>(_ type: T.Type, at url: URL) -> T? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(type, from: data)
-    }
-
     private func scalar(_ sql: String) throws -> Int {
         var result = 0
         try query(sql) { result = Int(sqlite3_column_int64($0, 0)) }
         return result
     }
+
+#if DEBUG
+    /// Constrains this connection to its current database size so tests can exercise SQLITE_FULL.
+    func constrainStorageToCurrentPagesForTesting() throws {
+        try locked {
+            let pageCount = try scalar("PRAGMA page_count")
+            let maximumPageCount = try scalar("PRAGMA max_page_count = \(pageCount)")
+            guard maximumPageCount == pageCount else {
+                throw LocalDatabaseError.sqlite("无法设置测试数据库容量限制")
+            }
+        }
+    }
+
+    /// Closes the shared test connection before its temporary directory is removed.
+    func closeForTesting() {
+        locked {
+            guard !closedForTesting else { return }
+            sqlite3_close_v2(connection)
+            closedForTesting = true
+        }
+    }
+#endif
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()

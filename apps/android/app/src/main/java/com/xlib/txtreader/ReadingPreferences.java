@@ -1,16 +1,12 @@
 package com.xlib.txtreader;
 
-import android.content.SharedPreferences;
-
-/** Typed settings repository. SharedPreferences is retained only for legacy tests/fallback. */
+/** Typed settings repository backed by the app's single local database. */
 final class ReadingPreferences {
-    private final SharedPreferences preferences;
     private final LocalDatabase database;
-    ReadingPreferences(SharedPreferences preferences) { this.preferences = preferences; this.database = null; }
-    ReadingPreferences(LocalDatabase database) { this.preferences = null; this.database = database; }
+    ReadingPreferences(LocalDatabase database) { this.database = database; }
     boolean autoToc() { return getBoolean(KEY_AUTO_TOC, false); }
     void setAutoToc(boolean enabled) { put(KEY_AUTO_TOC, enabled); }
-    void migrateSystemTheme(boolean night) {
+    void normalizeSystemTheme(boolean night) {
         if (getInt(KEY_APP_THEME, ReaderSettingsOptions.THEME_LIGHT)
                 == ReaderSettingsOptions.LEGACY_THEME_SYSTEM) {
             setAppTheme(night ? ReaderSettingsOptions.THEME_DARK : ReaderSettingsOptions.THEME_LIGHT);
@@ -88,30 +84,24 @@ final class ReadingPreferences {
     }
 
     private boolean getBoolean(String key, boolean fallback) {
-        return database == null ? preferences.getBoolean(key, fallback)
-                : Boolean.parseBoolean(database.setting(key, String.valueOf(fallback)));
+        return Boolean.parseBoolean(database.setting(key, String.valueOf(fallback)));
     }
     private int getInt(String key, int fallback) {
-        if (database == null) return preferences.getInt(key, fallback);
         try { return Integer.parseInt(database.setting(key, String.valueOf(fallback))); }
         catch (NumberFormatException ignored) { return fallback; }
     }
     private float getFloat(String key, float fallback) {
-        if (database == null) return preferences.getFloat(key, fallback);
         try { return Float.parseFloat(database.setting(key, String.valueOf(fallback))); }
         catch (NumberFormatException ignored) { return fallback; }
     }
     private void put(String key, boolean value) {
-        if (database == null) preferences.edit().putBoolean(key, value).apply();
-        else database.putSetting(key, String.valueOf(value));
+        database.putSetting(key, String.valueOf(value));
     }
     private void put(String key, int value) {
-        if (database == null) preferences.edit().putInt(key, value).apply();
-        else database.putSetting(key, String.valueOf(value));
+        database.putSetting(key, String.valueOf(value));
     }
     private void put(String key, float value) {
-        if (database == null) preferences.edit().putFloat(key, value).apply();
-        else database.putSetting(key, String.valueOf(value));
+        database.putSetting(key, String.valueOf(value));
     }
 
 }

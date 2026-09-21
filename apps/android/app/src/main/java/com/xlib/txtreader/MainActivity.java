@@ -151,6 +151,7 @@ public class MainActivity extends Activity {
     private volatile boolean activityDestroyed;
     private boolean autoPageDispatching;
     private boolean booksSavePending;
+    private boolean storageUnavailable;
     private int autoPageSeconds = AutoPageOptions.OFF;
     private ReaderCacheWrite pendingReaderCache;
     private SearchSession searchSession;
@@ -255,14 +256,16 @@ public class MainActivity extends Activity {
         try {
             localDatabase = LocalDatabase.open(this, preferences);
         } catch (Exception error) {
-            Log.e("XLibStorage", "SQLite migration failed; using legacy storage for this launch");
+            Log.e("XLibStorage", "Local database is unavailable");
+            storageUnavailable = true;
+            showStorageUnavailable();
+            return;
         }
-        readingPreferences = localDatabase == null
-                ? new ReadingPreferences(preferences) : new ReadingPreferences(localDatabase);
-        migrateLegacySystemTheme();
+        readingPreferences = new ReadingPreferences(localDatabase);
+        normalizeStoredSystemTheme();
         readerCacheStore = new ReaderCacheStore(new File(getFilesDir(), "reader-cache"));
-        catalog = new CatalogController(localDatabase == null ? new TocStore(this) : new TocStore(localDatabase),
-                localDatabase == null ? new BookmarkStore(preferences) : new BookmarkStore(localDatabase),
+        catalog = new CatalogController(new TocStore(localDatabase),
+                new BookmarkStore(localDatabase),
                 tocExecutor, task -> mainHandler.post(task));
         imports = new BookImportController<>(new File(getFilesDir(), "books"),
                 new BookImportController.Source<Uri>() {
@@ -281,12 +284,9 @@ public class MainActivity extends Activity {
                     }
                 });
         localProgressStore = new LocalProgressStore();
-        syncTokenStore = localDatabase == null ? new SyncTokenStore(preferences)
-                : new SyncTokenStore(preferences, localDatabase);
-        syncServerConfig = localDatabase == null ? new SyncServerConfig(preferences)
-                : new SyncServerConfig(localDatabase);
-        bookHashCache = localDatabase == null ? new BookHashCache(preferences)
-                : new BookHashCache(localDatabase);
+        syncTokenStore = new SyncTokenStore(preferences, localDatabase);
+        syncServerConfig = new SyncServerConfig(localDatabase);
+        bookHashCache = new BookHashCache(localDatabase);
         SyncApiClient syncApiClient = new SyncApiClient(syncServerConfig.url());
         syncCoordinator = new ProgressSyncCoordinator(this, mainHandler,
                 new ProgressSyncCoordinator.Listener() {
@@ -311,22 +311,36 @@ public class MainActivity extends Activity {
                                                                  RemoteProgressSnapshot remote) {
                         showRemoteJumpDialog(sessionId, localBookId, remote);
                     }
-                }, localProgressStore, localDatabase == null ? new RemoteProgressStore(preferences)
-                        : new RemoteProgressStore(localDatabase),
+                }, localProgressStore, new RemoteProgressStore(localDatabase),
                 bookHashCache, syncTokenStore, syncServerConfig,
                 syncApiClient, getVersionName());
         syncCoordinator.start();
-        library = new LibraryController(localDatabase == null ? new BookStore(preferences)
-                : new BookStore(localDatabase), catalog, readerCacheStore, bookHashCache);
+        library = new LibraryController(new BookStore(localDatabase), catalog, readerCacheStore,
+                bookHashCache);
         books = library.books();
         loadBooks();
         showLibrary();
         if (isAutoTocEnabled()) scheduleMissingTocGeneration();
     }
 
+    private void showStorageUnavailable() {
+        TextView message = new TextView(this);
+        message.setText("本地书库暂时无法打开。原有书籍和凭据未被修改，请重新启动应用后再试。");
+        message.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        message.setGravity(Gravity.CENTER);
+        int padding = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32,
+                getResources().getDisplayMetrics());
+        message.setPadding(padding, padding, padding, padding);
+        setContentView(message);
+    }
+
     @Override
     protected void onPause() {
         activityResumed = false;
+        if (storageUnavailable) {
+            super.onPause();
+            return;
+        }
         disableAutoPage();
         applyKeepScreenOn(false);
         saveCurrentProgress();
@@ -339,6 +353,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         activityResumed = true;
+        if (storageUnavailable) return;
         if (syncCoordinator != null) syncCoordinator.onForeground();
         boolean readerAttached = readerFrame != null && readerFrame.isAttachedToWindow();
         applyKeepScreenOn(ReaderRuntimePolicy.shouldKeepScreenOn(
@@ -349,6 +364,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         activityDestroyed = true;
+        if (storageUnavailable) {
+            mainHandler.removeCallbacksAndMessages(null);
+            readerTasks.close();
+            libraryExecutor.shutdownNow();
+            searches.cancel();
+            searchExecutor.shutdownNow();
+            tocExecutor.shutdownNow();
+            if (localDatabase != null) localDatabase.close();
+            super.onDestroy();
+            return;
+        }
         if (imports != null) imports.close();
         flushScheduledBooksSave();
         if (syncCoordinator != null) syncCoordinator.shutdown();
@@ -4692,8 +4718,8 @@ public class MainActivity extends Activity {
                 == Configuration.UI_MODE_NIGHT_YES;
     }
 
-    private void migrateLegacySystemTheme() {
-        readingPreferences.migrateSystemTheme(isSystemNight());
+    private void normalizeStoredSystemTheme() {
+        readingPreferences.normalizeSystemTheme(isSystemNight());
     }
 
     private int dp(int value) {

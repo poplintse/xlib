@@ -64,7 +64,7 @@
         "deviceId": "10000000-0000-4000-8000-000000000001",
         "deviceName": "测试设备",
         "platform": "android",
-        "appVersion": "0.9.11",
+        "appVersion": "0.11.0",
         "lastSeenAtMs": 1000,
         "createdAtMs": 500,
         "revokedAtMs": null,
@@ -78,7 +78,7 @@
       "deviceId": "10000000-0000-4000-8000-000000000001",
       "deviceName": "测试设备",
       "platform": "android",
-      "appVersion": "0.9.11"
+      "appVersion": "0.11.0"
     }
   },
   "StartSyncResponse": {

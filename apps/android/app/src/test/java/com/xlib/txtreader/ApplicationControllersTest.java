@@ -117,16 +117,6 @@ public class ApplicationControllersTest {
         verify(store).delete(first);
         verifyNoMoreInteractions(catalog,cache,hashes);
     }
-    @Test public void preferencesKeepLegacyKeysAndNormalizeInvalidValues() {
-        android.content.SharedPreferences prefs=MemoryPreferences.create();
-        prefs.edit().putInt("app_theme",ReaderSettingsOptions.LEGACY_THEME_SYSTEM)
-                .putFloat("font_size",999).putBoolean("auto_toc",true).apply();
-        ReadingPreferences settings=new ReadingPreferences(prefs); settings.migrateSystemTheme(true);
-        assertEquals(ReaderSettingsOptions.THEME_DARK,settings.appTheme()); assertTrue(settings.autoToc());
-        assertEquals(ReaderSettingsOptions.normalizeFontSize(999),settings.readingFontSize(),0);
-        settings.setReadingFontSize(18); assertEquals(18,prefs.getFloat("font_size",0),0);
-        settings.setAutoToc(false); assertFalse(prefs.getBoolean("auto_toc",true));
-    }
     @Test public void cacheAcceptsLegacyXli2AndIgnoresTruncation() throws Exception {
         Book book=book("hello"); File dir=temp.newFolder(); File file=new File(dir,"1.window");
         try (DataOutputStream output=new DataOutputStream(new FileOutputStream(file))) {

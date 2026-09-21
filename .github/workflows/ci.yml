@@ -20,6 +20,7 @@ jobs:
 
       - name: Validate contract and release manifest
         run: |
+          ./scripts/check-sensitive-data.py
           ruby scripts/check-contract.rb
           ruby scripts/check-contract-fixtures.rb
           ruby scripts/test-release-check.rb
@@ -28,6 +29,24 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: xlib_test
+          POSTGRES_USER: xlib_test_owner
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xlib_test_owner -d xlib_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://xlib_test_owner:test@127.0.0.1:5432/xlib_test
+      TEST_DATABASE_APP_URL: postgresql://xlib_test_app:test@127.0.0.1:5432/xlib_test
+      PGPASSWORD: test
     defaults:
       run:
         working-directory: services/backend
@@ -43,6 +62,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: services/backend/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Create restricted application role
+        run: >-
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1
+          -c "CREATE ROLE xlib_test_app LOGIN PASSWORD 'test' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;"
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
@@ -83,6 +106,7 @@ jobs:
             -destination "platform=iOS Simulator,name=${device_name},OS=latest" \
             -derivedDataPath "${RUNNER_TEMP}/xlib-ios-tests" \
             CODE_SIGNING_ALLOWED=NO \
+            -parallel-testing-enabled NO \
             test
       - name: Verify builds did not change versions
         run: |

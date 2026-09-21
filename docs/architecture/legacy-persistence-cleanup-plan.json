@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "enabled": false,
+  "enabled": true,
   "android": {
     "migration_id": "android-shared-preferences-v1",
-    "database_schema_version": 1,
+    "database_schema_version": 2,
     "remove": {
       "preferences_exact": [
         "books",
@@ -51,7 +51,7 @@
   },
   "ios": {
     "migration_id": "ios-local-storage-v1",
-    "database_schema_version": 1,
+    "database_schema_version": 2,
     "remove": {
       "user_defaults_exact": [
         "reader.settings.v1",

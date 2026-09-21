@@ -2,7 +2,7 @@
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-release="${1:-${RELEASE_VERSION:-0.9.11}}"
+release="${1:-${RELEASE_VERSION:-0.11.0}}"
 manifest="$root/releases/$release.yaml"
 
 if [ ! -f "$manifest" ]; then
@@ -55,6 +55,11 @@ if expected_release == retirement_plan.fetch("first_sqlite_migration_release")
   abort "SQLite migration baseline must contain legacy migrator" unless storage_upgrade["contains_legacy_migrator"] == true
   abort "SQLite migration baseline must accept 0.9.0 direct upgrades" unless storage_upgrade["minimum_direct_from"].to_s == "0.9.0"
   abort "SQLite migration baseline cannot require itself as an intermediate" unless storage_upgrade["required_intermediate"].nil?
+elsif expected_release == retirement_plan.fetch("retirement_release")
+  abort "Migrator retirement release must declare local storage upgrade policy" unless storage_upgrade.is_a?(Hash)
+  abort "Migrator retirement release cannot contain legacy migrator" unless storage_upgrade["contains_legacy_migrator"] == false
+  abort "Post-migrator release minimum source mismatch" unless storage_upgrade["minimum_direct_from"].to_s == retirement_plan.fetch("minimum_direct_upgrade_from")
+  abort "Post-migrator release intermediate mismatch" unless storage_upgrade["required_intermediate"].to_s == retirement_plan.fetch("forced_intermediate_release")
 elsif storage_upgrade.is_a?(Hash) && storage_upgrade["contains_legacy_migrator"] == false
   abort "Post-migrator release minimum source mismatch" unless storage_upgrade["minimum_direct_from"].to_s == retirement_plan.fetch("minimum_direct_upgrade_from")
   abort "Post-migrator release intermediate mismatch" unless storage_upgrade["required_intermediate"].to_s == retirement_plan.fetch("forced_intermediate_release")

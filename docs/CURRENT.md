@@ -1,17 +1,17 @@
 # 当前实现与验收状态
 
-更新：2026-09-20。本文记录当前工作树，不代表已部署或已发布；产品规则以 [docs/product](product/README.md) 为准。
+更新：2026-09-21。本文记录当前工作树和已核实发布状态；产品规则以 [docs/product](product/README.md) 为准。
 
 ## 组件与版本
 
 | 组件 | 当前源码 | 状态依据 |
 |---|---|---|
-| Android | 0.9.11 / build 67 | [version.properties](../apps/android/version.properties) |
-| iOS | 0.9.9 / build 43 | [Xcode 配置](../apps/ios/XLibReader.xcodeproj/project.pbxproj) |
-| Backend | 0.9.9 | [package.json](../services/backend/package.json) |
+| Android | 0.11.0 / build 69 | [version.properties](../apps/android/version.properties) |
+| iOS | 0.11.0 / build 45 | [Xcode 配置](../apps/ios/XLibReader.xcodeproj/project.pbxproj) |
+| Backend | 0.10.0 | [package.json](../services/backend/package.json) |
 | macOS | 无构建目标 | planned，仅项目约束 |
 
-[当前 0.9.11 清单](../releases/0.9.11.yaml) 状态是 draft，记录上表的组件组合，不代表已发布。旧的 [0.9.9 清单](../releases/0.9.9.yaml) 及其他历史清单保留，不根据当前工作树改写历史版本。API 对外路径仍为 v1，但本次删除接口存在破坏性变更。
+[当前 0.11.0 清单](../releases/0.11.0.yaml) 状态是 draft；0.10.0 清单是 released/tagged 的 SQLite 强制迁移基线。0.11.0 不包含 legacy migrator，只允许从 0.10.0 直接升级。API 对外路径仍为 v1，Backend 组件保持 0.10.0。
 
 ## 本轮文档和接口清理
 
@@ -20,7 +20,7 @@
 - 后端与 OpenAPI 新增 `DELETE /v1/progress/{bookHash}/{fileSize}`，只删除认证身份下指定文件的进度，不存在记录也返回 204。
 - 旧的全量进度清空与身份删除路由、服务方法已移除。两端传输层改为 deleteBookProgress；旧全量删除协调器方法及未被调用的 Android 确认方法已删除。初次盘点将这个 Android 方法误计为用户入口，此处纠正。
 - Android/iOS 均已补齐单书删除用户入口、在途上传排序及阅读会话暂停；真实服务与跨设备行为仍待验收。
-- 根检查及 CI 默认清单已切换到新增的 0.9.11 draft，匹配当前组件版本，旧清单不变。构建脚本不自动改写版本或递增 build；三个旧自动版本辅助脚本已删除，Gradle 缺少版本文件时直接报错。检查入口在构建后再次校验清单；CI 缺少清单时失败，不再跳过。本轮不修改任何组件版本文件。
+- 根检查、CI 默认清单和发布回归夹具已切换到 0.11.0，匹配当前移动端源码版本。构建脚本不自动改写版本或递增 build；Gradle 缺少版本文件时直接报错。检查入口在构建后再次校验清单；CI 缺少清单时失败，不再跳过。
 
 ## 已确认能力的实现及待验收边界
 
@@ -52,19 +52,31 @@ Backend 保持 PostgreSQL，不改为 SQLite。身份和进度 SQL 已分别收�
 
 ### P6：Mobile Local Storage Consolidation
 
-[本地存储审计](architecture/local-storage-audit.md) 保留迁移前事实；[Local Storage Contract](architecture/local-storage-contract.md) 是当前共享数据语义和 Schema v1 约束。Android/iOS 生产路径现已把书库、正式进度、书签、目录、非敏感设置与同步状态写入各端 `xlib.db`。TXT 仍在文件系统；Android Token 保持 Keystore 保护，iOS Credential 保持原 Keychain service/account。Backend 继续使用 PostgreSQL。
+[本地存储审计](architecture/local-storage-audit.md) 保留迁移前事实；[Local Storage Contract](architecture/local-storage-contract.md) 是当前共享数据语义和 Schema v2 约束。Android/iOS 生产路径现已把书库、正式进度、书签、目录、非敏感设置与同步状态写入各端 `xlib.db`。TXT 仍在文件系统；Android Token 保持 Keystore 保护，iOS Credential 保持原 Keychain service/account。Backend 继续使用 PostgreSQL。
 
-首次迁移在业务 Store 写入前运行：正式数据先完整解析和校验，再与设置、可用缓存及 migration ledger 在一个 SQLite 事务中提交。相同 fingerprint 重开直接使用 SQLite；来源变化、正文缺失、孤立书签或正式快照不可恢复时拒绝覆盖并回退 legacy。成功后生产路径不双写，legacy 数据只读保留到 P7。删书在数据库事务中登记正文待删除路径，失败会在下次书库加载重试。
+0.10.0 首次迁移曾在业务 Store 写入前解析 legacy，并在一个 SQLite 事务中提交正式数据、设置、缓存和 migration ledger。0.11.0 已删除这些旧格式读取器；生产路径只使用 SQLite。删书继续在数据库事务中登记正文待删除路径，失败会在下次书库加载重试。
 
-Android Robolectric 真实运行 SQLite 的新增 6 项迁移测试通过，Android 共 167 项单元测试通过；iOS Simulator 新增 4 项迁移测试覆盖正式数据、设置/同步配置、重复执行、来源变化、孤立书签和 last-good 恢复，iOS 共 86 项单元测试通过。Android 另验证损坏 TOC 缓存不会留下空文档；iOS 的嵌套 SQLite 写入使用 savepoint，缓存写入失败只回滚该缓存。最终 `make check` 通过契约与发布清单、Backend lint/typecheck/build 与 58 项非 PostgreSQL 测试、AppleShared 2 项测试、Android 测试/lint 和 iOS Debug 构建；P5 的独立 PostgreSQL 17 检查仍为 71 项全部通过，其中 13 项使用真实数据库。P6 没有修改 OpenAPI、Backend PostgreSQL Schema、认证、跨设备规则、组件版本或 Product Capability。真实设备升级、磁盘耗尽和性能仍属 P8；通过回退窗口前不开始 P7，也不建议部署。
+当前 Android 167 项单元测试全部通过；iOS Simulator 87 项单元测试全部通过，包含 Schema v1 → v2、无 ledger 不清理、allowlist、清理中断恢复、来源变化和正文缺失保护。`make check` 通过契约与 0.11.0 draft 发布门禁、Backend lint/typecheck/build 与 58 项非 PostgreSQL 测试、AppleShared 2 项测试、Android 测试/lint 和 iOS Debug 构建。P5 的独立 PostgreSQL 17 历史检查为 71 项全部通过，其中 13 项使用真实数据库；本轮没有重跑该专项。存储工作没有修改 OpenAPI、Backend PostgreSQL Schema、认证、跨设备规则或 Product Capability。磁盘耗尽、性能与真实跨设备发布验收属于 P8。
 
 ### P7：Legacy Persistence Cleanup
 
-[P7 清理合同](architecture/legacy-persistence-cleanup.md) 已完成 P7.0 就绪审计和逐项删除清单。[Pre-P7.1 验证](architecture/pre-p7-upgrade-validation.md) 已在隔离的 Android API 35 Emulator 和 iOS 26.5 Simulator 通过 `0.9.0 → 当前工作区` 原位覆盖：SQLite 完整性、书库/进度/书签/目录/设置/同步配置/cache、TXT 与 legacy 留存、重复启动幂等均通过。当前只有 0.9.0 标记为 released，包含 SQLite migrator 的 0.9.11 仍为 draft；Android 没有连接设备，已登记 iOS 真机处于 unavailable，因此仍没有双端真实设备升级或回退窗口证据。P7.1 旧运行时路径和 P7.2 设备 legacy 数据尚未删除。
+[P7 清理合同](architecture/legacy-persistence-cleanup.md) 现描述已实现状态。P7.1 删除双端旧运行时 Store 回退；数据库打开失败时保留数据并显示不可用状态。P7.2 把本地 Schema 升至 v2，只有存在 0.10.0 migration ledger、fingerprint/数据库/TXT 校验通过时，才按显式 allowlist 幂等删除旧业务数据；Token、Keystore、Keychain、TXT、SQLite 和未知项不在删除范围。
 
-即使回退窗口结束，只要当前发布仍支持从 0.9.0 等 pre-SQLite 版本直接升级，也必须保留一次性 migrator 和迁移夹具；P7.3 需等待 0.9.11 强制迁移窗口完成。该拆分避免用户在迁移窗口内丢失书库。当前阶段没有删除用户数据、Store、凭据或迁移代码，也没有修改 Capability、API、Backend Schema 或组件版本。
+P7.3 已删除一次性 legacy parser、旧模型及 `0.9.0 → 当前工作区` 安装覆盖脚本。0.11.0 draft 清单声明 `contains_legacy_migrator: false`、`minimum_direct_from: 0.10.0`、`required_intermediate: 0.10.0`；未经过 0.10.0 的设备不能直接升级。用户已确认 Android 0.10.0 完成真机测试和发布；iOS 被明确接受为不阻塞本阶段，Simulator/构建/单元测试结果不表述为真机证据。
 
-pre-P7.2 已建立 disabled 的机器可检验 allowlist 和可中断恢复状态机合同；`make check-legacy-cleanup-plan` 会阻止删除 Android Token/Keystore、iOS Keychain、TXT、SQLite 或未知键。pre-P7.3 已完成发布链审计；[Decision 0015](product/decisions/0015-mandatory-sqlite-migration-baseline.md) 已确认不长期支持 0.9.0 直升最新版，0.9.11 是强制迁移基线，未来 retirement 版本最低从 0.9.11 直接升级。`make check-migrator-retirement` 当前仍因 0.9.11 draft/无 tag且强制中间版本尚未发布而阻止 retirement。三个 pre 阶段均已完成本地可执行工作，但没有启用 P7.1/P7.2/P7.3。
+本轮没有新增 Capability，没有修改同步 API、认证、服务端 PostgreSQL Schema 或跨设备业务规则。0.11.0 尚未发布、tag 或 push；实际分发仍须落实版本下限。
+
+### P8：系统验收与维护（进行中）
+
+[P8 验收记录](architecture/p8-system-validation.md) 是当前系统级证据和缺口清单。`make check-alpha` 现强制运行 tracked-sensitive-data 检查、隔离 PostgreSQL 17、Android 测试/lint/build、iOS 单元/UI 测试，并对 Android、iOS、Backend 和所选发布清单的版本源做全程快照；数据库不可用或构建改写版本都会失败。CI 与 release verification 也使用 PostgreSQL 17 owner/受限应用角色，release verification 在生成未签名 Debug artifact 前运行双端测试。
+
+Android 和 iOS 都新增了真实 SQLite `SQLITE_FULL` 故障测试：容量耗尽时整笔写入回滚，原有书籍保持完整。测试暴露并修复了 Android 在 SQLite 自动回滚后再次结束事务会抛异常的问题；Android 数据库初始化失败现在关闭 helper。iOS 容量限制施加在被测连接自身，避免另一连接的 PRAGMA 无效；失败初始化继续由已初始化连接属性的析构路径关闭，避免重复关闭。
+
+本阶段没有修改 OpenAPI、同步数据结构、认证、服务端 PostgreSQL Schema、跨设备规则或 Product Capability。应用日志专项检查未发现正文、邮箱、Token 或真实服务地址输出；Android 数据库打开失败不再把可能含本地路径的异常写入日志。
+
+当前自动验证通过：Backend PostgreSQL 17 为 71/71；Android 为 168/168 且 lint/Debug build 通过；AppleShared 为 2/2；iOS Simulator 为 88/88 单元测试和 11/11 UI 测试。完整 Alpha 门禁通过，版本源保持不变。iOS 测试夹具也在删除临时根目录前显式关闭共享 SQLite 测试连接，避免框架把临时文件路径作为连接违规写入日志。
+
+P8 尚未完成。当前缺少 0.11.0 Android/iOS 真机使用同一非生产身份的跨设备接续记录、iOS 物理设备发布链、实际应用分发渠道的 0.10.0 最低直升版本验证，以及固定样本/设备的时间和峰值内存对比。本次检查中 ADB 没有连接设备，已登记的 `Laguna-15PM` iPhone 处于 offline；Android 0.10.0 的既有真机发布只作为迁移前置证据，不能替代当前版本的跨端验收。
 
 ### P4：iOS 同步与进度
 

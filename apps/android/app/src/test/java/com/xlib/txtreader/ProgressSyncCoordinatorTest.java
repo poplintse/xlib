@@ -5,6 +5,10 @@ import android.os.Handler;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.annotation.Config;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
@@ -15,12 +19,16 @@ import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 35)
 public class ProgressSyncCoordinatorTest {
     private static final String HASH = "a".repeat(64);
     private ProgressSyncCoordinator coordinator;
     private SyncTransport api;
     private LocalProgressStore locals;
     private SyncTokenStore tokens;
+    private Context applicationContext;
+    private LocalDatabase database;
     private final List<String> calls = new CopyOnWriteArrayList<>();
     private final AtomicReference<String> prompt = new AtomicReference<>();
     private final AtomicReference<String> credential = new AtomicReference<>("old-token");
@@ -30,6 +38,10 @@ public class ProgressSyncCoordinatorTest {
     private final AtomicReference<List<RemoteProgressSnapshot>> remote = new AtomicReference<>(List.of());
 
     @Before public void setup() throws Exception {
+        applicationContext = RuntimeEnvironment.getApplication();
+        applicationContext.deleteDatabase("xlib.db");
+        database = LocalDatabase.open(applicationContext,
+                applicationContext.getSharedPreferences("progress-sync-test", Context.MODE_PRIVATE));
         Handler handler = mock(Handler.class);
         when(handler.post(any())).thenAnswer(a -> { ((Runnable) a.getArgument(0)).run(); return true; });
         tokens = mock(SyncTokenStore.class);
@@ -69,13 +81,17 @@ public class ProgressSyncCoordinatorTest {
                 new ProgressSyncCoordinator.Listener() {
                     public void onSyncStateChanged(SyncUiState state) { }
                     public void onRemoteJumpAvailable(String id, long book, RemoteProgressSnapshot value) { prompt.set(id); }
-                }, locals, new RemoteProgressStore(MemoryPreferences.create()), hash, tokens,
-                new SyncServerConfig(MemoryPreferences.create()), api, "test", () -> 12345L, new SyncExecution());
+                }, locals, new RemoteProgressStore(database), hash, tokens,
+                new SyncServerConfig(database), api, "test", () -> 12345L, new SyncExecution());
         coordinator.onForeground();
         await(() -> calls.contains("pull"));
     }
 
-    @After public void stop() { if (coordinator != null) coordinator.shutdown(); }
+    @After public void stop() {
+        if (coordinator != null) coordinator.shutdown();
+        if (database != null) database.close();
+        if (applicationContext != null) applicationContext.deleteDatabase("xlib.db");
+    }
 
     private void open(long offset, long time) {
         coordinator.openBook(1, new File("test-book"), 1000, offset, time);

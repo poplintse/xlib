@@ -33,11 +33,6 @@ final class SyncTokenStore {
     private final SharedPreferences preferences;
     private final LocalDatabase database;
 
-    SyncTokenStore(SharedPreferences preferences) {
-        this.preferences = preferences;
-        this.database = null;
-    }
-
     SyncTokenStore(SharedPreferences securePreferences, LocalDatabase database) {
         this.preferences = securePreferences;
         this.database = database;
@@ -166,30 +161,27 @@ final class SyncTokenStore {
     }
 
     private String config(String key, String fallback) {
-        return database == null ? preferences.getString(key, fallback) : database.syncValue(key, fallback);
+        return database.syncValue(key, fallback);
     }
 
     private boolean configBoolean(String key, boolean fallback) {
-        return database == null ? preferences.getBoolean(key, fallback) : database.syncBoolean(key, fallback);
+        return database.syncBoolean(key, fallback);
     }
 
     private boolean containsConfig(String key) {
-        return database == null ? preferences.contains(key) : database.hasSyncValue(key);
+        return database.hasSyncValue(key);
     }
 
     private void putConfig(String key, String value) {
-        if (database == null) preferences.edit().putString(key, value).apply();
-        else database.putSyncValue(key, value);
+        database.putSyncValue(key, value);
     }
 
     private void putConfigBoolean(String key, boolean value) {
-        if (database == null) preferences.edit().putBoolean(key, value).apply();
-        else database.putSyncValue(key, value ? "1" : "0");
+        database.putSyncValue(key, value ? "1" : "0");
     }
 
     private void removeConfig(String key) {
-        if (database == null) preferences.edit().remove(key).apply();
-        else database.removeSyncValue(key);
+        database.removeSyncValue(key);
     }
 
     private SecretKey getOrCreateKey() throws Exception {

@@ -3,6 +3,7 @@ set -eu
 
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 
+"$root/scripts/check-sensitive-data.py"
 ruby "$root/scripts/check-contract.rb"
 ruby "$root/scripts/check-contract-fixtures.rb"
 "$root/scripts/check-legacy-cleanup-plan.py"

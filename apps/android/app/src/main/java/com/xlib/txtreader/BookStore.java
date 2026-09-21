@@ -1,105 +1,18 @@
 package com.xlib.txtreader;
 
-import android.content.SharedPreferences;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.io.File;
-import java.util.ArrayList;
 import java.util.List;
 
 final class BookStore {
-    private static final String KEY_BOOKS = "books";
-
-    private final SharedPreferences preferences;
     private final LocalDatabase database;
 
-    BookStore(SharedPreferences preferences) {
-        this.preferences = preferences;
-        this.database = null;
-    }
+    BookStore(LocalDatabase database) { this.database = database; }
 
-    BookStore(LocalDatabase database) { this.preferences = null; this.database = database; }
-
-    List<Book> load() {
-        if (database != null) return database.loadBooks();
-        List<Book> books = new ArrayList<>();
-        String raw = preferences.getString(KEY_BOOKS, "[]");
-        try {
-            JSONArray array = new JSONArray(raw);
-            for (int i = 0; i < array.length(); i++) {
-                Book book = fromJson(array.getJSONObject(i));
-                File file = new File(book.path);
-                if (!book.path.isEmpty() && file.exists()) {
-                    book.fileSize = file.length();
-                    if (book.encoding.isEmpty()) book.encoding = TextFileUtils.detectEncoding(file);
-                    if (book.offset <= 0 && book.progress > 0) {
-                        book.offset = (long) (book.fileSize * book.progress);
-                    }
-                    books.add(book);
-                }
-            }
-        } catch (Exception ignored) {
-            books.clear();
-        }
-        return books;
-    }
+    List<Book> load() { return database.loadBooks(); }
 
     boolean save(List<Book> books, Book preservedBook, long preservedOffset,
                  float preservedProgress) {
-        if (database != null) return database.saveBooks(books, preservedBook, preservedOffset,
-                preservedProgress);
-        try {
-            JSONArray array = new JSONArray();
-            for (Book book : books) {
-                long offset = book == preservedBook ? preservedOffset : book.offset;
-                float progress = book == preservedBook ? preservedProgress : book.progress;
-                array.put(toJson(book, offset, progress));
-            }
-            preferences.edit().putString(KEY_BOOKS, array.toString()).apply();
-            return true;
-        } catch (Exception ignored) {
-            // Keep the last valid snapshot if serialization ever fails.
-            return false;
-        }
+        return database.saveBooks(books, preservedBook, preservedOffset, preservedProgress);
     }
 
-    void delete(Book book) {
-        if (database != null) { database.deleteBook(book); return; }
-        File file = new File(book.path);
-        if (file.exists()) { boolean ignored = file.delete(); }
-    }
-
-    private Book fromJson(JSONObject item) {
-        Book book = new Book();
-        book.id = item.optLong("id");
-        book.title = item.optString("title");
-        book.sourceName = item.optString("sourceName", "");
-        book.author = item.optString("author", "");
-        book.path = item.optString("path");
-        book.fileSize = item.optLong("fileSize", 0L);
-        book.encoding = item.optString("encoding", "UTF-8");
-        book.offset = item.optLong("offset", 0L);
-        book.progress = (float) item.optDouble("progress", 0d);
-        book.pageMode = item.optBoolean("pageMode", true);
-        book.updatedAt = item.optLong("updatedAt", 0L);
-        return book;
-    }
-
-    private JSONObject toJson(Book book, long offset, float progress) throws Exception {
-        JSONObject item = new JSONObject();
-        item.put("id", book.id);
-        item.put("title", book.title);
-        item.put("sourceName", book.sourceName);
-        item.put("author", book.author);
-        item.put("path", book.path);
-        item.put("fileSize", book.fileSize);
-        item.put("encoding", book.encoding);
-        item.put("offset", offset);
-        item.put("progress", progress);
-        item.put("pageMode", book.pageMode);
-        item.put("updatedAt", book.updatedAt);
-        return item;
-    }
+    void delete(Book book) { database.deleteBook(book); }
 }

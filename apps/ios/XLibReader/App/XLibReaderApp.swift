@@ -2,78 +2,109 @@ import SwiftUI
 
 @main
 struct XLibReaderApp: App {
-    @State private var settings: SettingsStore
-    @State private var library: LibraryModel
-    @State private var sync: ProgressSyncCoordinator
-    private let store: LibraryStore
-    #if DEBUG
-    private var prepareFixture: (() async throws -> Void)?
-    #endif
+    private struct StartupContext {
+        let settings: SettingsStore
+        let library: LibraryModel
+        let sync: ProgressSyncCoordinator
+        let store: LibraryStore
+        #if DEBUG
+        let prepareFixture: (() async throws -> Void)?
+        #endif
+    }
+
+    private let startup: Result<StartupContext, Error>
 
     init() {
-        #if DEBUG
-        if let value = ProcessInfo.processInfo.environment["XLIB_UI_TEST_ID"],
-           let id = UUID(uuidString: value) {
-            let root = FileManager.default.temporaryDirectory.appending(path: "XLibUITests-\(id.uuidString)")
-            let defaults = UserDefaults(suiteName: "com.xlib.uitests.\(id.uuidString)")!
-            let database = try? LocalDatabase.open(root: root, defaults: defaults)
-            let store = LibraryStore(root: root, database: database)
-            let sync = ProgressSyncCoordinator(
-                api: Self.fixtureAPI,
-                vault: SyncCredentialVault(load: { nil }, save: { _ in }, clear: {}),
-                stateStore: SyncStateStore(root: root.appending(path: "Sync"), database: database),
-                connectivity: SyncConnectivityMonitor(started: false),
-                defaults: defaults,
-                database: database
-            )
-            self.store = store
-            _settings = State(initialValue: SettingsStore(defaults: defaults, database: database))
-            _library = State(initialValue: LibraryModel(store: store))
-            _sync = State(initialValue: sync)
-            let scenario = ProcessInfo.processInfo.environment["XLIB_UI_TEST_SCENARIO"]
-            prepareFixture = {
-                if scenario != nil, try await store.load().isEmpty {
-                    let source = root.appending(path: "能力验收.txt")
-                    let text = (1...30).map { "第\($0)章\n这是第\($0)段测试正文。needle 用于验证搜索与临时阅读。\n" }.joined()
-                    try Data(text.utf8).write(to: source)
-                    let book = try await store.importBook(from: source)
-                    try await store.saveTOC([], for: book)
+        do {
+            #if DEBUG
+            if let value = ProcessInfo.processInfo.environment["XLIB_UI_TEST_ID"],
+               let id = UUID(uuidString: value) {
+                let root = FileManager.default.temporaryDirectory.appending(path: "XLibUITests-\(id.uuidString)")
+                let defaults = UserDefaults(suiteName: "com.xlib.uitests.\(id.uuidString)")!
+                let database = try LocalDatabase.open(root: root, defaults: defaults)
+                let store = LibraryStore(root: root, database: database)
+                let sync = ProgressSyncCoordinator(
+                    api: Self.fixtureAPI,
+                    vault: SyncCredentialVault(load: { nil }, save: { _ in }, clear: {}),
+                    stateStore: SyncStateStore(database: database),
+                    connectivity: SyncConnectivityMonitor(started: false),
+                    database: database
+                )
+                let scenario = ProcessInfo.processInfo.environment["XLIB_UI_TEST_SCENARIO"]
+                let prepareFixture = {
+                    if scenario != nil, try await store.load().isEmpty {
+                        let source = root.appending(path: "能力验收.txt")
+                        let text = (1...30).map { "第\($0)章\n这是第\($0)段测试正文。needle 用于验证搜索与临时阅读。\n" }.joined()
+                        try Data(text.utf8).write(to: source)
+                        let book = try await store.importBook(from: source)
+                        try await store.saveTOC([], for: book)
+                    }
+                    if scenario == "sync" {
+                        await sync.start()
+                        _ = await sync.saveConfiguredEmail("fixture@example.com")
+                        _ = await sync.startConfiguredSync()
+                    }
                 }
-                if scenario == "sync" {
-                    await sync.start()
-                    _ = await sync.saveConfiguredEmail("fixture@example.com")
-                    _ = await sync.startConfiguredSync()
-                }
+                startup = .success(StartupContext(
+                    settings: SettingsStore(database: database),
+                    library: LibraryModel(store: store),
+                    sync: sync,
+                    store: store,
+                    prepareFixture: prepareFixture
+                ))
+                return
             }
-            return
+            #endif
+
+            let database = try LocalDatabase.open()
+            let store = LibraryStore(database: database)
+            #if DEBUG
+            startup = .success(StartupContext(
+                settings: SettingsStore(database: database),
+                library: LibraryModel(store: store),
+                sync: ProgressSyncCoordinator(database: database),
+                store: store,
+                prepareFixture: nil
+            ))
+            #else
+            startup = .success(StartupContext(
+                settings: SettingsStore(database: database),
+                library: LibraryModel(store: store),
+                sync: ProgressSyncCoordinator(database: database),
+                store: store
+            ))
+            #endif
+        } catch {
+            startup = .failure(error)
         }
-        #endif
-        let database = try? LocalDatabase.open()
-        let store = LibraryStore(database: database)
-        self.store = store
-        _settings = State(initialValue: SettingsStore(database: database))
-        _library = State(initialValue: LibraryModel(store: store))
-        _sync = State(initialValue: ProgressSyncCoordinator(
-            stateStore: SyncStateStore(database: database),
-            database: database
-        ))
     }
 
     var body: some Scene {
         WindowGroup {
-            LibraryView(model: library, store: store, settings: settings)
-                .environment(sync)
-                .tint(settings.settings.theme.accent)
-                .preferredColorScheme(settings.settings.theme.colorScheme)
-                .task {
-                    #if DEBUG
-                    do { try await prepareFixture?() }
-                    catch { assertionFailure("UI fixture setup failed: \(error)") }
-                    #endif
-                    await library.load()
-                    await sync.start()
+            Group {
+                switch startup {
+                case .success(let context):
+                    LibraryView(model: context.library, store: context.store, settings: context.settings)
+                        .environment(context.sync)
+                        .tint(context.settings.settings.theme.accent)
+                        .preferredColorScheme(context.settings.settings.theme.colorScheme)
+                        .task {
+                            #if DEBUG
+                            do { try await context.prepareFixture?() }
+                            catch { assertionFailure("UI fixture setup failed: \(error)") }
+                            #endif
+                            await context.library.load()
+                            await context.sync.start()
+                        }
+                        .modifier(SyncAppLifecycleModifier(sync: context.sync))
+                case .failure:
+                    ContentUnavailableView(
+                        "本地书库暂时无法打开",
+                        systemImage: "externaldrive.badge.exclamationmark",
+                        description: Text("原有书籍和凭据未被修改，请重新启动应用后再试。")
+                    )
                 }
-                .modifier(SyncAppLifecycleModifier(sync: sync))
+            }
         }
     }
 }
@@ -107,14 +138,10 @@ private struct SyncAppLifecycleModifier: ViewModifier {
         content.onChange(of: scenePhase) { _, phase in
             Task {
                 switch phase {
-                case .active:
-                    await sync.appBecameActive()
-                case .background:
-                    await sync.appEnteredBackground()
-                case .inactive:
-                    break
-                @unknown default:
-                    break
+                case .active: await sync.appBecameActive()
+                case .background: await sync.appEnteredBackground()
+                case .inactive: break
+                @unknown default: break
                 }
             }
         }

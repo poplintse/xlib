@@ -1,6 +1,6 @@
 # XLib 系统架构重构计划
 
-状态：P0–P6.4 已完成代码实现与本地自动化验证；P7.0 以及 pre-P7.1、pre-P7.2、pre-P7.3 本地准备已按顺序完成，所有生产清理开关保持关闭。实际清理仍等待迁移版本发布、双端真实设备升级和回退窗口；migrator retirement 已确定强制经过 0.9.11，仍等待该基线 released/tagged 与分发链验证。验收边界见 CURRENT。基于 2026-09-18 的 `b422d98` 和当前源码。本文是工程迁移计划，不新增产品能力、不代表排期或发布承诺。当前架构见 [architecture](architecture.md)，P6 证据见 [移动端本地存储审计](architecture/local-storage-audit.md)和 [Local Storage Contract](architecture/local-storage-contract.md)，P7 边界见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md)，前置证据见 [Pre-P7.1 Upgrade Validation](architecture/pre-p7-upgrade-validation.md)、[Pre-P7.2 Device Data Cleanup](architecture/pre-p7-data-cleanup.md) 和 [Pre-P7.3 Migrator Retirement](architecture/pre-p7-migrator-retirement.md)，业务规则以 [产品能力](product/README.md) 和 [矩阵](product/matrix/capability-matrix.md) 为准。
+状态：P0–P7.3 已完成当前工作树实现，P8 系统验收进行中。0.10.0 是 released/tagged 的 SQLite 强制迁移基线；0.11.0 draft 已完成旧运行时删除、设备 legacy allowlist 清理和一次性 migrator 退役。P8 自动发布门禁与双端 SQLite 容量故障回滚已落地，真实双端、分发版本下限和性能证据尚未完成。验收边界见 CURRENT 和 [P8 System Validation](architecture/p8-system-validation.md)。本文是工程迁移计划，不新增产品能力、不代表发布授权。当前架构见 [architecture](architecture.md)，P6 证据见 [移动端本地存储审计](architecture/local-storage-audit.md)和 [Local Storage Contract](architecture/local-storage-contract.md)，P7 边界见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md)，历史安装覆盖证据见 [Pre-P7.1 Upgrade Validation](architecture/pre-p7-upgrade-validation.md)，业务规则以 [产品能力](product/README.md) 和 [矩阵](product/matrix/capability-matrix.md) 为准。
 
 ## 1. 目标与范围
 
@@ -21,7 +21,7 @@
 | 后端 | P5 已将身份与进度 SQL 收口到 Repository；service 保留事务与业务编排 | 维持 PostgreSQL 模块化单体；以受限运行角色和真实数据库并发测试持续保护事务边界 |
 | 移动端本地存储 | Android 使用 SharedPreferences/JSON 与普通缓存文件；iOS 使用 Application Support JSON、UserDefaults 与 Keychain；两端均无 SQLite | P6 将结构化业务数据和非敏感设置收敛到 SQLite，TXT 与安全凭据保持独立边界 |
 | 契约校验 | `scripts/check-contract.rb` 当前核对路由路径和方法 | 不能证明请求/响应字段及错误语义一致；增加 Schema 与客户端序列化一致性检查 |
-| 发布验证 | `check-alpha.sh` 缺少专用数据库时可跳过集成测试后报告通过 | 区分本地检查与发布验收，发布门禁必须显式判断必要测试是否执行 |
+| 发布验证 | P8 已让 `check-alpha.sh` 强制运行隔离 PostgreSQL 17、双端测试及版本文件快照，并增加 tracked-sensitive-data 门禁 | 自动门禁已收口；真实双端、实际分发版本下限和性能仍须独立记录 |
 | 架构说明 | 现有 architecture 第 1–7 节主要是 Android 细节 | 实施中逐步维护系统总览与端内说明，避免把 Android 技术要求传播给其他端 |
 
 行数仅用于定位职责集中点，不作为拆分成功指标。
@@ -135,10 +135,10 @@ AppleShared 继续承载 UI 无关的编码、字节映射；经过两端需要�
 | P4：iOS 同步与进度 | 采用同一业务测试场景，按 Swift actor/MainActor 边界迁移；理清 View 生命周期与书籍会话 | iOS 单元/UI 测试通过；导航返回、后台恢复、删除后暂停通过 | 每个内部组件独立回退；不同时升级本地 Schema |
 | P5：后端边界与集成（完成） | IdentityRepository/ProgressRepository 收口 SQL，Service 保持事务；隔离 PostgreSQL 17 验证并发、撤销和受限角色 | 71 项 Backend 测试通过，其中 13 项真实 PostgreSQL 集成测试；API 与 Schema 不变 | 代码回退；没有数据库迁移 |
 | P6：Mobile Local Storage Consolidation（完成） | P6.0 审计；P6.1 契约/DDL/迁移夹具；P6.2 Android；P6.3 iOS；P6.4 双端迁移验证 | 结构化业务数据与非敏感设置进入 SQLite；TXT/Secure Store 边界不变；重复迁移无重复或丢失；不改变同步行为 | legacy 只读保留到 P7；不双写；迁移失败按客户端回退旧路径 |
-| P7：Legacy Persistence Cleanup（全部 pre 阶段完成） | P7.0 清单/门槛；pre-P7.1 双端安装覆盖；pre-P7.2 disabled allowlist/可恢复状态机；pre-P7.3 发布链审计；随后依次执行 P7.1/P7.2/P7.3 | 双端模拟器原位升级和保护性检查已通过；实际执行仍需迁移版本发布、双端真机和回退窗口；P7.3 另需最低升级来源决策 | 所有清理开关默认关闭；各实际子阶段独立；P7.3 前保留一次性读取器和迁移夹具 |
-| P8：系统验收与维护 | 完善发布门禁，运行真实双端、故障和性能对比，更新当前架构说明 | 真实双端接续及故障场景通过；构建不改版本；无敏感数据进入日志 | 按组件发布/回退；发布另行批准 |
+| P7：Legacy Persistence Cleanup（完成） | P7.1 删除旧运行时回退；P7.2 Schema v2 allowlist 清理；P7.3 删除一次性读取器和历史覆盖脚本 | Android 完整单元测试、iOS 构建/单元测试、清理与发布链门禁通过；0.11.0 只接受 0.10.0 来源 | 0.10.0 保留 migrator；未经过基线的设备先安装 0.10.0，不恢复双存储运行时 |
+| P8：系统验收与维护（进行中） | 已完善自动发布门禁和双端 SQLite 容量故障回滚；继续运行真实双端、分发下限及性能对比 | 当前代码最终门禁通过；真实双端接续、分发下限、性能和故障场景均有证据；构建不改版本；无敏感数据进入日志 | 按组件发布/回退；发布另行批准 |
 
-P0 → P1 → P2 → P3 → P4 → P5 → P6.4 已完成当前工作树实现。P6 按 Android 先行、iOS 后续的顺序验证共同数据语义，没有把先完成客户端的框架或平台 UI 当作另一个客户端的需求。P7.0 和三个 pre 阶段已经依次完成：双端安装覆盖通过，P7.2 allowlist 保持 disabled 且保护 Token/Keychain/TXT/SQLite，P7.3 检查会阻止不满足发布链时删除 migrator。P7.1/P7.2 只在迁移版本经过真实设备升级和回退窗口后执行，P7.3 还要求最低受支持升级来源已经包含 SQLite。最终发布验收在 P8 进行。
+P0 → P7.3 已完成当前工作树实现。P6 按 Android 先行、iOS 后续的顺序验证共同数据语义，没有把平台 UI 传播为另一客户端要求。P7 按 P7.1 → P7.2 → P7.3 实施；0.10.0 保留完整 migrator，0.11.0 只保留迁移后清理状态机并强制升级来源为 0.10.0。P8 已开始，当前进度和缺口见 [P8 System Validation](architecture/p8-system-validation.md)。
 
 建议每个变更集只处理一个职责或一组不可分离的状态规则。提取、行为修复、存储迁移分别提交，避免整仓一次性重写。不以文件行数下降作为合并依据。
 
@@ -155,7 +155,7 @@ P0 → P1 → P2 → P3 → P4 → P5 → P6.4 已完成当前工作树实现。
 
 ### 工程检查
 
-每个实现阶段运行 `make check` 及受影响的针对性测试。当前 `make check` 不等于完整 iOS UI/单元验收；iOS 修改另执行项目测试。发布前运行 `make check-alpha` 并补足其当前未强制的项目：专用 PostgreSQL 必须执行，Android 真机/自动化、真实双端同步必须有记录。缺失环境标记未验收，不能报告全链路通过。
+每个实现阶段运行 `make check` 及受影响的针对性测试。当前 `make check` 不等于完整 iOS UI/单元验收；iOS 修改另执行项目测试。发布前运行 `make check-alpha`：该入口已强制隔离 PostgreSQL 17、Android 测试/lint/build、iOS 单元/UI 测试和版本文件不变。Android/iOS 真机、真实双端同步、实际分发版本下限及性能不适合由该本地入口伪造，必须另有记录。缺失环境标记未验收，不能报告全链路通过。
 
 先测量再设性能预算：代表性小/大 TXT、UTF-8/UTF-16/GB18030、冷启动/缓存打开、连续翻页、超过 200 条搜索、批量导入。固定设备及样本，记录首屏时间、翻页主线程耗时、峰值内存、搜索首批耗时及文件 I/O；重构前后比较，超过双方约定预算的变化需解释或回退。尚无测量时不编造毫秒级 SLA。
 
@@ -163,7 +163,7 @@ P0 → P1 → P2 → P3 → P4 → P5 → P6.4 已完成当前工作树实现。
 
 ## 8. 范围与待确认事项
 
-当前已实施 P0–P6.4、P7.0 和 pre-P7.1–pre-P7.3。下一步等待双端真机、迁移版本发布和回退窗口，再严格按 P7.1 → P7.2 推进；P7.3 已确定强制经过 0.9.11，但仍须等该基线发布、打 tag并验证分发链。真实设备升级、磁盘耗尽和性能验收仍独立记录，未通过前不清理 legacy，也不建议发布。
+当前已实施 P0–P7.3，P8 正在进行。0.10.0 迁移基线已发布并有 tag；0.11.0 是尚未发布的 retirement draft。P8 已完成自动门禁收口和 Android/iOS SQLite 容量耗尽事务回滚测试，仍需验证实际分发版本下限、iOS 真机发布链、性能和真实跨设备行为。Android 0.10.0 真机测试/发布由用户确认，未提供的设备明细不补写。
 
 不阻塞结构拆分但应保持待定：历史错误阅读时间的恢复策略、批量上限与去重规则是否跨端统一、正文复制/自动翻页是否升为正式能力、强认证方案及新端范围。未经产品确认不改能力定义；新代码只满足现有已确认语义。
 

@@ -2,6 +2,15 @@ import Foundation
 import XCTest
 @testable import XLibReader
 
+func testDatabase(root: URL) -> LocalDatabase {
+    let defaults = UserDefaults(suiteName: "com.xlib.tests.\(root.lastPathComponent).\(UUID().uuidString)")!
+    return try! LocalDatabase.open(root: root, defaults: defaults)
+}
+
+func testLibraryStore(root: URL) -> LibraryStore {
+    LibraryStore(root: root, database: testDatabase(root: root))
+}
+
 final class ContractFixturesTests: XCTestCase {
     private func fixture(_ name: String) throws -> Data {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: name, withExtension: "json", subdirectory: "fixtures"))

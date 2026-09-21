@@ -6,12 +6,10 @@ enum SyncServerConfiguration {
     static let credentialServerKey = "sync.credentials.server.address.v1"
 
     static func resolvedAddress(
-        defaults: UserDefaults = .standard,
         bundle: Bundle = .main,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String {
         let candidates = [
-            defaults.string(forKey: storageKey),
             environment["XLIB_SYNC_BASE_URL"],
             bundle.object(forInfoDictionaryKey: "XLibSyncBaseURL") as? String,
             defaultAddress

@@ -58,15 +58,14 @@ final class ProgressSyncCoordinator {
     init(
         api: SyncAPIClient? = nil,
         vault: SyncCredentialVault = .live(),
-        stateStore: SyncStateStore = SyncStateStore(),
+        stateStore: SyncStateStore? = nil,
         connectivity: SyncConnectivityMonitor = SyncConnectivityMonitor(),
-        defaults: UserDefaults = .standard,
-        database: LocalDatabase? = nil,
+        database: LocalDatabase,
         syncInterval: Duration = .seconds(20),
         healthProbeDelays: [Duration] = [.seconds(30), .seconds(60), .seconds(120), .seconds(300)],
         now: @escaping @Sendable () -> Date = { .now }
     ) {
-        let configuration = SyncConfigurationSession(defaults: defaults, database: database)
+        let configuration = SyncConfigurationSession(database: database)
         self.configuration = configuration
         let address = configuration.serverAddress
         if let api {
@@ -78,7 +77,7 @@ final class ProgressSyncCoordinator {
         }
         self.execution = SyncRequestExecution(vault: vault)
         self.vault = vault
-        self.stateStore = stateStore
+        self.stateStore = stateStore ?? SyncStateStore(database: database)
         self.connectivity = connectivity
         self.syncInterval = syncInterval
         self.healthProbeDelays = healthProbeDelays

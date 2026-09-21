@@ -15,7 +15,7 @@ end
 
 Dir.mktmpdir("xlib-release-check-") do |fixture|
   paths = %w[
-    scripts/release-check.sh releases/0.9.11.yaml contracts/openapi.yaml
+    scripts/release-check.sh releases/0.11.0.yaml contracts/openapi.yaml
     docs/architecture/migrator-retirement-plan.json
     apps/android/version.properties apps/ios/XLibReader.xcodeproj/project.pbxproj
     apps/ios/XLibReader/Resources/Info.plist services/backend/package.json
@@ -37,10 +37,10 @@ Dir.mktmpdir("xlib-release-check-") do |fixture|
     !success && output.include?("release manifest not found")
   end
   verify.call("explicit argument takes precedence over environment") do
-    run.call({"RELEASE_VERSION" => "missing"}, "0.9.11")[0]
+    run.call({"RELEASE_VERSION" => "missing"}, "0.11.0")[0]
   end
 
-  manifest_path = File.join(fixture, "releases/0.9.11.yaml")
+  manifest_path = File.join(fixture, "releases/0.11.0.yaml")
   original = File.read(manifest_path)
   [
     ["android", "version_name", "0.0.0", "Android version_name mismatch"],
@@ -59,9 +59,9 @@ Dir.mktmpdir("xlib-release-check-") do |fixture|
   end
   File.write(manifest_path, original)
   [
-    ["contains_legacy_migrator", false, "SQLite migration baseline must contain legacy migrator"],
-    ["minimum_direct_from", "0.9.11", "SQLite migration baseline must accept 0.9.0 direct upgrades"],
-    ["required_intermediate", "0.9.11", "SQLite migration baseline cannot require itself as an intermediate"]
+    ["contains_legacy_migrator", true, "Migrator retirement release cannot contain legacy migrator"],
+    ["minimum_direct_from", "0.9.0", "Post-migrator release minimum source mismatch"],
+    ["required_intermediate", "0.9.0", "Post-migrator release intermediate mismatch"]
   ].each do |field, value, expected|
     manifest = YAML.safe_load(original, aliases: false)
     manifest.fetch("upgrade").fetch("local_storage")[field] = value

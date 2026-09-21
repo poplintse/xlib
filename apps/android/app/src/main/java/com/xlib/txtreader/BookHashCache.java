@@ -1,9 +1,5 @@
 package com.xlib.txtreader;
 
-import android.content.SharedPreferences;
-
-import org.json.JSONObject;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -11,18 +7,11 @@ import java.security.MessageDigest;
 import java.util.Locale;
 
 final class BookHashCache {
-    private static final String PREFIX = "sync_book_hash_";
     private static final int BUFFER_SIZE = 128 * 1024;
 
-    private final SharedPreferences preferences;
     private final LocalDatabase database;
 
-    BookHashCache(SharedPreferences preferences) {
-        this.preferences = preferences;
-        this.database = null;
-    }
-
-    BookHashCache(LocalDatabase database) { this.preferences = null; this.database = database; }
+    BookHashCache(LocalDatabase database) { this.database = database; }
 
     HashResult resolve(long localBookId, File file) throws Exception {
         long fileSize = file.length();
@@ -51,34 +40,11 @@ final class BookHashCache {
         return result;
     }
 
-    void remove(long localBookId) {
-        if (database != null) { database.removeHash(localBookId); return; }
-        preferences.edit().remove(PREFIX + localBookId).apply();
-    }
+    void remove(long localBookId) { database.removeHash(localBookId); }
 
-    private HashResult read(long localBookId) {
-        if (database != null) return database.readHash(localBookId);
-        String raw = preferences.getString(PREFIX + localBookId, null);
-        if (raw == null) return null;
-        try {
-            JSONObject object = new JSONObject(raw);
-            String hash = object.getString("hash");
-            if (!hash.matches("[0-9a-f]{64}")) return null;
-            return new HashResult(hash, object.getLong("fileSize"),
-                    object.getLong("modifiedAt"));
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
+    private HashResult read(long localBookId) { return database.readHash(localBookId); }
 
-    private void write(long localBookId, HashResult result) throws Exception {
-        if (database != null) { database.writeHash(localBookId, result); return; }
-        JSONObject object = new JSONObject();
-        object.put("hash", result.bookHash);
-        object.put("fileSize", result.fileSize);
-        object.put("modifiedAt", result.modifiedAt);
-        preferences.edit().putString(PREFIX + localBookId, object.toString()).apply();
-    }
+    private void write(long localBookId, HashResult result) { database.writeHash(localBookId, result); }
 
     static final class HashResult {
         final String bookHash;

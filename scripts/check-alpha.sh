@@ -2,6 +2,47 @@
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+release_version="${RELEASE_VERSION:-0.11.0}"
+snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/xlib-alpha-versions.XXXXXX")"
+before="$snapshot_dir/before"
+after="$snapshot_dir/after"
+
+version_files="
+$root/apps/android/version.properties
+$root/apps/ios/XLibReader.xcodeproj/project.pbxproj
+$root/apps/ios/XLibReader/Resources/Info.plist
+$root/services/backend/package.json
+$root/releases/$release_version.yaml
+"
+
+snapshot_versions() {
+    output="$1"
+    : > "$output"
+    for file in $version_files; do
+        if [ ! -f "$file" ]; then
+            echo "missing version source: $file" >&2
+            return 1
+        fi
+        cksum "$file" >> "$output"
+    done
+}
+
+finish() {
+    status=$?
+    trap - EXIT
+    if ! snapshot_versions "$after"; then
+        status=1
+    elif ! cmp -s "$before" "$after"; then
+        echo "Alpha checks modified version-managed files" >&2
+        diff -u "$before" "$after" >&2 || true
+        status=1
+    fi
+    rm -rf "$snapshot_dir"
+    exit "$status"
+}
+
+snapshot_versions "$before"
+trap finish EXIT
 
 if [ -n "${XLIB_IOS_DESTINATION:-}" ]; then
     destination="$XLIB_IOS_DESTINATION"
@@ -21,6 +62,7 @@ else
 fi
 
 "$root/scripts/check-local.sh"
+"$root/scripts/test-backend-postgres.sh"
 "$root/scripts/build-android-debug.sh"
 
 xcodebuild \
@@ -30,17 +72,7 @@ xcodebuild \
     -destination "$destination" \
     -derivedDataPath "${TMPDIR:-/tmp}/xlib-derived-data/ios-tests" \
     CODE_SIGNING_ALLOWED=NO \
+    -parallel-testing-enabled NO \
     test
-
-if [ -n "${TEST_DATABASE_URL:-}" ]; then
-    cd "$root/services/backend"
-    if command -v pnpm >/dev/null 2>&1; then
-        pnpm test:integration
-    else
-        corepack pnpm test:integration
-    fi
-else
-    echo "SKIP backend integration tests: TEST_DATABASE_URL is not set"
-fi
 
 echo "Alpha checks passed"

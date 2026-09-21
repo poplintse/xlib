@@ -136,23 +136,23 @@ CREATE TABLE legacy_migrations (
 - Android `LocalDatabase` 只暴露 typed 方法；`BookStore`、`BookmarkStore`、`TocStore`、`ReadingPreferences`、`BookHashCache`、`RemoteProgressStore`、`SyncServerConfig` 和 `SyncTokenStore` 委托这些方法。生产路径不再把正式业务值写回 SharedPreferences。
 - iOS `LocalDatabase` 由 `LibraryStore`、`SettingsStore`、`SyncStateStore` 和 `SyncConfigurationSession` 使用。生产路径不再把正式业务值写回 JSON/UserDefaults。
 - Android Token 密文/IV 与 Keystore alias 保持原实现；iOS `SyncCredentialVault` 的 Keychain service/account 与编码保持原实现。
-- legacy 构造器暂时只服务迁移失败回退和现有隔离测试；P7.1 验证回退窗口后删除。一次性 legacy 读取器继续保留到最低受支持升级来源已经包含 SQLite。
+- legacy 构造器与旧读写分支已在 P7.1 删除。数据库不可用时客户端保留磁盘数据并显示启动错误，不创建第二个业务 source of truth。
 
-## 5. 首次迁移合同
+## 5. 0.10.0 历史迁移合同
 
 1. Schema 创建后、任何业务写入前运行一次迁移。
 2. 正式输入先完整解析和校验；正文缺失、路径越界、孤立书签、重复正式键或不可恢复快照使事务失败。
 3. Android 从同一 `xlib_reader` SharedPreferences 快照迁移；iOS 优先 `books.json`，失败时只使用可解码的 `books.last-good.json`。
 4. `updatedAt == 0` / Unix epoch 迁为 NULL；不得制造当前阅读时间。
 5. TOC、hash 与 remote cache 损坏时丢弃该缓存；正式书库、进度、书签和设置不能静默变空。
-6. 正式数据、设置、可用缓存和 `legacy_migrations` 在一个事务中提交。失败回滚全部数据库写入并继续使用 legacy 路径。
-7. 同一 migration ID + fingerprint 重开直接使用 SQLite，不重复插入；同一 ID 但 fingerprint 改变时拒绝覆盖并回退 legacy，等待调查。
-8. 成功后 SQLite 是唯一业务读写源。legacy 保持只读，P7 前不删除、不双写。
+6. 正式数据、设置、可用缓存和 `legacy_migrations` 在一个事务中提交。失败回滚全部数据库写入。
+7. 同一 migration ID + fingerprint 重开直接使用 SQLite，不重复插入；同一 ID 但 fingerprint 改变时拒绝覆盖。
+8. 成功后 SQLite 是唯一业务读写源。上述旧格式读取器只存在于已发布的 0.10.0，不再存在于 0.11.0 源码。
 
 迁移指纹排除 Android Token 密文与 IV；凭据正常轮换不应被解释为业务数据源改变。iOS Keychain 从未进入指纹。
 
-## 6. 验证夹具与回退
+## 6. 当前清理与验证
 
-Android `LocalDatabaseTest` 和 iOS `LocalDatabaseTests` 是平台 legacy 格式的可执行迁移夹具，覆盖：正式书籍/进度/书签、设置、非敏感同步配置、重复打开、来源变更拒绝、孤立书签回滚、正文缺失、iOS last-good 恢复，以及 Android 损坏 TOC 丢弃和文件删除失败后的重试。iOS 嵌套缓存写入以 SQLite savepoint 隔离，失败时不会在外层正式数据迁移事务中留下半个缓存。iOS 另以 `make test-ios-storage-upgrade` 验证 0.9.0 到当前工作区的模拟器安装覆盖；双端真机结果仍是 P7.1 前置条件。两端既有同步测试继续验证迁移没有改变阅读前比较、时间生成、上传范围、身份隔离和单书云端删除。
+Android `LocalDatabaseTest` 和 iOS `LocalDatabaseTests` 当前覆盖正式 SQLite 读写、Schema v1 → v2、allowlist 清理、中断恢复、来源变化拒绝、正文缺失保护和正文删除重试。旧格式解析测试及安装覆盖脚本已在 P7.3 退役；0.10.0 的历史覆盖结果保留在 [Pre-P7.1 Upgrade Validation](pre-p7-upgrade-validation.md)。两端既有同步测试继续验证存储清理没有改变阅读前比较、时间生成、上传范围、身份隔离和单书云端删除。
 
-首次迁移失败时客户端不删除或修改 legacy；该次启动使用现有 legacy Store。P7.1/P7.2 只在迁移版本经过回退窗口和真实设备升级验收后开始，删除旧运行时分支及设备上的 JSON/Preference/UserDefaults 业务数据；TXT、Secure Store 与仍有用途的 cache 不在清理范围。只要仍支持从 pre-SQLite 版本直接升级，P7.3 就必须保留一次性 legacy 读取器和迁移夹具。具体清单见 [Legacy Persistence Cleanup](legacy-persistence-cleanup.md)，disabled 删除计划见 [Pre-P7.2 Device Data Cleanup](pre-p7-data-cleanup.md)，migrator 发布链门禁见 [Pre-P7.3 Migrator Retirement](pre-p7-migrator-retirement.md)。
+0.11.0 只接受 0.10.0 作为最低直接升级来源。存在 0.10.0 migration ledger 的设备会在完整校验后清理 allowlist；校验失败时不删除 legacy，应用也不会回退写入旧格式。TXT、Secure Store、SQLite 与未知项始终保留。具体状态机和永久边界见 [Legacy Persistence Cleanup](legacy-persistence-cleanup.md)。

@@ -32,19 +32,19 @@ final class SyncCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testConfigurationKeepsLegacyKeysAndRejectsInvalidChanges() {
-        let name = "SyncCoreTests.\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
-        defaults.set("Old Reader", forKey: "sync.device.name.v1")
-        defaults.set("old@example.com", forKey: "sync.email.v1")
-        let configuration = SyncConfigurationSession(defaults: defaults)
+    func testConfigurationUsesDatabaseAndRejectsInvalidChanges() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = testDatabase(root: root)
+        try database.setSyncString("Old Reader", for: "sync.device.name.v1")
+        try database.setSyncString("old@example.com", for: "sync.email.v1")
+        let configuration = SyncConfigurationSession(database: database)
         XCTAssertEqual(configuration.configuredEmailValue, "old@example.com")
         XCTAssertNil(configuration.saveConfiguredEmail("invalid"))
         XCTAssertNil(configuration.saveDeviceName(" "))
         XCTAssertEqual(configuration.deviceRegistration.deviceName, "Old Reader")
         XCTAssertEqual(configuration.saveConfiguredEmail(" NEW@EXAMPLE.COM "), true)
-        XCTAssertEqual(defaults.string(forKey: "sync.email.v1"), "new@example.com")
+        XCTAssertEqual(database.syncString(for: "sync.email.v1"), "new@example.com")
         XCTAssertEqual(configuration.saveConfiguredEmail("new@example.com"), false)
         let generation = configuration.generation
         configuration.invalidate()

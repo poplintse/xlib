@@ -1,0 +1,31 @@
+release: 0.10.0
+channel: alpha
+status: released
+contract:
+  version: v1
+  file: contracts/openapi.yaml
+upgrade:
+  local_storage:
+    contains_legacy_migrator: true
+    minimum_direct_from: 0.9.11
+    required_intermediate:
+components:
+  android:
+    status: active
+    version_name: 0.10.0
+    version_code: 68
+  ios:
+    status: active
+    marketing_version: 0.10.0
+    build_number: 44
+  backend:
+    status: active
+    version: 0.10.0
+  macos:
+    status: planned
+checks:
+  - contract
+  - backend
+  - apple-shared
+  - android
+  - ios

@@ -5,6 +5,8 @@ root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 
 ruby "$root/scripts/check-contract.rb"
 ruby "$root/scripts/check-contract-fixtures.rb"
+"$root/scripts/check-legacy-cleanup-plan.py"
+"$root/scripts/check-migrator-retirement.py"
 ruby "$root/scripts/test-release-check.rb"
 "$root/scripts/release-check.sh"
 "$root/scripts/test-backend.sh"

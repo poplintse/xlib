@@ -153,6 +153,6 @@ CREATE TABLE legacy_migrations (
 
 ## 6. 验证夹具与回退
 
-Android `LocalDatabaseTest` 和 iOS `LocalDatabaseTests` 是平台 legacy 格式的可执行迁移夹具，覆盖：正式书籍/进度/书签、设置、非敏感同步配置、重复打开、来源变更拒绝、孤立书签回滚、正文缺失、iOS last-good 恢复，以及 Android 损坏 TOC 丢弃和文件删除失败后的重试。iOS 嵌套缓存写入以 SQLite savepoint 隔离，失败时不会在外层正式数据迁移事务中留下半个缓存。两端既有同步测试继续验证迁移没有改变阅读前比较、时间生成、上传范围、身份隔离和单书云端删除。
+Android `LocalDatabaseTest` 和 iOS `LocalDatabaseTests` 是平台 legacy 格式的可执行迁移夹具，覆盖：正式书籍/进度/书签、设置、非敏感同步配置、重复打开、来源变更拒绝、孤立书签回滚、正文缺失、iOS last-good 恢复，以及 Android 损坏 TOC 丢弃和文件删除失败后的重试。iOS 嵌套缓存写入以 SQLite savepoint 隔离，失败时不会在外层正式数据迁移事务中留下半个缓存。iOS 另以 `make test-ios-storage-upgrade` 验证 0.9.0 到当前工作区的模拟器安装覆盖；双端真机结果仍是 P7.1 前置条件。两端既有同步测试继续验证迁移没有改变阅读前比较、时间生成、上传范围、身份隔离和单书云端删除。
 
-首次迁移失败时客户端不删除或修改 legacy；该次启动使用现有 legacy Store。P7.1/P7.2 只在迁移版本经过回退窗口和真实设备升级验收后开始，删除旧运行时分支及设备上的 JSON/Preference/UserDefaults 业务数据；TXT、Secure Store 与仍有用途的 cache 不在清理范围。只要仍支持从 pre-SQLite 版本直接升级，P7.3 就必须保留一次性 legacy 读取器和迁移夹具。具体清单见 [Legacy Persistence Cleanup](legacy-persistence-cleanup.md)。
+首次迁移失败时客户端不删除或修改 legacy；该次启动使用现有 legacy Store。P7.1/P7.2 只在迁移版本经过回退窗口和真实设备升级验收后开始，删除旧运行时分支及设备上的 JSON/Preference/UserDefaults 业务数据；TXT、Secure Store 与仍有用途的 cache 不在清理范围。只要仍支持从 pre-SQLite 版本直接升级，P7.3 就必须保留一次性 legacy 读取器和迁移夹具。具体清单见 [Legacy Persistence Cleanup](legacy-persistence-cleanup.md)，disabled 删除计划见 [Pre-P7.2 Device Data Cleanup](pre-p7-data-cleanup.md)，migrator 发布链门禁见 [Pre-P7.3 Migrator Retirement](pre-p7-migrator-retirement.md)。

@@ -1,6 +1,8 @@
 # Legacy Persistence Cleanup
 
-状态：P7.0 就绪审计完成；生产清理尚未启用。当前只有 0.9.0 标记为 released，包含 SQLite 迁移的 0.9.11 仍为 draft。Android 没有连接设备，已登记的 iOS 真机处于 offline，因此尚无真实设备升级与回退窗口证据。
+状态：P7.0 及 pre-P7.1、pre-P7.2、pre-P7.3 本地准备按顺序完成；所有生产清理开关保持关闭。当前只有 0.9.0 标记为 released，包含 SQLite 迁移的 0.9.11 仍为 draft。Android Emulator 与 iOS Simulator 的 `0.9.0 → 当前工作区` 原位升级均已通过；Android 没有连接设备，已登记的 iOS 真机处于 unavailable，因此仍无双端真实设备升级与回退窗口证据。
+
+前置证据分别见 [Pre-P7.1 Upgrade Validation](pre-p7-upgrade-validation.md)、[Pre-P7.2 Device Data Cleanup](pre-p7-data-cleanup.md) 和 [Pre-P7.3 Migrator Retirement](pre-p7-migrator-retirement.md)。
 
 本文定义 P7 的删除边界和执行门槛。它不新增 Product Capability，不修改同步 API、Backend PostgreSQL Schema 或跨设备业务规则。
 
@@ -79,4 +81,4 @@ P7.3 还必须确认最低受支持的直接升级来源已经包含 SQLite。�
 
 ## 5. 当前结论
 
-当前可以继续维护清理清单和迁移测试，不能安全执行生产代码删除或设备数据清理。下一项可执行工作是发布前的真实设备升级验收；发布、签名和部署仍需单独授权。
+本地前置工作已经完成，不能安全执行生产代码删除或设备数据清理。实际 P7.1 仍等待双端真实设备升级、迁移版本发布和回退窗口；P7.2 还依赖 P7.1 完成。P7.3 的发布策略已经由 [Decision 0015](../product/decisions/0015-mandatory-sqlite-migration-baseline.md) 确认为强制经过 0.9.11，当前仍等待该版本 released/tagged 和双端分发链验证。发布、签名和部署仍需单独授权。

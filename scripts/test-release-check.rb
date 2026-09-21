@@ -16,6 +16,7 @@ end
 Dir.mktmpdir("xlib-release-check-") do |fixture|
   paths = %w[
     scripts/release-check.sh releases/0.9.11.yaml contracts/openapi.yaml
+    docs/architecture/migrator-retirement-plan.json
     apps/android/version.properties apps/ios/XLibReader.xcodeproj/project.pbxproj
     apps/ios/XLibReader/Resources/Info.plist services/backend/package.json
   ]
@@ -52,6 +53,20 @@ Dir.mktmpdir("xlib-release-check-") do |fixture|
     manifest.fetch("components").fetch(component)[field] = value
     File.write(manifest_path, YAML.dump(manifest))
     verify.call("reject #{component}.#{field} mismatch") do
+      success, output = run.call({})
+      !success && output.include?(expected)
+    end
+  end
+  File.write(manifest_path, original)
+  [
+    ["contains_legacy_migrator", false, "SQLite migration baseline must contain legacy migrator"],
+    ["minimum_direct_from", "0.9.11", "SQLite migration baseline must accept 0.9.0 direct upgrades"],
+    ["required_intermediate", "0.9.11", "SQLite migration baseline cannot require itself as an intermediate"]
+  ].each do |field, value, expected|
+    manifest = YAML.safe_load(original, aliases: false)
+    manifest.fetch("upgrade").fetch("local_storage")[field] = value
+    File.write(manifest_path, YAML.dump(manifest))
+    verify.call("reject invalid local storage upgrade #{field}") do
       success, output = run.call({})
       !success && output.include?(expected)
     end

@@ -205,4 +205,4 @@ Android/iOS 生产路径已经把 Book、Progress、Bookmark、TOC、非敏感 S
 
 ## P7 legacy 清理边界
 
-P7 分为旧运行时路径、已迁移设备数据和一次性 migrator 三类清理。前两类等待迁移版本发布、双端真实设备升级与回退窗口；migrator 还必须保留到最低受支持的直接升级来源已经包含 SQLite，避免 pre-SQLite 版本跳跃升级时断链。当前 P7.0 只完成删除清单与门槛审计，详见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md)。
+P7 分为旧运行时路径、已迁移设备数据和一次性 migrator 三类清理。前两类等待迁移版本发布、双端真实设备升级与回退窗口；migrator 还必须保留到最低受支持的直接升级来源已经包含 SQLite，避免 pre-SQLite 版本跳跃升级时断链。P7.0 与 pre-P7.1–pre-P7.3 已完成本地准备：双端模拟器安装覆盖通过，设备删除 allowlist 保持 disabled，发布链检查阻止当前删除 migrator。双端真机、发布和回退窗口仍待完成。详见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md)、[Pre-P7.1 Upgrade Validation](architecture/pre-p7-upgrade-validation.md)、[Pre-P7.2 Device Data Cleanup](architecture/pre-p7-data-cleanup.md) 和 [Pre-P7.3 Migrator Retirement](architecture/pre-p7-migrator-retirement.md)。

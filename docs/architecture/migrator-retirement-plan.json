@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "first_sqlite_migration_release": "0.9.11",
+  "minimum_direct_upgrade_from": "0.9.11",
+  "forced_intermediate_release": "0.9.11",
+  "migration_sources": [
+    "apps/android/app/src/main/java/com/xlib/txtreader/LocalDatabase.java",
+    "apps/ios/XLibReader/Persistence/LocalDatabase.swift"
+  ],
+  "migration_fixtures": [
+    "apps/android/app/src/test/java/com/xlib/txtreader/LocalDatabaseTest.java",
+    "apps/ios/XLibReaderTests/LocalDatabaseTests.swift",
+    "scripts/test-android-storage-upgrade.sh",
+    "scripts/test-ios-storage-upgrade.sh"
+  ]
+}

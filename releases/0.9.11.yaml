@@ -4,6 +4,11 @@ status: draft
 contract:
   version: v1
   file: contracts/openapi.yaml
+upgrade:
+  local_storage:
+    contains_legacy_migrator: true
+    minimum_direct_from: 0.9.0
+    required_intermediate:
 components:
   android:
     status: active

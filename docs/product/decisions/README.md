@@ -16,5 +16,6 @@
 - [0012 搜索分批加载，200 条不是总上限](0012-search-results-in-batches.md)：用户已确认。
 - [0013 搜索到书末后由用户选择从开头继续](0013-search-wrap-with-user-choice.md)：用户已确认。
 - [0014 搜索关键词按用户感知字符计数](0014-search-query-character-count.md)：用户已确认，去首尾空白后 2–32 个字符。
+- [0015 强制经过 SQLite 迁移基线后再升级](0015-mandatory-sqlite-migration-baseline.md)：用户已确认 0.9.11 为强制中间版本，未来不长期支持 0.9.0 直升最新版。
 
 已有 [docs/DECISIONS.md](../../DECISIONS.md) 的 D-001～D-008 保留原编号和历史，不复制成新决策。发现过期或冲突时相互链接，不通过删掉旧记录掩盖变化。

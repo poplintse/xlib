@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "android": {
+    "migration_id": "android-shared-preferences-v1",
+    "database_schema_version": 1,
+    "remove": {
+      "preferences_exact": [
+        "books",
+        "bookmarks",
+        "auto_toc",
+        "app_theme",
+        "keep_screen_on",
+        "auto_page_interval",
+        "sensitivity",
+        "font_family",
+        "font_size",
+        "line_spacing",
+        "sync_configured_email",
+        "sync_email",
+        "sync_device_id",
+        "sync_device_name",
+        "sync_server_url",
+        "sync_started",
+        "sync_active_server_url",
+        "sync_active_email",
+        "sync_active_device_name",
+        "sync_remote_email",
+        "sync_remote_items"
+      ],
+      "preference_prefixes": [
+        "sync_book_hash_"
+      ],
+      "files": [
+        "files/toc/*.json"
+      ]
+    },
+    "preserve": {
+      "preferences_exact": [
+        "sync_token_ciphertext",
+        "sync_token_iv"
+      ],
+      "paths": [
+        "files/books/**",
+        "databases/xlib.db*"
+      ],
+      "secure_aliases": [
+        "xlib_sync_token_key"
+      ]
+    }
+  },
+  "ios": {
+    "migration_id": "ios-local-storage-v1",
+    "database_schema_version": 1,
+    "remove": {
+      "user_defaults_exact": [
+        "reader.settings.v1",
+        "sync.server.address.v1",
+        "sync.credentials.server.address.v1",
+        "sync.device.name.v1",
+        "sync.email.v1",
+        "sync.has.started.v1",
+        "sync.device.id.v1"
+      ],
+      "files": [
+        "Metadata/books.json",
+        "Metadata/books.last-good.json",
+        "Metadata/bookmarks.json",
+        "TOC/*.json",
+        "Sync/sync-state.json"
+      ]
+    },
+    "preserve": {
+      "paths": [
+        "Books/**",
+        "Metadata/xlib.db*"
+      ],
+      "keychain": [
+        {
+          "service": "com.xlib.txtreader.progress-sync",
+          "account": "sync-token"
+        }
+      ]
+    }
+  }
+}

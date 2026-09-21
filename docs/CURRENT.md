@@ -60,9 +60,11 @@ Android Robolectric 真实运行 SQLite 的新增 6 项迁移测试通过，Andr
 
 ### P7：Legacy Persistence Cleanup
 
-[P7 清理合同](architecture/legacy-persistence-cleanup.md) 已完成 P7.0 就绪审计和逐项删除清单。当前只有 0.9.0 标记为 released，包含 SQLite migrator 的 0.9.11 仍为 draft；Android 没有连接设备，已登记 iOS 真机处于 offline，因此没有双端真实升级或回退窗口证据。P7.1 旧运行时路径和 P7.2 设备 legacy 数据尚未删除。
+[P7 清理合同](architecture/legacy-persistence-cleanup.md) 已完成 P7.0 就绪审计和逐项删除清单。[Pre-P7.1 验证](architecture/pre-p7-upgrade-validation.md) 已在隔离的 Android API 35 Emulator 和 iOS 26.5 Simulator 通过 `0.9.0 → 当前工作区` 原位覆盖：SQLite 完整性、书库/进度/书签/目录/设置/同步配置/cache、TXT 与 legacy 留存、重复启动幂等均通过。当前只有 0.9.0 标记为 released，包含 SQLite migrator 的 0.9.11 仍为 draft；Android 没有连接设备，已登记 iOS 真机处于 unavailable，因此仍没有双端真实设备升级或回退窗口证据。P7.1 旧运行时路径和 P7.2 设备 legacy 数据尚未删除。
 
-即使回退窗口结束，只要仍支持从 0.9.0 等 pre-SQLite 版本直接升级，也必须保留一次性 migrator 和迁移夹具；P7.3 需等待最低受支持升级来源已经包含 SQLite。该拆分避免长期未升级用户直接安装新版时丢失书库。当前阶段只修改架构文档，没有删除用户数据、Store、凭据或迁移代码，也没有修改 Capability、API、Backend Schema 或版本。
+即使回退窗口结束，只要当前发布仍支持从 0.9.0 等 pre-SQLite 版本直接升级，也必须保留一次性 migrator 和迁移夹具；P7.3 需等待 0.9.11 强制迁移窗口完成。该拆分避免用户在迁移窗口内丢失书库。当前阶段没有删除用户数据、Store、凭据或迁移代码，也没有修改 Capability、API、Backend Schema 或组件版本。
+
+pre-P7.2 已建立 disabled 的机器可检验 allowlist 和可中断恢复状态机合同；`make check-legacy-cleanup-plan` 会阻止删除 Android Token/Keystore、iOS Keychain、TXT、SQLite 或未知键。pre-P7.3 已完成发布链审计；[Decision 0015](product/decisions/0015-mandatory-sqlite-migration-baseline.md) 已确认不长期支持 0.9.0 直升最新版，0.9.11 是强制迁移基线，未来 retirement 版本最低从 0.9.11 直接升级。`make check-migrator-retirement` 当前仍因 0.9.11 draft/无 tag且强制中间版本尚未发布而阻止 retirement。三个 pre 阶段均已完成本地可执行工作，但没有启用 P7.1/P7.2/P7.3。
 
 ### P4：iOS 同步与进度
 

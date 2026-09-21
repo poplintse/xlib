@@ -259,7 +259,7 @@ P6 只需要以下长期边界：
 - **P6.2（已完成）**：Android 实现 SQLite、typed Store 委托、无损事务迁移、Keystore 边界和文件删除重试。
 - **P6.3（已完成）**：iOS 按相同数据语义实现 SQLite、JSON/UserDefaults 迁移和 Keychain 边界，没有复制 Android 框架代码。
 - **P6.4（本地自动化完成）**：双端验证正式数据、设置、同步配置、重复迁移、回滚、来源变化、正文缺失/恢复、损坏缓存丢弃、文件删除重试和同步回归。真实设备升级、磁盘耗尽与性能属于 P8 发布验收，完成前不执行 P7 清理。
-- **P7.0（已完成）**：建立 [Legacy Persistence Cleanup](legacy-persistence-cleanup.md) 清单并核对发布、设备、回退和直接升级门槛。
+- **P7.0 与 pre 阶段（已完成）**：建立 [Legacy Persistence Cleanup](legacy-persistence-cleanup.md) 清单；双端模拟器安装覆盖见 [Pre-P7.1 Upgrade Validation](pre-p7-upgrade-validation.md)；disabled 清理 allowlist 与状态机见 [Pre-P7.2 Device Data Cleanup](pre-p7-data-cleanup.md)；发布链和 migrator 保留条件见 [Pre-P7.3 Migrator Retirement](pre-p7-migrator-retirement.md)。
 - **P7.1/P7.2**：在迁移版本经过真实设备验证和既定回退窗口后，删除旧运行时写路径并按设备清理旧 JSON/Preferences/UserDefaults 业务数据。Secure Store、TXT 和明确保留的 Disposable Cache 不属于待删除 legacy。
 - **P7.3**：最低受支持升级来源已经包含 SQLite 后，才删除一次性 migrator 和迁移夹具，避免 pre-SQLite 版本直接升级断链。
 - **P8：系统验收与维护**：真实双端接续、真实设备、性能与发布门禁；发布仍需单独授权。

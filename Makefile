@@ -1,6 +1,8 @@
 SHELL := /bin/sh
 
-.PHONY: help bootstrap check check-alpha test-backend test-backend-postgres test-apple-shared \
+.PHONY: help bootstrap check check-alpha check-legacy-cleanup-plan check-migrator-retirement \
+	test-backend test-backend-postgres test-apple-shared \
+	test-android-storage-upgrade test-ios-storage-upgrade \
 	build-android-debug build-android-release \
 	build-ios-debug build-ios-release \
 	build-macos-debug build-macos-release \
@@ -13,9 +15,13 @@ help:
 		'make bootstrap             Check tools and install locked backend dependencies' \
 		'make check                 Run local contract, backend, shared, Android and iOS checks' \
 		'make check-alpha           Run the full Alpha verification suite' \
+		'make check-legacy-cleanup-plan  Validate disabled P7 cleanup allowlists and protected data' \
+		'make check-migrator-retirement  Audit whether the legacy migrator may be removed' \
 		'make test-backend          Lint, typecheck, test and build the backend' \
 		'make test-backend-postgres  Test backend with a disposable PostgreSQL 17 cluster' \
 		'make test-apple-shared     Test the shared Swift package' \
+		'make test-android-storage-upgrade  Test an in-place Android 0.9.0 to current storage upgrade' \
+		'make test-ios-storage-upgrade  Test an in-place iOS 0.9.0 to current storage upgrade' \
 		'make build-android-debug   Build an Android Debug APK (optional VERSION)' \
 		'make build-android-release Build an Android Release APK (optional VERSION)' \
 		'make build-ios-debug       Build an iOS Simulator Debug app (optional VERSION)' \
@@ -34,11 +40,23 @@ check:
 check-alpha:
 	RELEASE_VERSION="$(RELEASE)" ./scripts/check-alpha.sh
 
+check-legacy-cleanup-plan:
+	./scripts/check-legacy-cleanup-plan.py
+
+check-migrator-retirement:
+	./scripts/check-migrator-retirement.py
+
 test-backend:
 	./scripts/test-backend.sh
 
 test-apple-shared:
 	swift test --package-path packages/apple-shared
+
+test-android-storage-upgrade:
+	./scripts/test-android-storage-upgrade.sh
+
+test-ios-storage-upgrade:
+	./scripts/test-ios-storage-upgrade.sh
 
 build-android-debug:
 	@VERSION="$(VERSION)" ./scripts/build-android-debug.sh

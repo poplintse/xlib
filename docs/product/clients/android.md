@@ -64,7 +64,7 @@ P2 将导入、书库、搜索、目录/书签、偏好与阅读任务生命周�
 
 P6 将书库、进度、书签、目录、非敏感设置与同步状态迁入 `xlib.db`；`ReadingPreferences` 等 typed Store 通过 `LocalDatabase` 访问。TXT 仍在应用文件目录，Token 仍使用 Android Keystore 保护的现有密文。迁移失败回退 legacy，成功后不双写；legacy 清理由 P7 独立执行。这是 Implementation Detail，不改变 Capability 或同步契约。
 
-P7.0 已确认当前迁移版本尚未发布且没有 Android 真机升级证据，因此旧运行时分支、设备 legacy 数据和 migrator 均暂留。清理顺序及永久保留的 Token/TXT 边界见 [Legacy Persistence Cleanup](../../architecture/legacy-persistence-cleanup.md)。
+P7.0 已确认当前迁移版本尚未发布。pre-P7.1 已通过 Android API 35 Emulator 从 0.9.0 到当前工作区的原位覆盖；当前没有连接真机，Keystore Token 连续性仍待真机验证，因此旧运行时分支、设备 legacy 数据和 migrator 均暂留。证据见 [Pre-P7.1 Upgrade Validation](../../architecture/pre-p7-upgrade-validation.md)，清理顺序及永久保留的 Token/TXT 边界见 [Legacy Persistence Cleanup](../../architecture/legacy-persistence-cleanup.md)。
 
 StaticLayout、连续缓存与分页窗口均属技术实现。具体原生交互见 [reader](../../features/reader.md)，存储约束见 [Local Storage Contract](../../architecture/local-storage-contract.md)，实现边界见 [architecture](../../architecture.md)。源码位于 [apps/android](../../../apps/android/)。
 

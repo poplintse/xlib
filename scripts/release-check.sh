@@ -48,5 +48,17 @@ abort "Backend version mismatch" unless manifest.dig("components", "backend", "v
 macos_status = manifest.dig("components", "macos", "status")
 abort "macOS must remain planned until a project exists" unless macos_status == "planned"
 
+retirement_plan = JSON.parse(File.read(File.join(root, "docs/architecture/migrator-retirement-plan.json")))
+storage_upgrade = manifest.dig("upgrade", "local_storage")
+if expected_release == retirement_plan.fetch("first_sqlite_migration_release")
+  abort "SQLite migration baseline must declare local storage upgrade policy" unless storage_upgrade.is_a?(Hash)
+  abort "SQLite migration baseline must contain legacy migrator" unless storage_upgrade["contains_legacy_migrator"] == true
+  abort "SQLite migration baseline must accept 0.9.0 direct upgrades" unless storage_upgrade["minimum_direct_from"].to_s == "0.9.0"
+  abort "SQLite migration baseline cannot require itself as an intermediate" unless storage_upgrade["required_intermediate"].nil?
+elsif storage_upgrade.is_a?(Hash) && storage_upgrade["contains_legacy_migrator"] == false
+  abort "Post-migrator release minimum source mismatch" unless storage_upgrade["minimum_direct_from"].to_s == retirement_plan.fetch("minimum_direct_upgrade_from")
+  abort "Post-migrator release intermediate mismatch" unless storage_upgrade["required_intermediate"].to_s == retirement_plan.fetch("forced_intermediate_release")
+end
+
 puts "release #{expected_release} is internally consistent"
 RUBY

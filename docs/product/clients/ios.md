@@ -57,7 +57,7 @@ P4 将阅读同步会话、身份配置、串行副作用与正式进度时间�
 
 P6 将书库、进度、书签、目录、非敏感设置与同步状态迁入 `xlib.db`；`LibraryStore`、`SettingsStore`、`SyncStateStore` 和 `SyncConfigurationSession` 通过 `LocalDatabase` 访问。TXT 仍在 Application Support，Credential 仍保留原 Keychain service/account。迁移失败回退 legacy，成功后不双写；legacy 清理由 P7 独立执行。这是 Implementation Detail，不改变 Capability 或同步契约。
 
-P7.0 已确认当前迁移版本尚未发布且已登记真机处于 offline，因此旧运行时分支、设备 legacy 数据和 migrator 均暂留。清理顺序及永久保留的 Keychain/TXT 边界见 [Legacy Persistence Cleanup](../../architecture/legacy-persistence-cleanup.md)。
+P7.0 已确认当前迁移版本尚未发布且已登记真机处于 unavailable，因此旧运行时分支、设备 legacy 数据和 migrator 均暂留。pre-P7.1 已通过 iOS 模拟器从 0.9.0 到当前工作区的原位覆盖，真机 Credential 连续性仍待验证。证据见 [Pre-P7.1 Upgrade Validation](../../architecture/pre-p7-upgrade-validation.md)，清理顺序及永久保留的 Keychain/TXT 边界见 [Legacy Persistence Cleanup](../../architecture/legacy-persistence-cleanup.md)。
 
 SwiftUI / UIKit / Core Text 与 Keychain 是平台实现；AppleShared 只容纳 UI 无关代码。当前前台单一 20 秒调度，后台仅尽力执行，不承诺持续运行。存储约束见 [Local Storage Contract](../../architecture/local-storage-contract.md)，细节见 [iOS 实现说明](../../features/ios.md)。
 

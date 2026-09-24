@@ -1,6 +1,6 @@
 # XLib 系统架构重构计划
 
-状态：P0–P7.3 已完成当前工作树实现，P8 系统验收进行中。0.10.0 是 released/tagged 的 SQLite 强制迁移基线；0.11.0 draft 已完成旧运行时删除、设备 legacy allowlist 清理和一次性 migrator 退役。P8 自动发布门禁与双端 SQLite 容量故障回滚已落地，真实双端、分发版本下限和性能证据尚未完成。验收边界见 CURRENT 和 [P8 System Validation](architecture/p8-system-validation.md)。本文是工程迁移计划，不新增产品能力、不代表发布授权。当前架构见 [architecture](architecture.md)，P6 证据见 [移动端本地存储审计](architecture/local-storage-audit.md)和 [Local Storage Contract](architecture/local-storage-contract.md)，P7 边界见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md)，历史安装覆盖证据见 [Pre-P7.1 Upgrade Validation](architecture/pre-p7-upgrade-validation.md)，业务规则以 [产品能力](product/README.md) 和 [矩阵](product/matrix/capability-matrix.md) 为准。
+状态：P0–P8 已完成当前工作树实现。0.10.0 是 released/tagged 的 SQLite 强制迁移基线；0.11.0 draft 已完成旧运行时删除、设备 legacy allowlist 清理和一次性 migrator 退役。P8 自动发布门禁与双端 SQLite 容量故障回滚已落地，真实双端、iOS 真机发布链和实际分发版本下限由用户确认通过；用户豁免本轮 Android 真机性能采集；iOS Release 真机自动化性能记录已完成并通过校验。验收边界见 CURRENT 和 [P8 System Validation](architecture/p8-system-validation.md)。本文是工程迁移计划，不新增产品能力、不代表发布授权。当前架构见 [architecture](architecture.md)，P6 证据见 [移动端本地存储审计](architecture/local-storage-audit.md)和 [Local Storage Contract](architecture/local-storage-contract.md)，P7 边界见 [Legacy Persistence Cleanup](architecture/legacy-persistence-cleanup.md)，历史安装覆盖证据见 [Pre-P7.1 Upgrade Validation](architecture/pre-p7-upgrade-validation.md)，业务规则以 [产品能力](product/README.md) 和 [矩阵](product/matrix/capability-matrix.md) 为准。
 
 ## 1. 目标与范围
 
@@ -12,19 +12,19 @@
 
 | 范围 | 当前证据 | 风险与重构方向 |
 |---|---|---|
-| Android 页面组织 | `MainActivity.java` 约 5,224 行，负责多个页面、导入、阅读任务和生命周期 | 页面操作容易影响阅读/同步状态；按用户流程提取控制器，Activity 最终只承担装配、导航与生命周期转发 |
-| Android 同步 | `ProgressSyncCoordinator.java` 约 978 行；已有 `ReadingSyncPhase`、`SyncRules`、阅读 token 与配置代次 | 保留已验证保护，分离状态转换、网络执行和凭据配置；不重新另写一套完整同步引擎 |
-| iOS 同步 | `ProgressSyncCoordinator.swift` 约 850 行，持有身份、阅读会话、定时、网络恢复、删除队列 | 将阅读会话和身份会话分开建模，副作用由协调层串行执行 |
+| Android 页面组织 | `MainActivity.java` 仍负责多个页面、导入、阅读任务和生命周期 | 页面操作容易影响阅读/同步状态；按用户流程提取控制器，Activity 最终只承担装配、导航与生命周期转发 |
+| Android 同步 | `ProgressSyncCoordinator.java` 已有 `ReadingSyncPhase`、`SyncRules`、阅读 token 与配置代次 | 保留已验证保护，分离状态转换、网络执行和凭据配置；不重新另写一套完整同步引擎 |
+| iOS 同步 | `ProgressSyncCoordinator.swift` 持有身份、阅读会话、定时、网络恢复、删除队列 | 将阅读会话和身份会话分开建模，副作用由协调层串行执行 |
 | 进度数据 | Android `BookStore`、内存 `LocalProgressStore`；iOS `Book.updatedAt` 被用于 readAtMs | 多个对象承载同一语义，导入时间与阅读时间混用；建立明确进度模型及单一写入入口 |
 | P0 已解决的业务冲突 | iOS 新导入时间改为 0，上传拒绝未知时间；Schema 与历史记录保留 | 回归已覆盖导入/重开、首次位移、准备期及真实云端比较；不把旧错误行为固化为兼容要求 |
 | 阅读核心 | Android 已分离字节映射、缓存、分页窗口；AppleShared 已有编码/字节映射 | 保留成熟核心，优先抽离调度与页面依赖，不重写分页算法 |
 | 后端 | P5 已将身份与进度 SQL 收口到 Repository；service 保留事务与业务编排 | 维持 PostgreSQL 模块化单体；以受限运行角色和真实数据库并发测试持续保护事务边界 |
-| 移动端本地存储 | Android 使用 SharedPreferences/JSON 与普通缓存文件；iOS 使用 Application Support JSON、UserDefaults 与 Keychain；两端均无 SQLite | P6 将结构化业务数据和非敏感设置收敛到 SQLite，TXT 与安全凭据保持独立边界 |
+| 移动端本地存储 | P6 已将 Android/iOS 结构化业务数据和非敏感设置收敛到 SQLite；TXT 仍在文件系统，敏感凭据仍在平台安全存储 | 保持单一业务数据源及现有迁移、事务和凭据边界 |
 | 契约校验 | `scripts/check-contract.rb` 当前核对路由路径和方法 | 不能证明请求/响应字段及错误语义一致；增加 Schema 与客户端序列化一致性检查 |
-| 发布验证 | P8 已让 `check-alpha.sh` 强制运行隔离 PostgreSQL 17、双端测试及版本文件快照，并增加 tracked-sensitive-data 门禁 | 自动门禁已收口；真实双端、实际分发版本下限和性能仍须独立记录 |
+| 发布验证 | P8 已让 `check-alpha.sh` 强制运行隔离 PostgreSQL 17、双端测试及版本文件快照，并增加 tracked-sensitive-data 门禁 | 自动门禁已收口；真实双端、iOS 真机发布链和实际分发版本下限由用户确认通过；iOS 真机性能记录通过校验，Android 性能豁免已记录 |
 | 架构说明 | 现有 architecture 第 1–7 节主要是 Android 细节 | 实施中逐步维护系统总览与端内说明，避免把 Android 技术要求传播给其他端 |
 
-行数仅用于定位职责集中点，不作为拆分成功指标。
+这些职责集中点用于后续维护判断，不作为本轮 P8 验收的未完成项。
 
 ## 3. 目标结构与依赖
 
@@ -136,9 +136,9 @@ AppleShared 继续承载 UI 无关的编码、字节映射；经过两端需要�
 | P5：后端边界与集成（完成） | IdentityRepository/ProgressRepository 收口 SQL，Service 保持事务；隔离 PostgreSQL 17 验证并发、撤销和受限角色 | 71 项 Backend 测试通过，其中 13 项真实 PostgreSQL 集成测试；API 与 Schema 不变 | 代码回退；没有数据库迁移 |
 | P6：Mobile Local Storage Consolidation（完成） | P6.0 审计；P6.1 契约/DDL/迁移夹具；P6.2 Android；P6.3 iOS；P6.4 双端迁移验证 | 结构化业务数据与非敏感设置进入 SQLite；TXT/Secure Store 边界不变；重复迁移无重复或丢失；不改变同步行为 | legacy 只读保留到 P7；不双写；迁移失败按客户端回退旧路径 |
 | P7：Legacy Persistence Cleanup（完成） | P7.1 删除旧运行时回退；P7.2 Schema v2 allowlist 清理；P7.3 删除一次性读取器和历史覆盖脚本 | Android 完整单元测试、iOS 构建/单元测试、清理与发布链门禁通过；0.11.0 只接受 0.10.0 来源 | 0.10.0 保留 migrator；未经过基线的设备先安装 0.10.0，不恢复双存储运行时 |
-| P8：系统验收与维护（进行中） | 已完善自动发布门禁和双端 SQLite 容量故障回滚；继续运行真实双端、分发下限及性能对比 | 当前代码最终门禁通过；真实双端接续、分发下限、性能和故障场景均有证据；构建不改版本；无敏感数据进入日志 | 按组件发布/回退；发布另行批准 |
+| P8：系统验收与维护（完成） | 自动发布门禁、双端 SQLite 容量故障回滚、真实双端/iOS 发布链/分发下限确认，以及 iOS 真机性能自动化 | 最终 Alpha 门禁与 iOS 性能记录校验通过；Android 性能豁免明确记录；构建不改版本；无敏感数据进入日志 | 按组件发布/回退；发布另行批准 |
 
-P0 → P7.3 已完成当前工作树实现。P6 按 Android 先行、iOS 后续的顺序验证共同数据语义，没有把平台 UI 传播为另一客户端要求。P7 按 P7.1 → P7.2 → P7.3 实施；0.10.0 保留完整 migrator，0.11.0 只保留迁移后清理状态机并强制升级来源为 0.10.0。P8 已开始，当前进度和缺口见 [P8 System Validation](architecture/p8-system-validation.md)。
+P0 → P8 已完成当前工作树实现。P6 按 Android 先行、iOS 后续的顺序验证共同数据语义，没有把平台 UI 传播为另一客户端要求。P7 按 P7.1 → P7.2 → P7.3 实施；0.10.0 保留完整 migrator，0.11.0 只保留迁移后清理状态机并强制升级来源为 0.10.0。P8 已完成定义范围，证据与 Android 性能豁免见 [P8 System Validation](architecture/p8-system-validation.md)。
 
 建议每个变更集只处理一个职责或一组不可分离的状态规则。提取、行为修复、存储迁移分别提交，避免整仓一次性重写。不以文件行数下降作为合并依据。
 
@@ -155,15 +155,15 @@ P0 → P7.3 已完成当前工作树实现。P6 按 Android 先行、iOS 后续�
 
 ### 工程检查
 
-每个实现阶段运行 `make check` 及受影响的针对性测试。当前 `make check` 不等于完整 iOS UI/单元验收；iOS 修改另执行项目测试。发布前运行 `make check-alpha`：该入口已强制隔离 PostgreSQL 17、Android 测试/lint/build、iOS 单元/UI 测试和版本文件不变。Android/iOS 真机、真实双端同步、实际分发版本下限及性能不适合由该本地入口伪造，必须另有记录。缺失环境标记未验收，不能报告全链路通过。
+每个实现阶段运行 `make check` 及受影响的针对性测试。当前 `make check` 不等于完整 iOS UI/单元验收；iOS 修改另执行项目测试。发布前运行 `make check-alpha`：该入口已强制隔离 PostgreSQL 17、Android 测试/lint/build、iOS 单元/UI 测试和版本文件不变。Android/iOS 真机、真实双端同步、实际分发版本下限及性能不适合由该本地入口伪造，必须另有记录。本轮真实双端、iOS 真机发布链及分发下限由用户确认通过；iOS 真机性能记录已通过自动校验，Android 性能采集按用户授权豁免。
 
-先测量再设性能预算：代表性小/大 TXT、UTF-8/UTF-16/GB18030、冷启动/缓存打开、连续翻页、超过 200 条搜索、批量导入。固定设备及样本，记录首屏时间、翻页主线程耗时、峰值内存、搜索首批耗时及文件 I/O；重构前后比较，超过双方约定预算的变化需解释或回退。尚无测量时不编造毫秒级 SLA。
+先测量再设性能预算：代表性小/大 TXT、UTF-8/UTF-16/GB18030、冷启动/缓存打开、连续翻页、超过 200 条搜索、批量导入。固定设备及样本，记录首屏时间、翻页端到端延迟、峰值内存、搜索首批耗时及文件 I/O。本轮只建立 iOS 真机基线；Android 性能采集已获用户豁免，未来如需两端对比须另行实测。尚无测量时不编造毫秒级 SLA。
 
 日志仅记录事件类别、结果、耗时与短期诊断标识，不输出正文、邮箱、Token、本地路径或真实服务地址。同步配置、身份、删除和存储迁移变更必须增加安全检查。
 
 ## 8. 范围与待确认事项
 
-当前已实施 P0–P7.3，P8 正在进行。0.10.0 迁移基线已发布并有 tag；0.11.0 是尚未发布的 retirement draft。P8 已完成自动门禁收口和 Android/iOS SQLite 容量耗尽事务回滚测试，仍需验证实际分发版本下限、iOS 真机发布链、性能和真实跨设备行为。Android 0.10.0 真机测试/发布由用户确认，未提供的设备明细不补写。
+当前已实施并验证 P0–P8。0.10.0 迁移基线已发布并有 tag；0.11.0 是尚未发布的 retirement draft。P8 已完成自动门禁收口和 Android/iOS SQLite 容量耗尽事务回滚测试；真实跨设备行为、iOS 真机发布链和实际分发版本下限由用户确认通过。用户豁免本轮 Android 真机性能采集；iOS 量化性能记录已完成并通过校验。未提供的设备、后端和渠道明细不补写。
 
 不阻塞结构拆分但应保持待定：历史错误阅读时间的恢复策略、批量上限与去重规则是否跨端统一、正文复制/自动翻页是否升为正式能力、强认证方案及新端范围。未经产品确认不改能力定义；新代码只满足现有已确认语义。
 
@@ -188,7 +188,7 @@ P1 不改变业务或 HTTP 协议。发现的 Android 来源设备名称 20 字�
 
 Android 保留原生页面装配和导航入口，将导入批次交给 BookImportController、书库写入/本地删除交给 LibraryController、搜索会话及查询 I/O 交给 BookSearchController、目录/书签交给 CatalogController、持久偏好交给 ReadingPreferences。ReaderTaskScope 管理阅读任务队列和取消代次，ReaderCacheStore 保持 XLI2 缓存格式。分页算法、布局与 View 生命周期仍在原渲染边界，不借拆分迁移 UI 框架。
 
-销毁时清理未发布的导入文件；取消的搜索不能追加旧结果；删除后的目录/缓存任务不能重新生成该书数据。修复书首搜索把正式返回位置误设为 0 的缺陷，遵循既有 CAP-SEARCH，不新增业务规则。应用层回归覆盖导入发布/销毁、搜索取消/回绕/重试、正式返回位置、本地删除、旧偏好键和 XLI2 缓存；本地自动化结果见 CURRENT。真机 UI、跨设备同步和性能对比未执行，属于后续验收范围。
+销毁时清理未发布的导入文件；取消的搜索不能追加旧结果；删除后的目录/缓存任务不能重新生成该书数据。修复书首搜索把正式返回位置误设为 0 的缺陷，遵循既有 CAP-SEARCH，不新增业务规则。应用层回归覆盖导入发布/销毁、搜索取消/回绕/重试、正式返回位置、本地删除、旧偏好键和 XLI2 缓存。P2 当时未执行真机 UI、跨设备同步和性能比较；之后 P8 的指定双端接续由用户确认，iOS 真机性能已测量，Android 真机性能按用户决定豁免。当前结果见 [CURRENT](CURRENT.md) 和 [P8 验收记录](architecture/p8-system-validation.md)。
 
 ## P3 交付边界
 

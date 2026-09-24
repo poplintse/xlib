@@ -22,6 +22,6 @@
 | [CAP-CLOUD-DATA-CONTROL](../capabilities/cloud-data-control.md) | active | done | done | not-evaluated | not-evaluated | not-evaluated | done |
 | [CAP-TEXT-COPY](../capabilities/text-copy.md) | candidate | done | not-evaluated | not-evaluated | not-evaluated | not-evaluated | unsupported |
 
-候选能力的 done 仅表示已存在实现，不表示正式产品承诺。Web / Windows 未立项，无对应空客户端文件。Shared Optional 的选择由客户端范围决定。所有 partial 的具体原因见能力及客户端文档。iOS 新导入时间充当阅读时间的问题已修复；历史记录保持原样，真实跨设备验收仍待执行。Android 批量导入和搜索起点选择属于已有能力扩展，不据此给其他端新增计划。
+候选能力的 done 仅表示已存在实现，不表示正式产品承诺。Web / Windows 未立项，无对应空客户端文件。Shared Optional 的选择由客户端范围决定。所有 partial 的具体原因见能力及客户端文档。iOS 新导入时间充当阅读时间的问题已修复，历史记录保持原样；0.11.0 双端真机跨设备接续已由用户确认通过，证据范围见 [P8 验收记录](../../architecture/p8-system-validation.md)。Android 批量导入和搜索起点选择属于已有能力扩展，不据此给其他端新增计划。
 
 Android 进度同步的 partial 来自 P1 发现的来源设备长名称响应兼容缺陷，不是新增需求。

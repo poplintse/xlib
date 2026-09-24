@@ -142,6 +142,19 @@ final class ReaderSegmentSource {
                 }
                 scanEnd = blockStart;
             }
+            // An even byte offset can still point to the low half of a UTF-16
+            // surrogate pair. Start at the high surrogate so strict decoding
+            // can read the complete character.
+            if (position >= 2L && position + 1L < size) {
+                input.seek(position);
+                int first = input.readUnsignedByte();
+                int second = input.readUnsignedByte();
+                int codeUnit = littleEndian
+                        ? first | (second << 8) : (first << 8) | second;
+                if (Character.isLowSurrogate((char) codeUnit)) {
+                    return position - 2L;
+                }
+            }
             return position;
         }
 

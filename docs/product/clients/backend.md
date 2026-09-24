@@ -10,7 +10,7 @@ CAP-SYNC-IDENTITY、CAP-PROGRESS-SYNC、CAP-CLOUD-DATA-CONTROL 的服务端职�
 
 ## Partial Capabilities
 
-暂无额外服务范围缺口；真实数据库及客户端联调验收状态见 [CURRENT](../../CURRENT.md)。服务不能代替客户端验证阅读阶段和删除后的本次会话暂停。
+暂无额外服务范围缺口；隔离 PostgreSQL 17 集成测试已通过，指定双端真机接续由用户确认通过，证据边界见 [P8 验收记录](../../architecture/p8-system-validation.md)。服务不能代替客户端验证阅读阶段和删除后的本次会话暂停。
 
 ## Planned Capabilities
 

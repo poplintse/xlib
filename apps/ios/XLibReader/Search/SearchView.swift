@@ -1,5 +1,45 @@
 import SwiftUI
 import UIKit
+import OSLog
+
+@MainActor
+private enum SearchPerformanceDiagnostics {
+#if XLIB_P8_DEVICE_PERFORMANCE
+    private static let signposter = OSSignposter(
+        subsystem: Bundle.main.bundleIdentifier ?? "XLibReader",
+        category: "ReaderPerformance"
+    )
+    private static var firstResultInterval: OSSignpostIntervalState?
+    private static var completionInterval: OSSignpostIntervalState?
+#endif
+
+    static func begin() {
+#if XLIB_P8_DEVICE_PERFORMANCE
+        firstResultInterval = signposter.beginInterval("SearchFirstResult")
+        completionInterval = signposter.beginInterval("SearchOver200Completion")
+#endif
+    }
+
+    static func received(totalResultCount: Int) {
+#if XLIB_P8_DEVICE_PERFORMANCE
+        if totalResultCount > 0, let interval = firstResultInterval {
+            signposter.endInterval("SearchFirstResult", interval)
+            firstResultInterval = nil
+        }
+        if totalResultCount > 200, let interval = completionInterval {
+            signposter.endInterval("SearchOver200Completion", interval)
+            completionInterval = nil
+        }
+#endif
+    }
+
+    static func cancel() {
+#if XLIB_P8_DEVICE_PERFORMANCE
+        firstResultInterval = nil
+        completionInterval = nil
+#endif
+    }
+}
 
 struct SearchView: View {
     let book: Book
@@ -76,6 +116,7 @@ struct SearchView: View {
         .toolbar(.hidden, for: .navigationBar)
         .onDisappear {
             searchTask?.cancel()
+            SearchPerformanceDiagnostics.cancel()
             generation = UUID()
             searching = false
         }
@@ -98,6 +139,7 @@ struct SearchView: View {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (2...32).contains(value.count) else { errorMessage = "请输入 2–32 个字符"; return }
         activeQuery = value
+        SearchPerformanceDiagnostics.begin()
         results = []
         originalOffset = min(book.fileSize, max(0, book.offset))
         nextOffset = originalOffset
@@ -122,6 +164,7 @@ struct SearchView: View {
                 let batch = try await service.searchBatch(url: url, book: book, query: value, from: start, to: end)
                 guard !Task.isCancelled, generation == requestGeneration else { return }
                 results.append(contentsOf: batch.results)
+                SearchPerformanceDiagnostics.received(totalResultCount: results.count)
                 nextOffset = batch.nextOffset
                 exhausted = batch.exhausted
             } catch is CancellationError { return } catch {
@@ -129,6 +172,13 @@ struct SearchView: View {
                 errorMessage = error.localizedDescription
             }
             searching = false
+#if XLIB_P8_DEVICE_PERFORMANCE
+            if results.count == 200,
+               !exhausted,
+               ProcessInfo.processInfo.environment["XLIB_P8_AUTO_CONTINUE_SEARCH"] == "1" {
+                loadBatch()
+            }
+#endif
         }
     }
 

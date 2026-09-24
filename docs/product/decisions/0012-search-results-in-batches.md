@@ -20,7 +20,7 @@ Android 当前每批最多 200 条并支持继续加载；iOS 当前单次最多
 
 ## Consequences
 
-CAP-SEARCH 采用本规则。Android 已测试超过 200 条的续查与大小写、不重叠规则组合；iOS 已实现续查入口、加载/失败/结束状态。当前状态见能力矩阵，不以代码覆盖代替真机验收。
+CAP-SEARCH 采用本规则。Android 已测试超过 200 条的续查与大小写、不重叠规则组合；iOS 已实现续查入口、加载/失败/结束状态，并在 P8 iPhone 固定样本中自动测量超过 200 条搜索及取消。当前状态见能力矩阵；这不等于每个字符集与失败路径都完成真机逐项验收。
 
 分批规则本身不扩大搜索范围；书末后由用户选择从开头继续、在原起点结束的规则已由 [Decision 0013](0013-search-wrap-with-user-choice.md) 确认。关键词长度计数已由 [Decision 0014](0014-search-query-character-count.md) 确认。
 

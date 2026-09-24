@@ -27,3 +27,4 @@ Android/iOS 从 0.10.0 开始通过实际发布资产把结构化本地业务数
 - 未在窗口内升级的 pre-SQLite 安装，之后可能需要手动安装 0.10.0 或重新导入本地书籍；最新版不承担直接读取其旧 metadata 的义务。
 - P7.1–P7.3 已在 0.11.0 draft 源码完成；这不等同 0.11.0 已发布。
 - `make check-migrator-retirement` 验证 0.10.0 released/tagged 基线、0.11.0 升级声明、旧 parser 标记和历史覆盖脚本均符合退役状态。
+- 0.11.0 的实际分发渠道最低直升版本及 iOS 真机发布链由用户在 P8 确认通过；未提供逐项日志，当前清单仍为 draft，见 [P8 验收记录](../../architecture/p8-system-validation.md)。

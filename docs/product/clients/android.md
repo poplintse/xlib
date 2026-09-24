@@ -10,7 +10,7 @@ CAP-LIBRARY、CAP-READING、CAP-SEARCH、CAP-TOC、CAP-BOOKMARK、CAP-READING-PR
 
 ## Partial Capabilities
 
-CAP-PROGRESS-SYNC：**implementation vs capability conflict**。进度响应解析将来源设备名称限制为 20 个字符，而后端登记允许 80，OpenAPI DeviceSummary 未设置该上限。合法长名称设备产生的进度可能被 Android 拒绝。P1 仅发现并记录该兼容缺陷，不缩窄产品定义或修改客户端行为。真实设备、真实服务和跨设备并发仍需验收。
+CAP-PROGRESS-SYNC：**implementation vs capability conflict**。进度响应解析将来源设备名称限制为 20 个字符，而后端登记允许 80，OpenAPI DeviceSummary 未设置该上限。合法长名称设备产生的进度可能被 Android 拒绝。P1 仅发现并记录该兼容缺陷，不缩窄产品定义或修改客户端行为。0.11.0 指定双端真机接续流程已由用户确认通过，但没有覆盖或消除这个长名称兼容缺陷。
 
 ## 能力实现与验证范围
 
@@ -32,7 +32,7 @@ CAP-PROGRESS-SYNC：**implementation vs capability conflict**。进度响应解�
 - `DEVICE_FORBIDDEN` 进入需手动重新开启状态，用户点击同步刷新重新登记；前台恢复不自动重新登记。身份级 `SYNC_UNAVAILABLE` 不按设备撤销处理。
 - 单书同步校验失败后，即使该书本次应用会话已停止上传，重新打开仍允许本地阅读，不停在比较准备阶段。
 - 每次打开（包括关闭后重开同一本书）建立独立阅读会话标识；旧拉取不得触发已退出书籍的新上传/跳转提示。已经发出的上传不承诺撤回，云端删除的串行顺序保持不变。
-- 回归测试覆盖导入/未知阅读时间持久化、无云端未读书籍、手动设备恢复、单书异常重开、切书与同书重开期间的在途拉取。真机和真实服务验收仍单独列于 CURRENT。
+- 回归测试覆盖导入/未知阅读时间持久化、无云端未读书籍、手动设备恢复、单书异常重开、切书与同书重开期间的在途拉取。指定双端真机流程的用户确认、Android 真机性能豁免及未提供的运行日志见 [P8 验收记录](../../architecture/p8-system-validation.md)。
 
 ## 客户端扩展与分类
 

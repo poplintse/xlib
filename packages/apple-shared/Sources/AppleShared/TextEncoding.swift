@@ -49,7 +49,16 @@ public enum TextEncoding: String, Codable, CaseIterable, Sendable {
             let length = data.count - trim
             guard length > 0 || data.isEmpty else { continue }
             let prefix = data.prefix(length)
-            guard let text = String(data: prefix, encoding: foundationEncoding),
+            // Foundation discards a leading UTF-8 BOM when decoding. Keep it as
+            // U+FEFF so decoded text still accounts for all original file bytes.
+            let text: String?
+            if self == .utf8, prefix.starts(with: [0xEF, 0xBB, 0xBF]) {
+                text = String(data: prefix.dropFirst(3), encoding: .utf8)
+                    .map { "\u{FEFF}" + $0 }
+            } else {
+                text = String(data: prefix, encoding: foundationEncoding)
+            }
+            guard let text,
                   encodedByteCount(of: text) == length else {
                 continue
             }

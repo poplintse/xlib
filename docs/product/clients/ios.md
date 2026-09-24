@@ -31,7 +31,7 @@ CAP-LIBRARY、CAP-READING、CAP-SEARCH、CAP-TOC、CAP-BOOKMARK、CAP-READING-PR
 
 ## Partial Capabilities
 
-当前确认范围无已知未实现项；真实跨设备与发布验收仍待执行。
+当前确认范围无已知未实现项。0.11.0 双端真机跨设备接续及 iOS 真机发布链已由用户确认通过；0.11.0 清单仍是 draft，用户确认不等于本仓库已经发布或部署，证据边界见 [P8 验收记录](../../architecture/p8-system-validation.md)。
 
 ## 阅读时间与数据兼容
 

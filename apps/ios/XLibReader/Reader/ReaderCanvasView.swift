@@ -3,7 +3,40 @@ import OSLog
 import SwiftUI
 import UIKit
 
+@MainActor
+enum ReaderPerformanceDiagnostics {
+    private static let signposter = OSSignposter(
+        subsystem: Bundle.main.bundleIdentifier ?? "XLibReader",
+        category: "ReaderPerformance"
+    )
+    private static var openInterval: OSSignpostIntervalState?
+
+    static func beginOpen() {
+        openInterval = signposter.beginInterval("OpenToFirstTextDraw")
+    }
+
+    static func didDrawText() {
+        guard let openInterval else { return }
+        signposter.endInterval("OpenToFirstTextDraw", openInterval)
+        self.openInterval = nil
+    }
+
+    static func cancelOpen() {
+        openInterval = nil
+    }
+}
+
+@MainActor
 enum ReaderTurnDiagnostics {
+#if XLIB_P8_DEVICE_PERFORMANCE
+    private static let signposter = OSSignposter(
+        subsystem: Bundle.main.bundleIdentifier ?? "XLibReader",
+        category: "ReaderPerformance"
+    )
+    private static var forwardIntervals: [Int: OSSignpostIntervalState] = [:]
+    private static var backwardIntervals: [Int: OSSignpostIntervalState] = [:]
+#endif
+
 #if DEBUG
     static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "XLibReader",
@@ -19,6 +52,30 @@ enum ReaderTurnDiagnostics {
 #if DEBUG
         let value = message()
         logger.notice("\(value, privacy: .public)")
+#endif
+    }
+
+    static func begin(direction: ReaderDirection, sequence: Int) {
+#if XLIB_P8_DEVICE_PERFORMANCE
+        switch direction {
+        case .forward:
+            forwardIntervals[sequence] = signposter.beginInterval("PageTurnForward")
+        case .backward:
+            backwardIntervals[sequence] = signposter.beginInterval("PageTurnBackward")
+        }
+#endif
+    }
+
+    static func end(direction: ReaderDirection, sequence: Int) {
+#if XLIB_P8_DEVICE_PERFORMANCE
+        switch direction {
+        case .forward:
+            guard let interval = forwardIntervals.removeValue(forKey: sequence) else { return }
+            signposter.endInterval("PageTurnForward", interval)
+        case .backward:
+            guard let interval = backwardIntervals.removeValue(forKey: sequence) else { return }
+            signposter.endInterval("PageTurnBackward", interval)
+        }
 #endif
     }
 }
@@ -89,6 +146,7 @@ final class ReaderCanvasView: UIView {
         let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
         CTFrameDraw(frame, context)
         context.restoreGState()
+        ReaderPerformanceDiagnostics.didDrawText()
     }
 }
 
@@ -467,6 +525,12 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
                     next: presentation.next,
                     toggleMenu: presentation.toggleMenu
                 )
+                if presentation.animated {
+                    ReaderTurnDiagnostics.end(
+                        direction: presentation.direction,
+                        sequence: presentation.turnSequence
+                    )
+                }
                 return
             }
 
@@ -484,7 +548,12 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
                     target,
                     direction: presentation.direction,
                     animated: false,
-                    completion: {}
+                    completion: {
+                        ReaderTurnDiagnostics.end(
+                            direction: presentation.direction,
+                            sequence: presentation.turnSequence
+                        )
+                    }
                 )
                 return
             }
@@ -502,6 +571,10 @@ struct ReaderSoftPageTurnRepresentable: UIViewControllerRepresentable {
                 self.isAnimating = false
                 ReaderTurnDiagnostics.log(
                     "animation completed sequence=\(presentation.turnSequence) page=\(presentation.page.id) queue=\(self.pendingPageTurns.count)"
+                )
+                ReaderTurnDiagnostics.end(
+                    direction: presentation.direction,
+                    sequence: presentation.turnSequence
                 )
                 if !self.pendingPageTurns.isEmpty {
                     let pending = self.pendingPageTurns.removeFirst()

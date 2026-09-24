@@ -329,6 +329,7 @@ final class ReaderCoordinator {
         }
         lastTurnDirection = direction
         completedPageTurns &+= 1
+        ReaderTurnDiagnostics.begin(direction: direction, sequence: completedPageTurns)
         ReaderTurnDiagnostics.log(
             "turn accepted sequence=\(self.completedPageTurns) direction=\(ReaderTurnDiagnostics.directionName(direction)) from=\(previousPageID) to=\(self.pageWindow.currentPage?.id ?? -1) offset=\(previousOffset)->\(self.pageWindow.currentPage?.startOffset ?? -1)"
         )

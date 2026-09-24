@@ -1,6 +1,7 @@
 SHELL := /bin/sh
 
 .PHONY: help bootstrap check check-alpha check-sensitive-data check-legacy-cleanup-plan check-migrator-retirement \
+	prepare-p8-performance test-p8-ios-device check-p8-performance-record \
 	test-backend test-backend-postgres test-apple-shared \
 	build-android-debug build-android-release \
 	build-ios-debug build-ios-release \
@@ -17,6 +18,9 @@ help:
 		'make check-sensitive-data  Reject tracked credentials and signing material' \
 		'make check-legacy-cleanup-plan  Validate active P7 cleanup allowlists and protected data' \
 		'make check-migrator-retirement  Validate the retired legacy migrator boundary' \
+		'make prepare-p8-performance  Generate deterministic P8 performance fixtures and record template' \
+		'make test-p8-ios-device  Run opt-in P8 Release measurements on one connected iPhone' \
+		'make check-p8-performance-record  Validate P8 physical-device results (optional RECORD path)' \
 		'make test-backend          Lint, typecheck, test and build the backend' \
 		'make test-backend-postgres  Test backend with a disposable PostgreSQL 17 cluster' \
 		'make test-apple-shared     Test the shared Swift package' \
@@ -46,6 +50,15 @@ check-legacy-cleanup-plan:
 
 check-migrator-retirement:
 	./scripts/check-migrator-retirement.py
+
+prepare-p8-performance:
+	./scripts/p8-performance.py generate
+
+test-p8-ios-device:
+	./scripts/test-p8-ios-device.sh
+
+check-p8-performance-record:
+	./scripts/p8-performance.py validate $(if $(RECORD),--record "$(RECORD)",) --report artifacts/p8-performance/performance-results.md
 
 test-backend:
 	./scripts/test-backend.sh

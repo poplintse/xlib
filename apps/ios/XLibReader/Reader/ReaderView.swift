@@ -142,6 +142,7 @@ struct ReaderView: View {
                 }
             }
             .onAppear {
+                ReaderPerformanceDiagnostics.beginOpen()
                 coordinator.configure(size: contentSize, settings: settings.settings)
                 UIApplication.shared.isIdleTimerDisabled = settings.settings.keepScreenAwake
             }
@@ -168,6 +169,7 @@ struct ReaderView: View {
             flushReaderIfNeeded(for: phase)
         }
         .onDisappear {
+            ReaderPerformanceDiagnostics.cancelOpen()
             if persistsProgress { sync.suspendReading(bookID: book.id, sessionID: readingSessionID) }
             Task {
                 await coordinator.flush()

@@ -7,7 +7,7 @@ struct XLibReaderApp: App {
         let library: LibraryModel
         let sync: ProgressSyncCoordinator
         let store: LibraryStore
-        #if DEBUG
+        #if DEBUG || XLIB_P8_DEVICE_PERFORMANCE
         let prepareFixture: (() async throws -> Void)?
         #endif
     }
@@ -16,6 +16,34 @@ struct XLibReaderApp: App {
 
     init() {
         do {
+            #if XLIB_P8_DEVICE_PERFORMANCE
+            if let value = ProcessInfo.processInfo.environment["XLIB_P8_BULK_TEST_ID"],
+               let id = UUID(uuidString: value) {
+                let root = FileManager.default.temporaryDirectory.appending(path: "XLibP8Bulk-\(id.uuidString)")
+                let defaults = UserDefaults(suiteName: "com.xlib.p8bulk.\(id.uuidString)")!
+                let database = try LocalDatabase.open(root: root, defaults: defaults)
+                let store = LibraryStore(root: root, database: database)
+                let sync = ProgressSyncCoordinator(
+                    api: Self.fixtureAPI,
+                    vault: SyncCredentialVault(load: { nil }, save: { _ in }, clear: {}),
+                    stateStore: SyncStateStore(database: database),
+                    connectivity: SyncConnectivityMonitor(started: false),
+                    database: database
+                )
+                let mode = ProcessInfo.processInfo.environment["XLIB_P8_BULK_MODE"]
+                startup = .success(StartupContext(
+                    settings: SettingsStore(database: database),
+                    library: LibraryModel(store: store),
+                    sync: sync,
+                    store: store,
+                    prepareFixture: {
+                        try await P8BulkPerformanceHarness.prepare(mode: mode, root: root, store: store)
+                    }
+                ))
+                return
+            }
+            #endif
+
             #if DEBUG
             if let value = ProcessInfo.processInfo.environment["XLIB_UI_TEST_ID"],
                let id = UUID(uuidString: value) {
@@ -58,7 +86,7 @@ struct XLibReaderApp: App {
 
             let database = try LocalDatabase.open()
             let store = LibraryStore(database: database)
-            #if DEBUG
+            #if DEBUG || XLIB_P8_DEVICE_PERFORMANCE
             startup = .success(StartupContext(
                 settings: SettingsStore(database: database),
                 library: LibraryModel(store: store),
@@ -89,7 +117,7 @@ struct XLibReaderApp: App {
                         .tint(context.settings.settings.theme.accent)
                         .preferredColorScheme(context.settings.settings.theme.colorScheme)
                         .task {
-                            #if DEBUG
+                            #if DEBUG || XLIB_P8_DEVICE_PERFORMANCE
                             do { try await context.prepareFixture?() }
                             catch { assertionFailure("UI fixture setup failed: \(error)") }
                             #endif
@@ -109,7 +137,7 @@ struct XLibReaderApp: App {
     }
 }
 
-#if DEBUG
+#if DEBUG || XLIB_P8_DEVICE_PERFORMANCE
 private extension XLibReaderApp {
     // In-memory responses only: UI tests never contact a live server or Keychain.
     static var fixtureAPI: SyncAPIClient {

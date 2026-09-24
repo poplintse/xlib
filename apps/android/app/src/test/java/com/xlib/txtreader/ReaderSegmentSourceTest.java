@@ -43,6 +43,46 @@ public class ReaderSegmentSourceTest {
     }
 
     @Test
+    public void utf16SeekBeforeLowSurrogateWithoutANearbyNewline() throws Exception {
+        for (String encoding : List.of("UTF-16LE", "UTF-16BE")) {
+            Charset charset = Charset.forName(encoding);
+            for (boolean hasBom : new boolean[]{false, true}) {
+                String prefix = (hasBom ? "\uFEFF" : "") + "A".repeat(140_000);
+                File file = write(encoding + hasBom + ".txt", prefix + "🙂B", charset);
+                long emojiStart = prefix.getBytes(charset).length;
+
+                long boundary = ReaderSegmentSource.findReadableOffset(
+                        file, emojiStart + 2L, encoding);
+                CacheSegment segment = ReaderSegmentSource.read(
+                        file, boundary, (int) (file.length() - boundary), charset);
+
+                assertEquals(emojiStart, boundary);
+                assertEquals("🙂B", segment.text);
+                assertEquals(file.length() - boundary, segment.offsetMap.totalBytes());
+            }
+        }
+    }
+
+    @Test
+    public void utf8BomKeepsOriginalByteOffsets() throws Exception {
+        File file = temporaryFolder.newFile("utf8-bom.txt");
+        byte[] content = "甲🙂乙".getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = new byte[3 + content.length];
+        bytes[0] = (byte) 0xEF;
+        bytes[1] = (byte) 0xBB;
+        bytes[2] = (byte) 0xBF;
+        System.arraycopy(content, 0, bytes, 3, content.length);
+        Files.write(file.toPath(), bytes);
+
+        CacheSegment segment = ReaderSegmentSource.read(
+                file, 0L, bytes.length, StandardCharsets.UTF_8);
+
+        assertEquals("\uFEFF甲🙂乙", segment.text);
+        assertEquals(bytes.length, segment.bytesRead);
+        assertEquals(bytes.length, segment.offsetMap.totalBytes());
+    }
+
+    @Test
     public void prefersPreviousParagraphBoundaryWithinScanWindow() throws Exception {
         File file = write("paragraphs.txt", "第一段\n第二段内容", StandardCharsets.UTF_8);
         long secondParagraph = "第一段\n".getBytes(StandardCharsets.UTF_8).length;

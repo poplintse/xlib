@@ -24,6 +24,6 @@ Android 与 iOS 至少完成一次：导入大 TXT、连续翻页、退出恢复
 
 发布前必须关闭 [CURRENT](CURRENT.md) 中对应范围的实现缺口；不能把协议层通过当作客户端能力完成。
 
-真机跨设备接续、实际分发渠道最低直升版本和量化性能记录不由 Simulator/CI 自动检查代替；当前要求和证据见 [P8 System Validation](architecture/p8-system-validation.md)。
+真机跨设备接续、iOS 真机发布链、实际分发渠道最低直升版本和量化性能记录不由 Simulator/CI 自动检查代替。前三项已由用户确认通过；用户明确豁免本轮 Android 真机性能采集，iOS Release 真机性能记录已通过固定样本自动化与记录校验。当前要求和证据见 [P8 System Validation](architecture/p8-system-validation.md)。
 
 详细交互清单按平台区分：Android 见 [features/reader.md](features/reader.md)，iOS 见 [features/ios.md](features/ios.md)。Android 与跨端同步目标见 [features/sync-client.md](features/sync-client.md)。

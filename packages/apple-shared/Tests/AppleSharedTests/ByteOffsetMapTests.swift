@@ -23,3 +23,15 @@ func detectsUTF8WithIncompleteSampleSuffix() throws {
 
     #expect(try TextEncoding.detect(at: url) == .utf8)
 }
+
+@Test
+func utf8BOMRemainsInByteOffsetMapping() throws {
+    let data = Data([0xEF, 0xBB, 0xBF]) + Data("甲🙂乙".utf8)
+    let decoded = try TextEncoding.utf8.decodeCompletePrefix(data)
+    let map = try ByteOffsetMap(text: decoded.text, encoding: .utf8)
+
+    #expect(decoded.bytesConsumed == data.count)
+    #expect(map.totalBytes == data.count)
+    #expect(try map.byteOffset(forUTF16Index: 1) == 3)
+    #expect(decoded.text == "\u{FEFF}甲🙂乙")
+}

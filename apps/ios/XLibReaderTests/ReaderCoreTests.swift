@@ -507,6 +507,35 @@ final class ReaderCoreTests: XCTestCase {
         XCTAssertEqual(window.pages[window.selectedIndex].endOffset, book.fileSize)
     }
 
+    func testReaderEngineOpensUTF8BOMBookWithoutLosingByteOffsets() async throws {
+        let text = Array(repeating: "带字节顺序标记的书籍🙂。\n", count: 300).joined()
+        let data = Data([0xEF, 0xBB, 0xBF]) + Data(text.utf8)
+        let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).txt")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let book = Book(
+            id: UUID(), title: "BOM", sourceName: "bom.txt", author: "", relativePath: "",
+            fileSize: Int64(data.count), modifiedAt: .now, encoding: .utf8,
+            offset: 0, updatedAt: .now, schemaVersion: Book.schemaVersion
+        )
+
+        for target in [Int64(0), 4, book.fileSize / 2, book.fileSize] {
+            let window = try await ReaderEngine().buildWindow(
+                url: url,
+                book: book,
+                targetOffset: target,
+                spec: ReaderLayoutSpec(width: 320, height: 540)
+            )
+
+            XCTAssertFalse(window.pages.isEmpty)
+            let selectedPage = window.pages[window.selectedIndex]
+            XCTAssertLessThanOrEqual(selectedPage.startOffset, target)
+            XCTAssertGreaterThanOrEqual(selectedPage.endOffset, target)
+            if target == 0 { XCTAssertEqual(selectedPage.startOffset, 0) }
+            if target == book.fileSize { XCTAssertEqual(selectedPage.endOffset, book.fileSize) }
+        }
+    }
+
     func testSlidingWindowCrossesSegmentBoundariesInBothDirections() async throws {
         let line = "跨越缓存边界时正文必须连续，不能重复、缺失或跳页🙂。\n"
         let text = Array(repeating: line, count: 40_000).joined()

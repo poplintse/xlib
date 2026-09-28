@@ -55,4 +55,23 @@ public class ReaderTextSelectionTest {
         int[] range = ReaderTextSelection.wordAt(text, 3);
         assertEquals("😀", text.substring(range[0], range[1]));
     }
+
+    @Test public void longPressDragExtendsInEitherDirectionAndRestoresInitialWord() {
+        String text = "before reader after";
+        int[] word = ReaderTextSelection.wordAt(text, 9);
+        assertArrayEquals(new int[]{0, 13},
+                ReaderTextSelection.dragFromWord(text, word[0], word[1], 0));
+        assertArrayEquals(new int[]{7, text.length()},
+                ReaderTextSelection.dragFromWord(text, word[0], word[1], text.length()));
+        assertArrayEquals(word,
+                ReaderTextSelection.dragFromWord(text, word[0], word[1], 9));
+    }
+
+    @Test public void longPressDragKeepsCharacterBoundariesAndPageLimits() {
+        String text = "A😀B reader";
+        assertArrayEquals(new int[]{1, 4},
+                ReaderTextSelection.dragFromWord(text, 3, 4, 2));
+        assertArrayEquals(new int[]{3, text.length()},
+                ReaderTextSelection.dragFromWord(text, 3, 4, 100));
+    }
 }

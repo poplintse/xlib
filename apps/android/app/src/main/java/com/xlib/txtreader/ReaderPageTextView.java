@@ -32,6 +32,9 @@ final class ReaderPageTextView extends TextView {
     private int selectionStart = -1;
     private int selectionEnd = -1;
     private int draggedHandle;
+    private boolean draggingLongPressSelection;
+    private int longPressStart;
+    private int longPressEnd;
     private boolean consumeGesture;
     private float downX;
     private float downY;
@@ -87,6 +90,7 @@ final class ReaderPageTextView extends TextView {
             downY = y;
             consumeGesture = selectionStart >= 0;
             draggedHandle = 0;
+            draggingLongPressSelection = false;
             if (consumeGesture) {
                 PointF start = handlePoint(true);
                 PointF end = handlePoint(false);
@@ -122,11 +126,18 @@ final class ReaderPageTextView extends TextView {
                 if (draggedHandle == 2 && offset > selectionStart) selectionEnd = offset;
                 invalidate();
                 dismissSelectionMenu();
+            } else if (draggingLongPressSelection && selectionStart >= 0) {
+                int[] range = ReaderTextSelection.dragFromWord(renderedPage.text,
+                        longPressStart, longPressEnd, offsetAt(x, y));
+                selectionStart = range[0];
+                selectionEnd = range[1];
+                invalidate();
             }
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
                 || action == MotionEvent.ACTION_POINTER_DOWN) {
             removeCallbacks(longPress);
             draggedHandle = 0;
+            draggingLongPressSelection = false;
             if (action == MotionEvent.ACTION_UP && hasTextSelection()) showSelectionMenu();
             else if (action != MotionEvent.ACTION_UP) clearTextSelection();
         }
@@ -172,10 +183,12 @@ final class ReaderPageTextView extends TextView {
         if (range[0] == range[1]) return;
         selectionStart = range[0];
         selectionEnd = range[1];
+        longPressStart = range[0];
+        longPressEnd = range[1];
+        draggingLongPressSelection = true;
         consumeGesture = true;
         if (onSelectionStarted != null) onSelectionStarted.run();
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-        showSelectionMenu();
         invalidate();
     }
 
@@ -273,6 +286,7 @@ final class ReaderPageTextView extends TextView {
         dismissSelectionMenu();
         selectionStart = selectionEnd = -1;
         draggedHandle = 0;
+        draggingLongPressSelection = false;
         invalidate();
     }
 

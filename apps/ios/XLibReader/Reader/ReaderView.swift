@@ -58,6 +58,10 @@ struct ReaderView: View {
     @Environment(ProgressSyncCoordinator.self) private var sync
     @State private var progressPanelVisible = false
     @State private var toastMessage: String?
+    @State private var copySelectionActive = false
+    @State private var copySelectionText: String?
+    @State private var copySelectionAnchor: CGPoint?
+    @State private var clearCopySelectionGeneration = 0
     @State private var readingSessionID = UUID()
     @State private var syncPrepared = false
 
@@ -82,6 +86,9 @@ struct ReaderView: View {
                     direction: coordinator.lastTurnDirection,
                     completedPageTurns: coordinator.completedPageTurns,
                     reduceMotion: reduceMotion,
+                    selectionEnabled: coordinator.interactionEnabled && !coordinator.menuVisible,
+                    clearSelectionGeneration: clearCopySelectionGeneration,
+                    selectionChanged: handleCopySelection,
                     previous: { coordinator.previous() },
                     next: { coordinator.next() },
                     toggleMenu: { coordinator.toggleMenu() }
@@ -91,6 +98,10 @@ struct ReaderView: View {
                 .contentShape(Rectangle())
                 .gesture(pageGesture(width: proxy.size.width, height: proxy.size.height))
                 .simultaneousGesture(SpatialTapGesture().onEnded { value in
+                    if copySelectionActive {
+                        dismissCopySelection()
+                        return
+                    }
                     if coordinator.menuVisible {
                         coordinator.toggleMenu()
                         return
@@ -109,6 +120,35 @@ struct ReaderView: View {
                         coordinator.toggleMenu()
                     }
                 })
+
+                if let copySelectionText {
+                    HStack(spacing: 0) {
+                        Button("复制") {
+                            UIPasteboard.general.string = copySelectionText
+                            dismissCopySelection()
+                        }
+                        .padding(.horizontal, 12)
+                        .accessibilityIdentifier("reader.copySelection")
+                        .accessibilityValue(copySelectionText)
+                        Divider().frame(height: 22)
+                        Button("取消") { dismissCopySelection() }
+                            .padding(.horizontal, 12)
+                            .accessibilityIdentifier("reader.cancelSelection")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(settings.settings.theme.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 46)
+                    .background(settings.settings.theme.surface, in: Capsule())
+                    .shadow(radius: 5)
+                    .position(
+                        x: min(max(95, (copySelectionAnchor?.x ?? contentSize.width / 2) + 20), proxy.size.width - 95),
+                        y: (copySelectionAnchor?.y ?? 90) > 180
+                            ? (copySelectionAnchor?.y ?? 90) - 190
+                            : (copySelectionAnchor?.y ?? 90) + 90
+                    )
+                }
 
                 if coordinator.isLoading { ProgressView().controlSize(.large) }
                 if persistsProgress, syncPrepared, !coordinator.isLoading,
@@ -169,6 +209,7 @@ struct ReaderView: View {
             flushReaderIfNeeded(for: phase)
         }
         .onDisappear {
+            dismissCopySelection()
             ReaderPerformanceDiagnostics.cancelOpen()
             if persistsProgress { sync.suspendReading(bookID: book.id, sessionID: readingSessionID) }
             Task {
@@ -193,6 +234,23 @@ struct ReaderView: View {
     private func flushReaderIfNeeded(for phase: ScenePhase) {
         guard phase != .active else { return }
         Task { await coordinator.flush() }
+    }
+
+    private func handleCopySelection(_ event: ReaderCopySelectionEvent) {
+        copySelectionActive = event.active
+        copySelectionText = event.selectedText
+        copySelectionAnchor = event.anchor
+        if event.active, coordinator.autoPaging {
+            coordinator.toggleAutoPaging(seconds: settings.settings.autoPageSeconds)
+        }
+    }
+
+    private func dismissCopySelection() {
+        guard copySelectionActive else { return }
+        copySelectionActive = false
+        copySelectionText = nil
+        copySelectionAnchor = nil
+        clearCopySelectionGeneration += 1
     }
 
     private func updateReadingReadiness() {
@@ -318,6 +376,7 @@ struct ReaderView: View {
                 ) else { return }
             }
             .onEnded { value in
+                guard !copySelectionActive else { return }
                 guard !ReaderPageInteraction.isNavigationEdgeDrag(startX: value.startLocation.x) else {
                     return
                 }

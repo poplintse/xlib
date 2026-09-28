@@ -6,6 +6,24 @@ import XCTest
 @testable import XLibReader
 
 final class ReaderCoreTests: XCTestCase {
+    func testCopySelectionExtendsBothDirectionsWithoutSplittingEmoji() throws {
+        let text = "hello 😀 world\nnext"
+        let word = try XCTUnwrap(ReaderTextSelection.word(in: text, at: 9))
+        XCTAssertEqual((text as NSString).substring(with: word), "world")
+        let backward = ReaderTextSelection.draggedRange(in: text, initial: word, to: 6)
+        XCTAssertEqual((text as NSString).substring(with: backward), "😀 world")
+        let forward = ReaderTextSelection.draggedRange(in: text, initial: word, to: text.utf16.count)
+        XCTAssertEqual((text as NSString).substring(with: forward), "world\nnext")
+        let movedStart = ReaderTextSelection.movedHandle(in: text, selection: word, start: true, to: 6)
+        XCTAssertEqual((text as NSString).substring(with: movedStart), "😀 world")
+        let movedEnd = ReaderTextSelection.movedHandle(in: text, selection: movedStart, start: false, to: 7)
+        XCTAssertEqual((text as NSString).substring(with: movedEnd), "😀")
+        let preventedCrossing = ReaderTextSelection.movedHandle(in: text, selection: word, start: true, to: 18)
+        XCTAssertEqual(preventedCrossing, word)
+        XCTAssertNil(ReaderTextSelection.word(in: "", at: 0))
+        XCTAssertNil(ReaderTextSelection.word(in: text, at: 5))
+    }
+
     @MainActor
     func testReturningWithSameLayoutRestartsInterruptedLoad() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)

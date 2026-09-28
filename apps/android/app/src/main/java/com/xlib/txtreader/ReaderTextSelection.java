@@ -29,6 +29,13 @@ final class ReaderTextSelection {
                 end == BreakIterator.DONE ? text.length() : end};
     }
 
+    static int[] dragFromWord(String text, int wordStart, int wordEnd, int offset) {
+        int boundary = boundary(text, offset);
+        if (boundary < wordStart) return new int[]{boundary, wordEnd};
+        if (boundary > wordEnd) return new int[]{wordStart, boundary};
+        return new int[]{wordStart, wordEnd};
+    }
+
     static int boundary(String text, int offset) {
         int index = Math.max(0, Math.min(text.length(), offset));
         BreakIterator characters = BreakIterator.getCharacterInstance(Locale.getDefault());

@@ -2,6 +2,38 @@ import XCTest
 
 final class XLibReaderUITests: XCTestCase {
     @MainActor
+    func testLongPressDragCopySelectionAndCancel() {
+        let app = launchApp(scenario: "reading")
+        openFixtureReader(app)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.5)).tap()
+        let canvas = app.staticTexts["reader.textCanvas"]
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.20, dy: 0.08))
+        let end = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.72, dy: 0.14))
+        start.press(forDuration: 0.8, thenDragTo: end)
+        let copy = app.buttons["reader.copySelection"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan((copy.value as? String)?.count ?? 0, 2)
+        let beforeAdjustment = copy.value as? String
+        let endHandle = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.147))
+        let adjustedEnd = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.19))
+        endHandle.press(forDuration: 0.05, thenDragTo: adjustedEnd)
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+        XCTAssertNotEqual(copy.value as? String, beforeAdjustment)
+        let beforeStartAdjustment = copy.value as? String
+        let startHandle = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.24, dy: 0.105))
+        let adjustedStart = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.07, dy: 0.065))
+        startHandle.press(forDuration: 0.05, thenDragTo: adjustedStart)
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+        XCTAssertNotEqual(copy.value as? String, beforeStartAdjustment)
+        let selectionScreenshot = XCTAttachment(screenshot: app.screenshot())
+        selectionScreenshot.lifetime = .keepAlways
+        add(selectionScreenshot)
+        app.buttons["reader.cancelSelection"].tap()
+        XCTAssertFalse(copy.exists)
+    }
+
+    @MainActor
     private func launchApp(scenario: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["XLIB_UI_TEST_ID"] = UUID().uuidString

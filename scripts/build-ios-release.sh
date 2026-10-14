@@ -5,7 +5,14 @@ root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 ios="$root/apps/ios"
 project="$ios/XLibReader.xcodeproj/project.pbxproj"
 plist="$ios/XLibReader/Resources/Info.plist"
-requested="${VERSION:-${1:-}}"
+if [ "${1:-}" != "--build-locked" ]; then
+    requested="${VERSION:-${1:-}}"
+    mkdir -p "$root/artifacts/.build"
+    exec ruby "$root/scripts/with-build-lock.rb" "$root/artifacts/.build/ios-build.lock" \
+        "$0" --build-locked "$requested"
+fi
+shift
+requested="${1:-}"
 logs="$root/artifacts/logs"
 timestamp="$(date '+%Y%m%d-%H%M%S')"
 log="$logs/ios-release-$timestamp-$$.log"
@@ -25,33 +32,13 @@ if [ -n "$requested" ] &&
     fail "invalid VERSION: $requested" 2
 fi
 
-if ! actual="$(
-    ruby -e '
-      values = File.read(ARGV.fetch(0)).scan(/MARKETING_VERSION = ([^;]+);/).flatten.uniq
-      abort "MARKETING_VERSION is missing or inconsistent" unless values.length == 1
-      puts values.first
-    ' "$project" 2>>"$log"
-)"; then
-    fail "could not read the iOS version"
-fi
-if ! printf '%s\n' "$actual" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
-    fail "invalid iOS version: $actual"
-fi
-if [ -n "$requested" ] && [ "$requested" != "$actual" ]; then
-    fail "VERSION must match the prepared component version; builds do not edit version files" 2
-fi
-if ! build_number="$(
-    ruby -e '
-      values = File.read(ARGV.fetch(0)).scan(/CURRENT_PROJECT_VERSION = ([^;]+);/).flatten.uniq
-      abort "CURRENT_PROJECT_VERSION is missing or inconsistent" unless values.length == 1
-      puts values.first
-    ' "$project" 2>>"$log"
-)"; then
-    fail "could not read the iOS build number"
-fi
-if ! printf '%s\n' "$build_number" | grep -Eq '^[1-9][0-9]*$'; then
-    fail "invalid iOS build number: $build_number"
-fi
+prepared="$(sh "$root/scripts/prepare-build-version.sh" ios "$requested" "$root" 2>>"$log")" ||
+    fail "could not prepare iOS build number"
+actual="${prepared%%:*}"
+build_values="${prepared#*:}"
+previous_build="${build_values%%:*}"
+build_number="${build_values#*:}"
+printf 'iOS version %s; build number %s -> %s\n' "$actual" "$previous_build" "$build_number" >>"$log"
 
 artifact_dir="$root/artifacts/ios/$actual"
 artifact="$artifact_dir/XLibReader-Release.app"

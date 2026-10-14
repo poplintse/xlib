@@ -177,7 +177,7 @@ UTF-8、UTF-16LE、UTF-16BE、GB18030 等多字节编码必须在完整字符边
 ## 7. 构建边界
 
 - `apps/android/version.properties` 是 Android `versionCode` 和 `versionName` 的唯一来源。
-- Android 和 iOS 的普通构建不得修改版本文件；版本变化只能来自明确的发布准备操作。
+- Android 和 iOS 每次构建递增 build 号；未传 `VERSION` 时保持版本名，显式传入不同 `VERSION` 时才更新版本名。Backend 仅在显式 `VERSION` 时更新 package 版本。
 - 根 `Makefile` 与 `scripts/` 是本地和 CI 的统一入口，组件内部仍保留各自原生工具链。
 - `releases/<version>.yaml` 记录 monorepo 发布与组件版本映射，不重置组件自己的版本历史。
 

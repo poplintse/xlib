@@ -7,24 +7,29 @@ snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/xlib-alpha-versions.XXXXXX")"
 before="$snapshot_dir/before"
 after="$snapshot_dir/after"
 
-version_files="
-$root/apps/android/version.properties
-$root/apps/ios/XLibReader.xcodeproj/project.pbxproj
-$root/apps/ios/XLibReader/Resources/Info.plist
-$root/services/backend/package.json
-$root/releases/$release_version.yaml
-"
-
 snapshot_versions() {
     output="$1"
     : > "$output"
-    for file in $version_files; do
-        if [ ! -f "$file" ]; then
-            echo "missing version source: $file" >&2
-            return 1
-        fi
-        cksum "$file" >> "$output"
-    done
+    ruby - "$root" "$release_version" >"$output" <<'RUBY'
+require "json"
+require "digest"
+
+root, release_version = ARGV
+android_path = File.join(root, "apps/android/version.properties")
+android_version = File.read(android_path)[/^versionName=(.+)$/, 1]
+project_path = File.join(root, "apps/ios/XLibReader.xcodeproj/project.pbxproj")
+ios_versions = File.read(project_path).scan(/MARKETING_VERSION = ([^;]+);/).flatten.uniq
+backend_path = File.join(root, "services/backend/package.json")
+backend_version = JSON.parse(File.read(backend_path)).fetch("version")
+manifest_path = File.join(root, "releases", "#{release_version}.yaml")
+info_path = File.join(root, "apps/ios/XLibReader/Resources/Info.plist")
+abort "unable to snapshot component version names" if android_version.nil? || ios_versions.length != 1
+puts "android=#{android_version}"
+puts "ios=#{ios_versions.first}"
+puts "backend=#{backend_version}"
+puts "manifest=#{Digest::SHA256.file(manifest_path).hexdigest}"
+puts "ios_info=#{Digest::SHA256.file(info_path).hexdigest}"
+RUBY
 }
 
 finish() {

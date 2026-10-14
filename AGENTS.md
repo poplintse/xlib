@@ -13,7 +13,7 @@
 
 - Use root `make` targets or the corresponding script in `scripts/`.
 - Run `make check` for normal changes and `make check-alpha` before an Alpha release.
-- Builds must be reproducible and must not mutate version files.
+- Builds keep component version names unless an explicit `VERSION` is supplied. Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` increment for every client build.
 
 ## Versions and releases
 

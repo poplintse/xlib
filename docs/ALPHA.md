@@ -9,8 +9,8 @@
 - OpenAPI 文件可解析，已声明的所有 `/v1` 路由与后端实现一致。
 - Backend lint、typecheck、unit test 和 build 通过。
 - Apple 共享包测试通过。
-- Android unit test、lint 和 Debug build 通过，且构建不修改版本文件。
-- iOS unit/UI test 和 Simulator Debug build 通过，且构建不修改工程版本文件。
+- Android unit test、lint 和 Debug build 通过；构建可递增 `versionCode`，但未显式传入不同 `VERSION` 时不修改版本名。
+- iOS unit/UI test 和 Simulator Debug build 通过；构建可递增 build 号，但未显式传入不同 `VERSION` 时不修改 `MARKETING_VERSION`。
 - 发布清单中的组件版本与源码一致。
 - tracked-sensitive-data 检查通过；仓库不包含 `.env`、Token、签名密钥、keystore、真实数据库凭据或生产域名。
 - 隔离 PostgreSQL 17 集成测试以 owner 执行 migration、以受限应用角色执行服务操作并全部通过。

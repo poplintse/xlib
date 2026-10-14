@@ -20,7 +20,7 @@
 - 后端与 OpenAPI 新增 `DELETE /v1/progress/{bookHash}/{fileSize}`，只删除认证身份下指定文件的进度，不存在记录也返回 204。
 - 旧的全量进度清空与身份删除路由、服务方法已移除。两端传输层改为 deleteBookProgress；旧全量删除协调器方法及未被调用的 Android 确认方法已删除。初次盘点将这个 Android 方法误计为用户入口，此处纠正。
 - Android/iOS 均已补齐单书删除用户入口、在途上传排序及阅读会话暂停；0.11.0 真实服务与跨设备行为由用户确认通过。
-- 根检查、CI 默认清单和发布回归夹具已切换到 0.11.0，匹配当前移动端源码版本。构建脚本不自动改写版本或递增 build；Gradle 缺少版本文件时直接报错。检查入口在构建后再次校验清单；CI 缺少清单时失败，不再跳过。
+- 根检查、CI 默认清单和发布回归夹具已切换到 0.11.0，匹配当前移动端源码版本。Android/iOS 构建自动递增 build 号，只有显式传入不同 `VERSION` 时更新组件版本名；Backend 仅在显式传入 `VERSION` 时更新 package 版本。检查入口在构建前后校验版本名；CI 缺少清单时失败，不再跳过。
 
 ## 已确认能力的实现
 
@@ -68,7 +68,7 @@ P7.3 已删除一次性 legacy parser、旧模型及 `0.9.0 → 当前工作区`
 
 ### P8：系统验收与维护（完成）
 
-[P8 验收记录](architecture/p8-system-validation.md) 是当前系统级证据和缺口清单。`make check-alpha` 现强制运行 tracked-sensitive-data 检查、隔离 PostgreSQL 17、Android 测试/lint/build、iOS 单元/UI 测试，并对 Android、iOS、Backend 和所选发布清单的版本源做全程快照；数据库不可用或构建改写版本都会失败。CI 与 release verification 也使用 PostgreSQL 17 owner/受限应用角色，release verification 在生成未签名 Debug artifact 前运行双端测试。
+[P8 验收记录](architecture/p8-system-validation.md) 是当前系统级证据和缺口清单。`make check-alpha` 现强制运行 tracked-sensitive-data 检查、隔离 PostgreSQL 17、Android 测试/lint/build、iOS 单元/UI 测试；构建号允许递增，版本名和所选发布清单必须保持不变。数据库不可用或版本名被意外修改都会失败。CI 与 release verification 也使用 PostgreSQL 17 owner/受限应用角色，release verification 在生成未签名 Debug artifact 前运行双端测试。
 
 Android 和 iOS 都新增了真实 SQLite `SQLITE_FULL` 故障测试：容量耗尽时整笔写入回滚，原有书籍保持完整。测试暴露并修复了 Android 在 SQLite 自动回滚后再次结束事务会抛异常的问题；Android 数据库初始化失败现在关闭 helper。iOS 容量限制施加在被测连接自身，避免另一连接的 PRAGMA 无效；失败初始化继续由已初始化连接属性的析构路径关闭，避免重复关闭。
 

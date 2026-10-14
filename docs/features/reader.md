@@ -268,8 +268,8 @@ XLib 是原生 Android TXT 阅读器，主要页面包括书架、阅读、搜�
 
 - `apps/android/version.properties` 是 Android `versionCode` 和 `versionName` 的唯一来源。
 - 书架显示安装包实际版本，格式为 `v<versionName> build <versionCode>`。
-- Gradle 构建不得修改版本；`versionCode` 和 `versionName` 只在明确的发布准备操作中更新。
-- iOS 版本与 build 仅在明确的发布准备操作中修改；Build、Run、Test 和 Archive 均不得自动递增。
+- Gradle 每次构建递增 `versionCode`；`versionName` 保持当前值，只有显式传入不同 `VERSION` 时才更新。
+- iOS 每次构建递增 build 号，保持版本名不变；显式传入不同 `VERSION` 时更新 `MARKETING_VERSION`。
 - Debug APK 文件名为 `xlib-debug.apk`，Release APK 文件名为 `xlib-release.apk`。
 - 只在用户明确要求构建/打包时生成 APK；普通文档或代码整理不应触发版本递增。
 

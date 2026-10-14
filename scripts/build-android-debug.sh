@@ -4,7 +4,14 @@ set -eu
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 android="$root/apps/android"
 version_file="$android/version.properties"
-requested="${VERSION:-${1:-}}"
+if [ "${1:-}" != "--build-locked" ]; then
+    requested="${VERSION:-${1:-}}"
+    mkdir -p "$root/artifacts/.build"
+    exec ruby "$root/scripts/with-build-lock.rb" "$root/artifacts/.build/android-build.lock" \
+        "$0" --build-locked "$requested"
+fi
+shift
+requested="${1:-}"
 logs="$root/artifacts/logs"
 timestamp="$(date '+%Y%m%d-%H%M%S')"
 log="$logs/android-debug-$timestamp-$$.log"
@@ -24,35 +31,13 @@ if [ -n "$requested" ] &&
     fail "invalid VERSION: $requested" 2
 fi
 
-version_name_count="$(
-    awk '
-      /^versionName=/ { count += 1 }
-      END { print count + 0 }
-    ' "$version_file"
-)"
-if [ "$version_name_count" -ne 1 ]; then
-    fail "apps/android/version.properties must contain exactly one versionName"
-fi
-version="$(sed -n 's/^versionName=//p' "$version_file")"
-if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
-    fail "invalid Android version: ${version:-missing}"
-fi
-if [ -n "$requested" ] && [ "$requested" != "$version" ]; then
-    fail "VERSION must match the prepared component version; builds do not edit version files" 2
-fi
-version_code_count="$(
-    awk '
-      /^versionCode=/ { count += 1 }
-      END { print count + 0 }
-    ' "$version_file"
-)"
-if [ "$version_code_count" -ne 1 ]; then
-    fail "apps/android/version.properties must contain exactly one versionCode"
-fi
-version_code="$(sed -n 's/^versionCode=//p' "$version_file")"
-if ! printf '%s\n' "$version_code" | grep -Eq '^[1-9][0-9]*$'; then
-    fail "invalid Android versionCode: ${version_code:-missing}"
-fi
+prepared="$(sh "$root/scripts/prepare-build-version.sh" android "$requested" "$root" 2>>"$log")" ||
+    fail "could not prepare Android build number"
+version="${prepared%%:*}"
+code_values="${prepared#*:}"
+previous_code="${code_values%%:*}"
+version_code="${code_values#*:}"
+printf 'Android version %s; versionCode %s -> %s\n' "$version" "$previous_code" "$version_code" >>"$log"
 
 artifact_dir="$root/artifacts/android/$version"
 artifact="$artifact_dir/xlib-debug-${version_code}.apk"

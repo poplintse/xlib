@@ -133,7 +133,7 @@
 ## 6. 开发、构建与验证
 
 - 从仓库中的 `apps/ios/XLibReader.xcodeproj` 打开工程；不要打开旧 worktree 中遗留的工程副本。
-- 常规构建和测试不得修改版本文件或 `Info.plist` 的版本号。
+- 每次 iOS Debug/Release 构建递增 `CURRENT_PROJECT_VERSION`，保持 `MARKETING_VERSION` 不变；显式传入不同 `VERSION` 时才更新版本名。`Info.plist` 继续通过 build setting 读取版本。
 - 首选根目录的 `make check`；仅验证 iOS 时可运行工程的 Simulator 测试。测试覆盖 UTF-16/字节 offset 映射、分页、两端对齐、翻页排队、同步配置持久化、20 秒统一调度和设备移除请求体。
 - UI 测试通过 `XLIB_UI_TEST_ID`（UUID）注入独立书库与 UserDefaults，凭据及网络接口使用内存替身，不读取日常 Keychain、不访问真实服务。`XLIB_UI_TEST_SCENARIO` 的 `reading` / `sync` 场景建立专用测试书籍；所有注入入口仅在 Debug 编译中存在。
 - UI 回归覆盖重复书签提示和单条删除、搜索临时阅读返回/重开后的正式进度保留，以及单书云端删除确认、取消、成功反馈和本地书签/进度保留。服务端实际删除及跨设备竞争不能由内存替身验收代替。

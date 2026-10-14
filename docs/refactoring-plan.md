@@ -136,7 +136,7 @@ AppleShared 继续承载 UI 无关的编码、字节映射；经过两端需要�
 | P5：后端边界与集成（完成） | IdentityRepository/ProgressRepository 收口 SQL，Service 保持事务；隔离 PostgreSQL 17 验证并发、撤销和受限角色 | 71 项 Backend 测试通过，其中 13 项真实 PostgreSQL 集成测试；API 与 Schema 不变 | 代码回退；没有数据库迁移 |
 | P6：Mobile Local Storage Consolidation（完成） | P6.0 审计；P6.1 契约/DDL/迁移夹具；P6.2 Android；P6.3 iOS；P6.4 双端迁移验证 | 结构化业务数据与非敏感设置进入 SQLite；TXT/Secure Store 边界不变；重复迁移无重复或丢失；不改变同步行为 | legacy 只读保留到 P7；不双写；迁移失败按客户端回退旧路径 |
 | P7：Legacy Persistence Cleanup（完成） | P7.1 删除旧运行时回退；P7.2 Schema v2 allowlist 清理；P7.3 删除一次性读取器和历史覆盖脚本 | Android 完整单元测试、iOS 构建/单元测试、清理与发布链门禁通过；0.11.0 只接受 0.10.0 来源 | 0.10.0 保留 migrator；未经过基线的设备先安装 0.10.0，不恢复双存储运行时 |
-| P8：系统验收与维护（完成） | 自动发布门禁、双端 SQLite 容量故障回滚、真实双端/iOS 发布链/分发下限确认，以及 iOS 真机性能自动化 | 最终 Alpha 门禁与 iOS 性能记录校验通过；Android 性能豁免明确记录；构建不改版本；无敏感数据进入日志 | 按组件发布/回退；发布另行批准 |
+| P8：系统验收与维护（完成） | 自动发布门禁、双端 SQLite 容量故障回滚、真实双端/iOS 发布链/分发下限确认，以及 iOS 真机性能自动化 | 最终 Alpha 门禁与 iOS 性能记录校验通过；Android 性能豁免明确记录；构建仅自动递增 build 号；无敏感数据进入日志 | 按组件发布/回退；发布另行批准 |
 
 P0 → P8 已完成当前工作树实现。P6 按 Android 先行、iOS 后续的顺序验证共同数据语义，没有把平台 UI 传播为另一客户端要求。P7 按 P7.1 → P7.2 → P7.3 实施；0.10.0 保留完整 migrator，0.11.0 只保留迁移后清理状态机并强制升级来源为 0.10.0。P8 已完成定义范围，证据与 Android 性能豁免见 [P8 System Validation](architecture/p8-system-validation.md)。
 
@@ -155,7 +155,7 @@ P0 → P8 已完成当前工作树实现。P6 按 Android 先行、iOS 后续的
 
 ### 工程检查
 
-每个实现阶段运行 `make check` 及受影响的针对性测试。当前 `make check` 不等于完整 iOS UI/单元验收；iOS 修改另执行项目测试。发布前运行 `make check-alpha`：该入口已强制隔离 PostgreSQL 17、Android 测试/lint/build、iOS 单元/UI 测试和版本文件不变。Android/iOS 真机、真实双端同步、实际分发版本下限及性能不适合由该本地入口伪造，必须另有记录。本轮真实双端、iOS 真机发布链及分发下限由用户确认通过；iOS 真机性能记录已通过自动校验，Android 性能采集按用户授权豁免。
+每个实现阶段运行 `make check` 及受影响的针对性测试。当前 `make check` 不等于完整 iOS UI/单元验收；iOS 修改另执行项目测试。发布前运行 `make check-alpha`：该入口已强制隔离 PostgreSQL 17、Android 测试/lint/build、iOS 单元/UI 测试和版本名不变检查；平台 build 号可递增。Android/iOS 真机、真实双端同步、实际分发版本下限及性能不适合由该本地入口伪造，必须另有记录。本轮真实双端、iOS 真机发布链及分发下限由用户确认通过；iOS 真机性能记录已通过自动校验，Android 性能采集按用户授权豁免。
 
 先测量再设性能预算：代表性小/大 TXT、UTF-8/UTF-16/GB18030、冷启动/缓存打开、连续翻页、超过 200 条搜索、批量导入。固定设备及样本，记录首屏时间、翻页端到端延迟、峰值内存、搜索首批耗时及文件 I/O。本轮只建立 iOS 真机基线；Android 性能采集已获用户豁免，未来如需两端对比须另行实测。尚无测量时不编造毫秒级 SLA。
 

@@ -9,7 +9,7 @@ ruby "$root/scripts/check-contract-fixtures.rb"
 "$root/scripts/check-legacy-cleanup-plan.py"
 "$root/scripts/check-migrator-retirement.py"
 ruby "$root/scripts/test-release-check.rb"
-"$root/scripts/release-check.sh"
+IGNORE_BUILD_NUMBERS=1 "$root/scripts/release-check.sh"
 "$root/scripts/test-backend.sh"
 swift test --package-path "$root/packages/apple-shared"
 
@@ -18,6 +18,6 @@ cd "$root/apps/android"
 
 "$root/scripts/build-ios-debug.sh"
 
-"$root/scripts/release-check.sh"
+IGNORE_BUILD_NUMBERS=1 "$root/scripts/release-check.sh"
 
 echo "local checks passed"

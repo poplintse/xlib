@@ -737,6 +737,18 @@ public class MainActivity extends Activity {
         int actionText = Color.WHITE;
         int moreBackground = dark ? Color.rgb(78, 91, 105) : Color.rgb(112, 130, 149);
         int deleteBackground = dark ? Color.rgb(164, 58, 62) : Color.rgb(222, 72, 79);
+
+        ImageButton longPressDelete = makeIconButton();
+        longPressDelete.setImageResource(R.drawable.ic_delete);
+        longPressDelete.setContentDescription("删除书籍");
+        UiKit.styleIconButton(this, longPressDelete, actionText, deleteBackground, 14);
+        longPressDelete.setOnClickListener(v -> showDeleteBookDialog(book));
+        longPressDelete.setVisibility(View.GONE);
+        LinearLayout.LayoutParams longPressDeleteLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        longPressDeleteLp.leftMargin = dp(12);
+        longPressDeleteLp.rightMargin = dp(12);
+        row.addView(longPressDelete, longPressDeleteLp);
+
         LinearLayout actions = new LinearLayout(this);
         actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
 
@@ -764,52 +776,7 @@ public class MainActivity extends Activity {
         container.addView(row, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        final float[] touchDown = new float[1];
-        final float[] touchStartTranslation = new float[1];
-        row.setOnTouchListener((view, event) -> {
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    view.animate().cancel();
-                    touchDown[0] = event.getRawX();
-                    touchStartTranslation[0] = view.getTranslationX();
-                    return true;
-                case MotionEvent.ACTION_MOVE:
-                    float translation = Math.min(0, Math.max(-actionMenuWidth,
-                            touchStartTranslation[0] + event.getRawX() - touchDown[0]));
-                    actions.setVisibility(translation < 0 ? View.VISIBLE : View.INVISIBLE);
-                    view.setTranslationX(translation);
-                    return true;
-                case MotionEvent.ACTION_UP:
-                    float distance = event.getRawX() - touchDown[0];
-                    if (Math.abs(distance) < dp(8)) {
-                        if (view.getTranslationX() < 0) {
-                            view.animate().translationX(0).setDuration(160)
-                                    .withEndAction(() -> actions.setVisibility(View.INVISIBLE))
-                                    .start();
-                        } else {
-                            view.performClick();
-                        }
-                    } else {
-                        float target = view.getTranslationX() <= -actionMenuWidth / 2f
-                                ? -actionMenuWidth : 0;
-                        if (target == 0) {
-                            view.animate().translationX(0).setDuration(160)
-                                    .withEndAction(() -> actions.setVisibility(View.INVISIBLE))
-                                    .start();
-                        } else {
-                            view.animate().translationX(target).setDuration(160).start();
-                        }
-                    }
-                    return true;
-                case MotionEvent.ACTION_CANCEL:
-                    view.animate().translationX(0).setDuration(160)
-                            .withEndAction(() -> actions.setVisibility(View.INVISIBLE))
-                            .start();
-                    return true;
-                default:
-                    return true;
-            }
-        });
+        new BookRowGestures(row, actions, longPressDelete, actionMenuWidth);
 
         LinearLayout.LayoutParams containerLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);

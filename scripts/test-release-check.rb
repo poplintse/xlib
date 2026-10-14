@@ -31,7 +31,22 @@ Dir.mktmpdir("xlib-release-check-") do |fixture|
                                    "sh", script, *args)
     [status.success?, output]
   end
-  verify.call("default manifest matches unchanged component versions") { run.call({})[0] }
+  manifest_path = File.join(fixture, "releases/0.11.0.yaml")
+  original = File.read(manifest_path)
+  verify.call("local check allows build numbers to advance beyond the release manifest") do
+    run.call({"IGNORE_BUILD_NUMBERS" => "1"})[0]
+  end
+
+  manifest = YAML.safe_load(original, aliases: false)
+  android_properties = File.read(File.join(fixture, "apps/android/version.properties"))
+  manifest.fetch("components").fetch("android")["version_code"] =
+    android_properties[/^versionCode=(\d+)$/, 1].to_i
+  project = File.read(File.join(fixture, "apps/ios/XLibReader.xcodeproj/project.pbxproj"))
+  manifest.fetch("components").fetch("ios")["build_number"] =
+    project.scan(/CURRENT_PROJECT_VERSION = ([^;]+);/).flatten.uniq.fetch(0)
+  File.write(manifest_path, YAML.dump(manifest))
+  strict_manifest = File.read(manifest_path)
+  verify.call("strict release check matches component versions and build numbers") { run.call({})[0] }
   verify.call("environment selects manifest and missing manifest fails") do
     success, output = run.call({"RELEASE_VERSION" => "missing"})
     !success && output.include?("release manifest not found")
@@ -40,8 +55,6 @@ Dir.mktmpdir("xlib-release-check-") do |fixture|
     run.call({"RELEASE_VERSION" => "missing"}, "0.11.0")[0]
   end
 
-  manifest_path = File.join(fixture, "releases/0.11.0.yaml")
-  original = File.read(manifest_path)
   [
     ["android", "version_name", "0.0.0", "Android version_name mismatch"],
     ["android", "version_code", -1, "Android version_code mismatch"],
@@ -49,7 +62,7 @@ Dir.mktmpdir("xlib-release-check-") do |fixture|
     ["ios", "build_number", -1, "iOS build_number mismatch"],
     ["backend", "version", "0.0.0", "Backend version mismatch"]
   ].each do |component, field, value, expected|
-    manifest = YAML.safe_load(original, aliases: false)
+    manifest = YAML.safe_load(strict_manifest, aliases: false)
     manifest.fetch("components").fetch(component)[field] = value
     File.write(manifest_path, YAML.dump(manifest))
     verify.call("reject #{component}.#{field} mismatch") do
@@ -57,13 +70,13 @@ Dir.mktmpdir("xlib-release-check-") do |fixture|
       !success && output.include?(expected)
     end
   end
-  File.write(manifest_path, original)
+  File.write(manifest_path, strict_manifest)
   [
     ["contains_legacy_migrator", true, "Migrator retirement release cannot contain legacy migrator"],
     ["minimum_direct_from", "0.9.0", "Post-migrator release minimum source mismatch"],
     ["required_intermediate", "0.9.0", "Post-migrator release intermediate mismatch"]
   ].each do |field, value, expected|
-    manifest = YAML.safe_load(original, aliases: false)
+    manifest = YAML.safe_load(strict_manifest, aliases: false)
     manifest.fetch("upgrade").fetch("local_storage")[field] = value
     File.write(manifest_path, YAML.dump(manifest))
     verify.call("reject invalid local storage upgrade #{field}") do
@@ -73,7 +86,7 @@ Dir.mktmpdir("xlib-release-check-") do |fixture|
   end
   File.write(manifest_path, original)
   verify.call("checking does not rewrite the manifest or component versions") do
-    success, = run.call({})
+    success, = run.call({"IGNORE_BUILD_NUMBERS" => "1"})
     success && paths.all? { |path| File.binread(File.join(root, path)) == File.binread(File.join(fixture, path)) }
   end
 end

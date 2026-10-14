@@ -32,11 +32,11 @@ Alpha 允许通过规范化邮箱创建或恢复同一个固定 Token。这不�
 
 `releases/<version>.yaml` 描述统一发布；Android、iOS 和 Backend 保留自己的版本，不因迁移到 monorepo 而重置。
 
-## D-006 构建不得自动递增版本
+## D-006 构建只自动递增 build 号
 
 状态：accepted。
 
-Debug、test 和普通 release build 都不得修改受 Git 管理的文件。版本变更只能通过明确的发布准备操作进行。
+Android 和 iOS 的 Debug/Release 构建每次递增各自的 build 号，保持版本名不变。仅当调用者显式传入不同的 `VERSION` 时，构建才更新组件版本名。Backend 没有独立 build 号；显式 `VERSION` 更新其 package 版本。
 
 ## D-007（已取代）
 

@@ -4,7 +4,14 @@ set -eu
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 backend="$root/services/backend"
 package_json="$backend/package.json"
-requested="${VERSION:-${1:-}}"
+if [ "${1:-}" != "--build-locked" ]; then
+    requested="${VERSION:-${1:-}}"
+    mkdir -p "$root/artifacts/.build"
+    exec ruby "$root/scripts/with-build-lock.rb" "$root/artifacts/.build/backend-build.lock" \
+        "$0" --build-locked "$requested"
+fi
+shift
+requested="${1:-}"
 logs="$root/artifacts/logs"
 timestamp="$(date '+%Y%m%d-%H%M%S')"
 log="$logs/backend-release-$timestamp-$$.log"
@@ -22,19 +29,6 @@ fail() {
 if [ -n "$requested" ] &&
     ! printf '%s\n' "$requested" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
     fail "invalid VERSION: $requested" 2
-fi
-
-if ! actual="$(
-    ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("version")' \
-        "$package_json" 2>>"$log"
-)"; then
-    fail "could not read the backend version"
-fi
-if ! printf '%s\n' "$actual" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
-    fail "invalid backend version: $actual"
-fi
-if [ -n "$requested" ] && [ "$requested" != "$actual" ]; then
-    fail "VERSION must match the prepared component version; builds do not edit version files" 2
 fi
 
 if ! command -v node >/dev/null 2>&1; then
@@ -67,6 +61,10 @@ elif command -v pnpm >/dev/null 2>&1; then
 else
     fail "pnpm or corepack is required"
 fi
+
+actual="$(sh "$root/scripts/prepare-build-version.sh" backend "$requested" "$root" 2>>"$log")" ||
+    fail "could not prepare Backend version"
+printf 'Backend version: %s\n' "$actual" >>"$log"
 
 artifact_dir="$root/artifacts/backend/$actual"
 artifact="$artifact_dir/xlib-backend-$actual.tar.gz"

@@ -1406,15 +1406,21 @@ public class MainActivity extends Activity {
         seekPanel.setVisibility(View.GONE);
         LinearLayout seekRow = new LinearLayout(this);
         seekRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView start = new TextView(this);
-        start.setText("0%");
-        start.setTextColor(menuMuted);
-        seekRow.addView(start, new LinearLayout.LayoutParams(dp(42), dp(44)));
+        TextView seekPercentage = new TextView(this);
+        seekPercentage.setTextColor(menuFg);
+        seekPercentage.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        seekPercentage.setGravity(Gravity.CENTER_VERTICAL);
+        seekPercentage.setSingleLine(true);
+        seekRow.addView(seekPercentage, new LinearLayout.LayoutParams(dp(58), dp(44)));
         seekBar = new SeekBar(this);
+        seekBar.setContentDescription("阅读进度");
+        UiKit.styleReaderSeekBar(this, seekBar, darkTheme);
         seekBar.setMax(1000);
         seekBar.setProgress((int) (book.progress * 1000f));
+        seekPercentage.setText(String.format(Locale.getDefault(), "%.1f%%", seekBar.getProgress() / 10f));
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                seekPercentage.setText(String.format(Locale.getDefault(), "%.1f%%", progress / 10f));
                 if (!fromUser) return;
                 pendingSeekProgress = progress / 1000f;
                 updateProgressText(pendingSeekProgress);
@@ -1434,7 +1440,8 @@ public class MainActivity extends Activity {
         TextView end = new TextView(this);
         end.setText(R.string.percent_end);
         end.setTextColor(menuMuted);
-        end.setGravity(Gravity.END);
+        end.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        end.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         seekRow.addView(end, new LinearLayout.LayoutParams(dp(52), dp(44)));
         seekPanel.addView(seekRow);
 

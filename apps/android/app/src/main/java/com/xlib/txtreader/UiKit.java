@@ -5,13 +5,17 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.util.TypedValue;
 import android.view.View;
+import android.view.Gravity;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.TextView;
+import android.widget.SeekBar;
 
 final class UiKit {
     static final int LIGHT_BACKGROUND = Color.rgb(246, 247, 244);
@@ -92,6 +96,34 @@ final class UiKit {
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
         view.setTypeface(Typeface.create("sans", Typeface.BOLD));
         view.setIncludeFontPadding(false);
+    }
+
+    static void styleReaderSeekBar(Context context, SeekBar seekBar, boolean dark) {
+        int trackColor = dark ? Color.rgb(96, 112, 103) : Color.rgb(128, 142, 134);
+        int progressColor = dark ? DARK_ACCENT : Color.rgb(14, 71, 60);
+        Drawable track = rounded(context, trackColor, 3);
+        ClipDrawable progress = new ClipDrawable(rounded(context, progressColor, 3),
+                Gravity.LEFT, ClipDrawable.HORIZONTAL);
+        LayerDrawable layers = new LayerDrawable(new Drawable[]{track, progress});
+        layers.setId(0, android.R.id.background);
+        layers.setId(1, android.R.id.progress);
+        for (int i = 0; i < 2; i++) {
+            layers.setLayerHeight(i, dp(context, 6));
+            layers.setLayerGravity(i, Gravity.CENTER_VERTICAL | Gravity.FILL_HORIZONTAL);
+        }
+        // Clear inherited widget tints so both themes keep the full track visible.
+        seekBar.setProgressTintList(null);
+        seekBar.setProgressBackgroundTintList(null);
+        seekBar.setProgressDrawable(layers);
+        seekBar.setSplitTrack(false);
+        GradientDrawable thumb = new GradientDrawable();
+        thumb.setShape(GradientDrawable.OVAL);
+        thumb.setColor(progressColor);
+        thumb.setSize(dp(context, 20), dp(context, 20));
+        thumb.setStroke(dp(context, 2), dark ? DARK_SURFACE : LIGHT_SURFACE);
+        seekBar.setThumbTintList(null);
+        seekBar.setThumb(thumb);
+        seekBar.setThumbOffset(dp(context, 10));
     }
 
     static int withAlpha(int color, int alpha) {
